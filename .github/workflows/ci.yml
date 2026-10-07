@@ -99,7 +99,7 @@ jobs:
       - name: gosec
         run: gosec -quiet ./...
       - name: govulncheck
-        run: govulncheck ./...
+        run: scripts/govulncheck.sh
 
   e2e:
     name: E2E
