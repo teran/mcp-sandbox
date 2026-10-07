@@ -13,6 +13,11 @@ type Request struct {
 	WorkingDir string
 	// Timeout is the command execution timeout.
 	Timeout uint64
+	// User overrides the user the command runs as (e.g. "0" for a
+	// sudo-classed operation, or "1000:1000" for the default non-root user).
+	// The session manager resolves the effective user from the sandbox's
+	// UIDGID and SudoPolicy before calling the backend (SPEC §7.10).
+	User string
 }
 
 // Result describes the outcome of an executed command.

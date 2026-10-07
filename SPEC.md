@@ -558,6 +558,17 @@ a spec that disables these protections.
   available.
 - Security-scanner findings are **fixed, not suppressed** (S05/N02GO).
 
+**Accepted dependency risk (documented):** the pinned `github.com/docker/docker`
+SDK carries two advisories with **no known fixed version** on the used module
+path — **GO-2026-4887** (CVE-2026-34040, AuthZ plugin bypass) and **GO-2026-4883**
+(CVE-2026-33997, off-by-one in legacy plugin privilege validation). Both are in
+Docker's **plugin-authorization** subsystem, which this client-only server does
+not exercise (we do not manage Docker plugins). The fix exists only in the
+pre-release `github.com/moby/moby/v2` (v2.0.0-beta.8). These two IDs are tracked
+as accepted risk and are the only exceptions in `scripts/govulncheck.sh`;
+**any new** vulnerability still fails the gate (S05 — no blanket suppression).
+Revisit on the next docker SDK / moby upgrade.
+
 ### 7.10 Privilege model: default non-root + scoped root (`exec -u`)
 
 Commands inside the sandbox run **unprivileged by default**; a scoped set of

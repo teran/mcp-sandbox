@@ -23,6 +23,7 @@ type Config struct {
 	LogFilename        string        `envconfig:"LOG_FILENAME"`
 	LogFormat          string        `envconfig:"LOG_FORMAT" default:"text"`
 	SandboxIdleTimeout time.Duration `envconfig:"SANDBOX_IDLE_TIMEOUT" default:"15m"`
+	SandboxCwdMode     string        `envconfig:"SANDBOX_CWD_MODE" default:"rw"`
 }
 
 // Load reads the configuration from the process environment. It does not
@@ -42,6 +43,9 @@ func Load() (*Config, error) {
 func (c *Config) Validate() error {
 	if c.LogFormat != "" && c.LogFormat != "text" && c.LogFormat != "json" {
 		return fmt.Errorf("config: invalid LOG_FORMAT %q (want text or json)", c.LogFormat)
+	}
+	if c.SandboxCwdMode != "" && c.SandboxCwdMode != "rw" && c.SandboxCwdMode != "readonly" {
+		return fmt.Errorf("config: invalid SANDBOX_CWD_MODE %q (want rw or readonly)", c.SandboxCwdMode)
 	}
 	for i, d := range c.AllowDirs {
 		resolved, err := filepath.EvalSymlinks(d)

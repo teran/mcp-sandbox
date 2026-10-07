@@ -26,9 +26,15 @@ deps:
   application:
     mayDependOn:
       - domain
+  # infrastructure may also depend on other infrastructure packages: the
+  # backend factory registry (infrastructure/backend) is imported by the
+  # concrete backends (e.g. infrastructure/backend/docker) to register
+  # themselves via init() (SPEC §6.3). Cross-infrastructure edges are limited
+  # to this adapter wiring.
   infrastructure:
     mayDependOn:
       - domain
+      - infrastructure
   # domain is a leaf: it may only depend on other domain packages (self),
   # never on application/infrastructure/cmd.
   domain:

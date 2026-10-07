@@ -25,8 +25,12 @@ var (
 	appTimestamp  = "unknown"
 )
 
+// exit is the process-exit function. It is a variable so tests can substitute
+// it instead of terminating the test binary.
+var exit = os.Exit
+
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.Stderr))
 }
 
 // run performs the composition-root wiring and starts the stdio transport. It
