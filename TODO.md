@@ -33,12 +33,12 @@
 
 ## Phase 3 — Declarative tool framework + MCP surface
 
-- [ ] 3.1 `application/tools`: `ToolDef`, Registry, shared handler-wrapper (validate → access-log → dispatch → redact → structured output) — `M04 S08 S09 L08`
-- [ ] 3.2 MCP server wiring (go-sdk, slog→logrus) — `M01 L07/L03GO`
-- [ ] 3.3 READ tools: `sandbox_list`, `sandbox_info`, `sandbox_stats`, `sandbox_read_file` — `M05 M07 S03`
-- [ ] 3.4 WRITE tools: `sandbox_create`, `sandbox_exec` (argument-array, no shell), `sandbox_write_file`, `sandbox_copy_in`, `sandbox_copy_out`, `sandbox_install_package` (fixed apt/dnf per SudoPolicy) — `S11 N21 S02`
-- [ ] 3.5 DELETE tools: `sandbox_destroy`, `sandbox_destroy_all` (destructiveHint, client-side HITL) — `S12 S03`
-- [ ] 3.6 Tool tests (annotations, schemas, redaction, access-log) — `M04 S08 S09`
+- [x] 3.1 `application/tools`: `ToolDef`, Registry, shared handler-wrapper (validate → access-log → dispatch → redact → structured output) — `M04 S08 S09 L08`
+- [x] 3.2 MCP server wiring (go-sdk, slog→logrus) — `M01 L07/L03GO`
+- [x] 3.3 READ tools: `sandbox_list`, `sandbox_info`, `sandbox_stats`, `sandbox_read_file` — `M05 M07 S03`
+- [x] 3.4 WRITE tools: `sandbox_create`, `sandbox_exec` (argument-array, no shell), `sandbox_write_file`, `sandbox_copy_in`, `sandbox_copy_out`, `sandbox_install_package` (fixed apt/dnf per SudoPolicy) — `S11 N21 S02`
+- [x] 3.5 DELETE tools: `sandbox_destroy`, `sandbox_destroy_all` (destructiveHint, client-side HITL) — `S12 S03`
+- [x] 3.6 Tool tests (annotations, schemas, redaction, access-log) — `M04 S08 S09`
 
 ## Phase 4 — e2e contract suite
 
