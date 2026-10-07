@@ -155,3 +155,37 @@ func TestServe_ServerError(t *testing.T) {
 		t.Fatalf("code = %d, want 1", code)
 	}
 }
+
+func TestServe_CleanExit(t *testing.T) {
+	t.Setenv("ALLOW_DIRS", "")
+	t.Setenv("LOG_LEVEL", "")
+	logger := newTestLogger(t)
+	// A reader that returns a clean EOF makes server.Run return nil, so serve
+	// exits 0 through the errCh-nil branch.
+	pr, pw := io.Pipe()
+	pw.Close()
+	tr := &mcp.IOTransport{Reader: io.NopCloser(pr), Writer: discardWriteCloser{}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	if code := serve(ctx, logger, tr); code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+}
+
+func TestMain_CallsExit(t *testing.T) { // Capture the exit code instead of terminating the process.
+	code := -999
+	oldExit := exit
+	exit = func(c int) { code = c }
+	defer func() { exit = oldExit }()
+
+	oldArgs := os.Args
+	os.Args = []string{"mcp-sandbox", "-unknown-flag"}
+	defer func() { os.Args = oldArgs }()
+
+	main()
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (flag parse error)", code)
+	}
+}

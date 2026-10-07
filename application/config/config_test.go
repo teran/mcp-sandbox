@@ -76,6 +76,33 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.SandboxIdleTimeout != 15*time.Minute {
 		t.Fatalf("SandboxIdleTimeout default = %v", c.SandboxIdleTimeout)
 	}
+	if c.SandboxCwdMode != "rw" {
+		t.Fatalf("SandboxCwdMode default = %q", c.SandboxCwdMode)
+	}
+}
+
+func TestLoad_CwdModeOverrides(t *testing.T) {
+	unsetEnv(t, "ALLOW_DIRS")
+	unsetEnv(t, "SANDBOX_CWD_MODE")
+	t.Setenv("SANDBOX_CWD_MODE", "readonly")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.SandboxCwdMode != "readonly" {
+		t.Fatalf("SandboxCwdMode = %q, want readonly", c.SandboxCwdMode)
+	}
+}
+
+func TestValidate_InvalidCwdMode(t *testing.T) {
+	c := &Config{SandboxCwdMode: "bogus"}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid SANDBOX_CWD_MODE")
+	}
+	if !strings.Contains(err.Error(), "SANDBOX_CWD_MODE") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestLoad_MultipleAllowDirs(t *testing.T) {
