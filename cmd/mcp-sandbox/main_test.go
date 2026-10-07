@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/teran/mcp-sandbox/application/config"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
@@ -143,6 +144,7 @@ func TestServe_ServerError(t *testing.T) {
 	t.Setenv("LOG_FORMAT", "json")
 
 	logger := newTestLogger(t)
+	cfg := &config.Config{LogLevel: "error"}
 	// A reader that immediately errors makes server.Run return an error.
 	pr, pw := io.Pipe()
 	pw.CloseWithError(io.ErrClosedPipe)
@@ -151,7 +153,7 @@ func TestServe_ServerError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	if code := serve(ctx, logger, tr); code != 1 {
+	if code := serve(ctx, logger, cfg, tr); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
 }
@@ -160,6 +162,7 @@ func TestServe_CleanExit(t *testing.T) {
 	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "")
 	logger := newTestLogger(t)
+	cfg := &config.Config{}
 	// A reader that returns a clean EOF makes server.Run return nil, so serve
 	// exits 0 through the errCh-nil branch.
 	pr, pw := io.Pipe()
@@ -169,7 +172,7 @@ func TestServe_CleanExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	if code := serve(ctx, logger, tr); code != 0 {
+	if code := serve(ctx, logger, cfg, tr); code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
 }

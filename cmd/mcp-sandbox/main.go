@@ -14,7 +14,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teran/mcp-sandbox/application/config"
+	"github.com/teran/mcp-sandbox/infrastructure/backend"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
+	mcpserver "github.com/teran/mcp-sandbox/infrastructure/mcp"
 )
 
 // Build metadata, embedded via ldflags (B02).
@@ -67,7 +69,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 
 	switch *mode {
 	case "stdio":
-		return serve(ctx, logger, newStdioTransport())
+		return serve(ctx, logger, cfg, newStdioTransport())
 	default:
 		return fail(stderr, "%s: unsupported mode %q (only stdio is supported)\n", appName, *mode)
 	}
@@ -85,14 +87,30 @@ func fail(stderr io.Writer, format string, args ...any) int {
 // so tests can substitute a deterministic transport.
 var newStdioTransport = func() mcp.Transport { return &mcp.StdioTransport{} }
 
-// serve starts the MCP server over the given transport and blocks until the
-// context is cancelled or the transport ends. Tool registration lands in the
-// declarative tool framework (Phase 3).
-func serve(ctx context.Context, logger *logging.Logger, transport mcp.Transport) int {
-	server := mcp.NewServer(
+// buildServer composes the sandbox service (lazy backend selection + session
+// manager), the declarative tool definitions, the handler-wrapper dependencies
+// and the go-sdk MCP server. It performs local wiring only — no outbound calls
+// happen here (A02/N35); the backend is selected lazily on the first tool call.
+func buildServer(cfg *config.Config, logger *logging.Logger) *mcp.Server {
+	svc := mcpserver.NewService(backend.Default, backend.Config{
+		DockerHost:    cfg.DockerHost,
+		AllowDirs:     cfg.AllowDirs,
+		AllowSymlinks: cfg.AllowSymlinks,
+		CwdMode:       cfg.SandboxCwdMode,
+	})
+	deps := mcpserver.HandlerDependencies(logger)
+	return mcpserver.NewServer(
 		&mcp.Implementation{Name: appName, Version: appVersion},
-		&mcp.ServerOptions{Logger: logging.NewSlogLogger(logger.Logger())},
+		logger,
+		mcpserver.BuildTools(svc),
+		deps,
 	)
+}
+
+// serve starts the MCP server over the given transport and blocks until the
+// context is cancelled or the transport ends.
+func serve(ctx context.Context, logger *logging.Logger, cfg *config.Config, transport mcp.Transport) int {
+	server := buildServer(cfg, logger)
 
 	errCh := make(chan error, 1)
 	go func() {
