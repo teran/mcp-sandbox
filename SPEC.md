@@ -374,8 +374,9 @@ create → use (exec/read/write/copy/install) → destroy
   encryption-at-rest, no schema migration (X04 not applicable — declared
   stateful-but-in-memory).
 - **Idempotency (X02):** mutating tools have a data-level idempotency
-  mechanism — `sandbox_create` does **search-before-create** (creating a session
-  whose id exists returns the existing one / an error rather than a duplicate),
+  mechanism — `sandbox_create` does **search-before-create** (a duplicate
+  creation — a session with the same id — is surfaced as an **error** rather
+  than creating a duplicate),
   and `sandbox_destroy`/`destroy_all` are naturally idempotent (destroying a
   non-existent session is a no-op). `sandbox_write_file`/`copy_*` use a natural
   key (dest path) with upsert semantics.
@@ -413,7 +414,7 @@ startup (local wiring only):
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level; stdio logging is on **only when set** (**L02**). |
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600` (**L01/L03**). |
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
-| `SANDBOX_IDLE_TIMEOUT` | e.g. `15m` | Reaper idle window. |
+| `SANDBOX_IDLE_TIMEOUT` | `15m` | Reaper idle window. |
 
 ---
 
@@ -693,8 +694,8 @@ socket**, accessed through the **official `github.com/docker/docker` SDK**.
 
 ## 13. Conformance summary (MUST / MUST-NOT)
 
-**MUST satisfied:** M01–M07, C01, C02, C04, C05, C01GO–C09GO, T01, T02, S01–S13,
-R01 (N/A — no image), R02, R05, R06, R07, B01, B02, B03 (N/A), B05, L01–L09,
+**MUST satisfied:** M01–M07, C01, C02, C04, C05, C01GO–C09GO, T01, T02, S01–S12,
+R02, R05, R06, R07, B01, B02, B05, L01–L09,
 L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 
 **Explicitly not applicable (documented):**
@@ -703,6 +704,9 @@ L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 - **R01/R03/R04/B03/B04/N14/N17/N18** — no container image for a Local server.
 - **M03 OAuth2** — no upstream HTTP API to authorize against (justified).
 - **X04** — stateful-but-in-memory; no persistence/migration.
+- **S06/S07/S10/S13** — not applicable: public GitHub.com repo (S06); every
+  tool is a closed-world `openWorldHint:false` tool (S07/S10); Go is not a
+  high-risk TS/JS ecosystem (S13).
 
 **MUST NOT respected:** N01–N13, N15–N36 as applicable (notably N31 — no
 undeclared optional Makefile targets; N36 — CI read-only; N05GO — official
