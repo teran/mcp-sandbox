@@ -1,0 +1,175 @@
+# AGENTS.md
+
+Guidance for AI agents working in this repository. `AGENTS.md`, like
+`SPEC.md`, is **strictly English** (D02). The README is English by default
+(D01).
+
+## This repository
+
+- An **MCP server** that provides a safe, isolated Docker **sandbox** so a
+  model-host client (opencode) can run arbitrary commands **without using the
+  host shell** — per-session ephemeral containers that are destroyed when the
+  session ends.
+- Implementation language: **Go 1.27.1** (see `go.mod` / `GO_VERSION` in CI)
+  (**C02GO/C01GO**).
+- See **[`SPEC.md`](SPEC.md)** for the application-level architecture and the
+  security / data / logging contracts that **every change must respect**.
+
+## Working agents
+
+| Agent | Role in this repo |
+|-------|-------------------|
+| **@architect** | Architecture, dependency and system-design decisions (DDD/Clean, Backend roles). |
+| **@qa** | Writes tests first (isolated context) — unit, mutation, e2e; owns the coverage gate. |
+| **@developer** | Writes the implementation (isolated context) to make the tests pass. |
+| **@security** | Reviews the security model (Isolation, ALLOW_DIRS, redaction, Docker socket). |
+| **@devops** | CI/CD, goreleaser release, Makefile interface. |
+| **@techwriter** | Keeps `SPEC.md`, `README.md`, `AGENTS.md` current and English. |
+
+**TDD workflow (T01):** tests first (@qa), implementation second (@developer).
+Never weaken tests to make the implementation pass.
+
+## Build system (R07) & quality gates (CI enforces these)
+
+CI binds to the **build-system interface** (R07): it calls `make <target>`, not
+raw language-specific commands. Interface targets:
+
+- `make build` — binaries for all architectures via goreleaser (B01/B02).
+- `make test` — `go test -race` + **coverage ≥ 95%** (C01/C04GO).
+- `make lint` — golangci-lint, gosec, govulncheck, go-arch-lint.
+- `make e2e` — `go test -tags e2e ./...` via **go-docker-testsuite** (C09GO).
+- `container-image` is **NOT declared** — this is a **Local stdio-only**
+  server; no image (B03/R01). A CI job must never invoke an undeclared optional
+  target (N31).
+
+Additional hard-gate jobs (not part of the make interface): **gremlins**
+mutation testing at **80/80** (C08GO) and **gitleaks** secret scan over git
+history (C03/N28).
+
+- **Coverage ≥ 95%** — `make test` **fails** below the threshold. Never ship a
+  change that lowers coverage; add tests with the code.
+- **Mutation testing (gremlins)** — hard gate at an 80% floor. Surviving
+  mutants are a defect; improve the tests, do not lower the threshold or
+  exclude packages to dodge it (N03GO).
+- **e2e tests** — exercise the path between the MCP tool handler and the real
+  Docker backend via **go-docker-testsuite**; they are **build-tagged**
+  (`//go:build e2e`), run through `make e2e`, and are gated by the **`e2e` CI
+  job** (T02/C04/C09GO/N07GO).
+- **gosec / govulncheck / go-arch-lint** — findings are **fixed, not
+  suppressed** (S05/N02GO). No blanket `#nosec` / default excludes.
+- **CI never mutates repository state (N36)** — read-only over the working
+  tree; no auto-commits, no pushing tags/commits back. Release binaries are
+  external publications only.
+
+## Working in this repo
+
+### Security-first (non-negotiable)
+
+The sandbox **replaces the host shell** — security is the primary contract.
+See `SPEC.md` §7.
+
+- **Immutable `Isolation` block:** `ReadOnlyRootfs=true`, `CapDrop:ALL` (minimal
+  re-add), `no-new-privileges`, seccomp (default MVP; custom is mandatory
+  roadmap), **non-root** user, bounded `PidsLimit`/`Memory`/`NanoCPUs`/
+  `Ulimits`, **Network `none`** (host forbidden), tmpfs workdir
+  (`rw,noexec,nosuid,nodev`), `AutoRemove=true`. A caller must **never** be able
+  to weaken these.
+- **TLS is never implemented in-server (S01).** This is a Local/stdio server —
+  no HTTP listener at all.
+- **No secret leakage (S02/N02).** All API requests/responses/config are
+  structs; sensitive fields annotated `secret:true`. The single redaction
+  helper hides them from **all output and logs**. Secrets go into tmpfs `0600`
+  files, **never** argv/image. Do **not** log the full `argv` of `sandbox_exec`.
+- **Filesystem scope (S04/N03):** host access only via `ALLOW_DIRS`, empty by
+  default. `ALLOW_SYMLINKS=false` by default — canonicalize with
+  `EvalSymlinks`, open-then-verify, `O_NOFOLLOW`; reject anything escaping the
+  allowed roots. Hardlinks are an OS-level concern, not the path check's.
+  Prefer `copy_in`/`copy_out`; write only into tmpfs.
+- **No shell/SQL/URL concatenation (S11/N21):** `sandbox_exec` uses **argument
+  arrays**, never a shell string. `sandbox_install_package` uses a **fixed**
+  apt/dnf invocation — never interpolate into a shell string.
+- **HITL (S12):** destructive tools (`sandbox_destroy`, `sandbox_destroy_all`)
+  require **human confirmation**, realized **client-side** by the model-host
+  (stdio server has no HTTP UI).
+- **Docker socket (documented limitation):** the socket is effectively root on
+  the host. Prefer **rootless Docker** or confine socket access to the server
+  process. Never expose the socket to output/tools.
+- **Supply chain (T7/C05):** sandbox images **pinned by digest**, trusted
+  registries, signed packages; dependencies pinned to latest stable.
+
+### Outbound HTTP / Docker client
+
+- **No general outbound HTTP** service calls exist. The only backend is the
+  local Docker daemon via the **official `github.com/docker/docker` SDK**
+  (unix socket). Do **not** hand-roll a low-level `http.Client` for Docker
+  (N05GO) — resty is not suited to the unix-socket transport. If a future
+  backend requires genuine remote HTTP, use `resty.dev/v3` (L02GO).
+- **No retry/backoff** — set an explicit timeout/context and **return the error
+  to the model** (X03/L02GO).
+
+### No implicit startup actions (A02/N35)
+
+Startup performs **local wiring only**: load config, build logger, emit the
+startup banner (B05/L06, when logging enabled), compose layers, start the
+transport. **Never** make an outbound/upstream request at startup — no Docker
+connectivity pings, no eager data fetches. Backend `Available()` is evaluated
+**lazily inside `sandbox_create`**, on the first tool call (A02/N35).
+
+### Data & state
+
+- **State model (X01):** **stateful, per-session, in-memory** — sessions live in
+  the session manager's process map, tied to the model-host process lifetime.
+  No persistence, no DB, no encryption-at-rest, no migration (X04 N/A).
+- **Idempotency (X02):** `sandbox_create` = search-before-create;
+  `sandbox_destroy`/`destroy_all` = naturally idempotent; `write_file`/
+  `copy_*` = natural-key upsert. Declare `idempotentHint:true` only where a real
+  mechanism exists (N25).
+- **Concurrency (X05):** per-session mutex; no partial/corrupt state; verified
+  with `go test -race`.
+
+### Logging
+
+- **Enablement (L02):** `-mode stdio` (default) ⇒ logging **only when
+  `LOG_LEVEL` is set**; unset ⇒ disabled. (HTTP mode would always be on — not
+  applicable here.)
+- **Channel (L01):** stdio → **file** (`LOG_FILENAME`, `chmod 600`), **never
+  stdout** (N04GO).
+- **Banner (B05/L06):** when enabled, the **first log line** is the startup
+  banner.
+- **SDK logger (L07/L03GO):** the go-sdk `slog` logger is wired into logrus.
+- **Access log (L08/L03GO):** every `tools/call` emits a line **at `info`**
+  (visible whenever logging is on — no `debug` gate) with `tool`, redacted
+  `args`, `source` (`STDIO`), `duration`, `outcome`.
+- **`request_id` (L09/L04GO):** per request, via context.
+- **Logger:** `logrus` (N04GO). **No secrets in logs (L05).**
+
+### Architecture (A01)
+
+Layered DDD/Clean with **top-level named packages** — **no `internal/`**
+(recorded decision in `SPEC.md` §6.1). Respect the layer edges enforced by
+**go-arch-lint**: `cmd/` → `application/` + `infrastructure/`; `application/` →
+`domain/`; `infrastructure/` → `domain/`. `domain/` must **not** import
+infrastructure.
+
+- Backend roles (`Backend`, `Lifecycle`, `Executable`, `Filesystem`,
+  `Introspectable`) are dispatched by **type-assertion**; unsupported
+  capabilities return **`ErrCapabilityNotSupported`** — **no stubs**.
+- Tools are declared as **`ToolDef`s** and must go through the shared
+  handler-wrapper (validate → access-log → dispatch → redact → structured
+  output). **Do not bypass the wrapper.**
+
+## Definition of done
+
+A change is done **only when CI is green**:
+
+- `make lint` — golangci-lint, gofmt/gofumpt, gosec, govulncheck, go-arch-lint;
+  findings fixed, not suppressed.
+- `make test` — `go test -race` with **coverage ≥ 95%**.
+- **gremlins** mutation gate (80/80) — no survivors.
+- **gitleaks** secret scan over git history — clean.
+- `make e2e` — the **`e2e` CI job** passes (go-docker-testsuite, requires
+  Docker).
+- `make build` — goreleaser produces the release binaries (when a build is
+  part of the change).
+- Docs (`SPEC.md`, `README.md`, `AGENTS.md`) remain **English** and in sync
+  with any changed behavior.
