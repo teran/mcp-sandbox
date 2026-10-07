@@ -150,11 +150,11 @@ text without an `outputSchema`.
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
 | `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
-| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem is modified by the command). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
+| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem is modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
 | `sandbox_write_file` | `false` | `false` | `true` | Write a file into the sandbox (tmpfs / allowed mount). Idempotent — repeated writes with identical content are a no-op (data-level upsert, X02). |
 | `sandbox_copy_in` | `false` | `false` | `true` | Copy a file/dir **from the host (ALLOW_DIRS)** **into** the sandbox. Idempotent by natural key (dest path). |
 | `sandbox_copy_out` | `false` | `false` | `true` | Copy a file/dir **from the sandbox** **to the host (ALLOW_DIRS)**. Idempotent by natural key (dest path). |
-| `sandbox_install_package` | `false` | `false` | `false` | Install a package inside the sandbox **via the targeted package manager** (apt/dnf) **under a `SudoPolicy`**. This is **not** a generic shell — only the package manager entry point is exposed; arbitrary shell is *not* reachable through this tool. |
+| `sandbox_install_package` | `false` | `false` | `false` | Install a package inside the sandbox **via the targeted package manager** (apt/dnf) **under a `SudoPolicy`**, running as scoped uid 0 (`exec -u 0`). Targets **pre-provisioned images** (read-only rootfs — see §7.10). This is **not** a generic shell — only the package manager entry point is exposed; arbitrary shell is *not* reachable through this tool. |
 
 **Instructions — `sandbox_exec`:** pass command and args as an **array**, never
 a shell string; do **not** log the argv in full (redact paths/values); output
@@ -346,7 +346,7 @@ type SandboxSpec struct {
     Resources      Resources        // NanoCPUs, Memory, MemorySwap, PidsLimit, Ulimits
     Network        Network          // default: none
     UIDGID         UIDGID           // non-root user inside
-    Sudo           SudoPolicy       // for sandbox_install_package
+    Sudo           SudoPolicy       // scoped root ("sudo", exec -u 0) for install_package & sudo-classed ops (§7.10)
     Secrets        []SecretRef      // mounted into tmpfs as 0600 files
     ReadOnlyRoot   bool             // true
     Isolation      Isolation        // IMMUTABLE — server-enforced, caller cannot weaken (§7.1)
@@ -544,6 +544,34 @@ a spec that disables these protections.
   **verified**; installed packages at build/install time are **signed** where
   available.
 - Security-scanner findings are **fixed, not suppressed** (S05/N02GO).
+
+### 7.10 Privilege model: default non-root + scoped root (`exec -u`)
+
+Commands inside the sandbox run **unprivileged by default**; a scoped set of
+"sudo" operations may run as **uid 0 inside the container** — achieved with
+`docker exec -u`, **never** with `--privileged`.
+
+- **Default user:** `sandbox_exec` runs with the sandbox's **unprivileged
+  user** (`SandboxSpec.UIDGID`, or the image's `USER`). For our own base images
+  that user is a known fixed non-root uid (e.g. `1000`) which owns the writable
+  tmpfs `/workspace`, so exec and file operations work without guessing.
+- **External images:** fall back to a well-known unprivileged uid (`nobody`,
+  `65534:65534`); such images may not permit workspace writes, so **our own
+  images are the supported path**.
+- **Sudo (scoped root):** an operation classified as "sudo" (`user: root`, or
+  `sandbox_install_package`) runs with `docker exec -u 0`. Inside the container
+  uid 0 is **still constrained** by the immutable `Isolation` block —
+  `cap-drop ALL` + `no-new-privileges` + read-only rootfs — so it is
+  container-internal uid 0, **not** host privilege. `--privileged` is **never**
+  used (N21).
+- **Sudo policy gate:** `SudoPolicy` controls which sudo-classed operations are
+  permitted (`AllowedCommands`, `PackageInstallAllowed`).
+- **Read-only rootfs vs package install:** because the rootfs is read-only,
+  runtime `apt-get`/`dnf install` **cannot** write to the image layer. The
+  supported model is **pre-provisioned images** (packages baked at build time);
+  runtime package-manager writes into a bounded writable area are **deferred**
+  (roadmap). `SudoPolicy.PackageInstallAllowed` therefore refers to
+  *provisioned* images for the MVP.
 
 ---
 

@@ -29,6 +29,7 @@
 - [ ] 2.5 Secrets → tmpfs `0600`, redactor at output boundary (incl. Docker errors) — `S02 N02 L05`
 - [ ] 2.6 Session: reaper (idle), `DestroyAll`, label ownership, idempotent destroy — `X01 X02 X05`
 - [ ] 2.7 Docker unit tests (fake client) — `C01 C04GO`
+- [ ] 2.8 Privilege model: default non-root + scoped root (`exec -u 0`); base image with known non-root user + writable `/workspace`; `SudoPolicy` gating — `§7.10 S11`
 
 ## Phase 3 — Declarative tool framework + MCP surface
 
