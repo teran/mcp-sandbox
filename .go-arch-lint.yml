@@ -1,0 +1,36 @@
+# go-arch-lint v3 (C07GO). Layers follow the DDD/Clean top-level package layout
+# (A01): cmd → application + infrastructure; application → domain;
+# infrastructure → domain. domain is a leaf and depends on nothing.
+version: 3
+
+workdir: .
+
+allow:
+  depOnAnyVendor: true
+
+components:
+  cmd:
+    in: cmd/**
+  application:
+    in: application/**
+  infrastructure:
+    in: infrastructure/**
+  domain:
+    in: domain/**
+
+deps:
+  cmd:
+    mayDependOn:
+      - application
+      - infrastructure
+  application:
+    mayDependOn:
+      - domain
+  infrastructure:
+    mayDependOn:
+      - domain
+  # domain is a leaf: it may only depend on other domain packages (self),
+  # never on application/infrastructure/cmd.
+  domain:
+    mayDependOn:
+      - domain

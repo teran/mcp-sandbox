@@ -1,0 +1,43 @@
+# goreleaser v2 (B01/B02). Produces a single binary per platform for a Local
+# stdio-only server — no container image (B03/R01). Build metadata is embedded
+# via ldflags.
+version: 2
+
+project_name: mcp-sandbox
+
+builds:
+  - id: mcp-sandbox
+    main: ./cmd/mcp-sandbox
+    binary: mcp-sandbox
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.appName={{.ProjectName}}
+      - -X main.appVersion={{.Version}}
+      - -X main.appCommitHash={{.Commit}}
+      - -X main.appTimestamp={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: teran
+    name: mcp-sandbox

@@ -1,0 +1,7 @@
+# Build artifacts
+/dist/
+/coverage.out
+
+# Editor/OS
+.DS_Store
+*.swp

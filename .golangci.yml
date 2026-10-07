@@ -1,0 +1,27 @@
+# golangci-lint v2 configuration (C03GO).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - revive
+    - unconvert
+    - whitespace
+  exclusions:
+    rules:
+      # Test code may ignore errors in setup/cleanup helpers without noise.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - govet
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+  settings:
+    gofmt:
+      simplify: true
