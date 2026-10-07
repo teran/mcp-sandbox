@@ -26,15 +26,26 @@ deps:
   application:
     mayDependOn:
       - domain
+      # application subpackages import each other within the layer (e.g.
+      # application/tools/{def,registry,handler,sandbox}), so application may
+      # depend on itself. Layer edges to infrastructure/cmd remain forbidden.
+      - application
   # infrastructure may also depend on other infrastructure packages: the
   # backend factory registry (infrastructure/backend) is imported by the
   # concrete backends (e.g. infrastructure/backend/docker) to register
   # themselves via init() (SPEC §6.3). Cross-infrastructure edges are limited
   # to this adapter wiring.
+  #
+  # infrastructure/mcp is additionally allowed to depend on application: it is
+  # the protocol adapter that registers the application-layer ToolDefs into the
+  # go-sdk server and implements the application sandbox.Service port (SPEC
+  # §3/§5/§6.4). This is the standard adapter→use-case edge; no other
+  # infrastructure package imports application.
   infrastructure:
     mayDependOn:
       - domain
       - infrastructure
+      - application
   # domain is a leaf: it may only depend on other domain packages (self),
   # never on application/infrastructure/cmd.
   domain:
