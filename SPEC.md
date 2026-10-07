@@ -149,7 +149,7 @@ text without an `outputSchema`.
 
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
-| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
+| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. The model-host passes its **session `cwd`**, which is mounted **1:1 at the same absolute path** (read-only by default). **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
 | `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem is modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
 | `sandbox_write_file` | `false` | `false` | `true` | Write a file into the sandbox (tmpfs / allowed mount). Idempotent — repeated writes with identical content are a no-op (data-level upsert, X02). |
 | `sandbox_copy_in` | `false` | `false` | `true` | Copy a file/dir **from the host (ALLOW_DIRS)** **into** the sandbox. Idempotent by natural key (dest path). |
@@ -471,6 +471,16 @@ a spec that disables these protections.
 - **Minimize bind-mounts:** prefer **`copy_in` / `copy_out`** to transfer files;
   write operations happen **only into tmpfs** (not into bind-mounted host
   paths). This reduces the host surface a compromised sandbox could reach.
+- **Session working-directory mount (1:1):** `sandbox_create` accepts the
+  model-host's **current working directory** and mounts it at the **same
+  absolute path** inside the container — host `/Users/myuser/Downloads/blah` →
+  container `/Users/myuser/Downloads/blah` — with **no path rewriting**. The
+  mounted cwd must be **within `ALLOW_DIRS`** (or explicitly authorized) and is
+  **read-only by default** (opt-in `rw` only with an explicit flag). This is the
+  one sanctioned bind-mount for the model-host use case so the model operates on
+  the session's files with **identical paths**; cross-referenced with the
+  `UIDGID` mapping (§7.10) so the container's unprivileged user can access host
+  files owned by the operator.
 
 ### 7.3 Secrets & redaction (S02 / N02)
 
