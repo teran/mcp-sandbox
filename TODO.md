@@ -42,8 +42,8 @@
 
 ## Phase 4 — e2e contract suite
 
-- [ ] 4.1 `e2e/contract` independent suite (lifecycle/exec/fs/copy/read-only-root/mount-immutability/uid-gid/concurrency/introspect/cleanup) — `T02 C09GO`
-- [ ] 4.2 `e2e/docker` + `make e2e` + e2e CI job — `C04 C09GO N07GO`
+- [x] 4.1 `e2e/contract` independent suite (lifecycle/exec/fs/copy/read-only-root/mount-immutability/uid-gid/concurrency/introspect/cleanup) — `T02 C09GO`
+- [x] 4.2 `e2e/docker` + `make e2e` + e2e CI job — `C04 C09GO N07GO`
 
 ## Phase 5 — Security verification
 
