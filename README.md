@@ -46,6 +46,26 @@ restrictive than the host, never less.
   all output and logs.
 - Human-in-the-loop confirmation for destructive tools (client-side, see below).
 
+## Security model
+
+mcp-sandbox is built around a **deny-by-default** security model with **full
+shell capability inside the sandbox**:
+
+- The model-host gets **full permission to run shell commands** — but **inside
+  an isolated, ephemeral Docker container**, never on the host.
+- **What is not explicitly allowed is, by default, not available.** Access is
+  granted explicitly: host directories only via `ALLOW_DIRS`, network is `none`
+  by default, root inside is a scoped opt-in per `SudoPolicy`, package install
+  is opt-in via provisioned images.
+- The container is hardened (read-only rootfs, drop-all capabilities,
+  no-new-privileges, seccomp, non-root user, resource limits) and **cannot be
+  weakened by a caller** (immutable `Isolation`).
+- Everything is **ephemeral**: the sandbox is **destroyed when the session
+  ends**.
+
+The practical effect: the model can run **any** command it needs, safely
+confined — so the model-host no longer needs a host shell at all.
+
 ## Architecture & design
 
 Full architecture, security model, tool surface and conformance are documented
@@ -119,6 +139,62 @@ export LOG_FILENAME=/tmp/mcp-sandbox.log
 - **TLS:** **never implemented in-server** (S01). The server has no HTTP
   listener, so there is no in-server TLS surface. If the server is ever placed
   behind a network-facing gateway, TLS termination is the reverse proxy's job.
+
+## OpenCode setup
+
+Use mcp-sandbox as the execution environment for **opencode** instead of the
+host shell.
+
+### 1. Disable the host shell
+
+In your opencode config (`opencode.jsonc`), deny the built-in `shell` tool:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "shell", "resource": "*", "effect": "deny" }
+  ]
+}
+```
+
+This removes the host `bash`/shell tool; the model then uses the sandbox MCP
+for command execution.
+
+### 2. Register the mcp-sandbox MCP server
+
+`mcp-sandbox` is a **Local / stdio** server, so register it as a **local** MCP
+server:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "mcp-sandbox": {
+        "type": "local",
+        "command": ["mcp-sandbox", "-mode", "stdio"],
+        "environment": {
+          "ALLOW_DIRS": "{env:PWD}",
+          "LOG_LEVEL": "info"
+        }
+      }
+    }
+  }
+}
+```
+
+- `command` launches the `mcp-sandbox` binary (put it on `PATH` or use an
+  absolute path).
+- `ALLOW_DIRS` scopes which host directories the sandbox may reach; the session
+  working directory is mounted **1:1** at the same absolute path (see
+  `SPEC.md` §7.2).
+- opencode passes its session id to the server (`_meta.ai.opencode/sessionID`),
+  which the server uses to correlate and label sandboxes.
+- Use `opencode mcp list` / `/mcps` to check the server is connected.
+
+> **HITL note:** because mcp-sandbox is Local/stdio (no HTTP UI), destructive
+> tools (`sandbox_destroy`, `sandbox_destroy_all`) require confirmation
+> **client-side** by the operator — see `SPEC.md` §4.4.
 
 ## Tool surface
 
