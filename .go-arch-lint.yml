@@ -17,6 +17,8 @@ components:
     in: infrastructure/**
   domain:
     in: domain/**
+  e2e:
+    in: e2e/**
 
 deps:
   cmd:
@@ -51,3 +53,12 @@ deps:
   domain:
     mayDependOn:
       - domain
+  # e2e is the cross-backend contract suite + per-backend harness. It drives
+  # the role interfaces (domain) and constructs concrete backends
+  # (infrastructure/backend/docker); e2e/contract is imported by e2e/docker so
+  # e2e may depend on itself.
+  e2e:
+    mayDependOn:
+      - domain
+      - infrastructure
+      - e2e
