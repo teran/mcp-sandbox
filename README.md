@@ -99,6 +99,7 @@ auth via environment, no HTTP headers).
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
 | `LOG_FORMAT` | `text` | `text` or `json`. |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
+| `SANDBOX_CWD_MODE` | `rw` | Session `cwd` mount mode: `rw` (default) or `readonly` (global feature flag). |
 
 Example:
 
