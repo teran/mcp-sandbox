@@ -49,11 +49,11 @@
 
 ## Phase 5 — Security verification
 
-- [ ] 5.1 Security review of implementation (Isolation, mounts, redaction, socket) — `S01–S13`
-- [ ] 5.2 Redaction-completeness + focused tests; mutations catch gaps — `S02 C02`
-- [ ] 5.3 Pin images by digest + trusted registries — `C05 T7`
-- [ ] 5.4 Server privileges / rootless docker decision — `§7.6`
-- [ ] 5.5 Final conformance check (@qa per checklist) — all
+- [x] 5.1 Security review of implementation (Isolation, mounts, redaction, socket) — `S01–S13`
+- [x] 5.2 Redaction-completeness + focused tests; mutations catch gaps — `S02 C02`
+- [x] 5.3 Pin images by digest + trusted registries — `C05 T7`
+- [x] 5.4 Server privileges / rootless docker decision — `§7.6`
+- [x] 5.5 Final conformance check (@qa per checklist) — all
 
 ## Deferred / open questions (discuss later, non-blocking)
 

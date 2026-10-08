@@ -550,9 +550,16 @@ a spec that disables these protections.
 
 ### 7.9 Supply-chain (T7 / C05 / S05)
 
-- **Container images are pinned by digest** (not floating tags) in the sandbox
-  image reference policy.
-- Only **trusted registries** are permitted for sandbox images.
+- **Trusted-registry allowlist is enforced in code** (`validateImageRef` in the
+  docker backend, applied on every `sandbox_create` before any Docker
+  side-effect): an image reference is accepted only if it parses as a valid
+  reference and its registry is in the allowlist (`docker.io`,
+  `index.docker.io`, `registry-1.docker.io`, `ghcr.io`). Images from
+  arbitrary/untrusted registries are **rejected**.
+- **Digest-pinning is the recommended deployment posture**: images **should**
+  be referenced by digest (`image@sha256:…`) rather than a floating tag, and
+  this is the documented production guideline (C05/T7); the hard enforcement
+  boundary is the trusted-registry allowlist.
 - Dependencies are pinned to the **latest stable** versions (C05) and
   **verified**; installed packages at build/install time are **signed** where
   available.
@@ -709,8 +716,10 @@ binaries on GitHub Release). For this Local server there are no registry image
 publications.
 
 **Go / dependency currency (C05/N33):** pinned to latest stable — **Go 1.27.1**,
-**go-sdk v1.8.0**, **logrus v1.10.2**, **resty.dev/v3 v3.0.0-rc.4**,
-**go-docker-testsuite latest** (see `reference/versions.md`).
+**go-sdk v1.8.0**, **logrus v1.10.2**, **go-docker-testsuite latest** (see
+`reference/versions.md`). **resty.dev/v3** is **not** a current dependency: the
+server performs no outbound HTTP (L02GO applies only when genuine remote HTTP is
+introduced), and resty would be added only for a future backend that requires it.
 
 **TDD workflow (T01):** all fixes/features are done TDD-style — **@qa** writes
 tests first (isolated context), **@developer** writes the implementation
