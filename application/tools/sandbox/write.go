@@ -43,6 +43,7 @@ type secretInput struct {
 type createInput struct {
 	Image     string            `json:"image"`
 	Cwd       string            `json:"cwd"`
+	SessionID string            `json:"session_id"`
 	Env       map[string]string `json:"env"`
 	Mounts    []mountInput      `json:"mounts"`
 	NanoCPUs  int64             `json:"nano_cpus"`
@@ -62,6 +63,7 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 		obj(map[string]*jsonschema.Schema{
 			"image":      strP("Container image (defaults to the server policy image)"),
 			"cwd":        strP("Session working directory, mounted 1:1 at the same absolute path"),
+			"session_id": strP("OpenCode client session id that created this sandbox; recorded as a container label for traceability. Distinct from the sandbox session id returned as `id`."),
 			"env":        objP("Environment variables"),
 			"mounts":     arrP("Additional immutable mounts", obj(map[string]*jsonschema.Schema{"source": strP("Host source within ALLOW_DIRS"), "target": strP("Container target"), "read_only": boolP("Mount read-only")})),
 			"nano_cpus":  intP("CPU limit in nano-CPUs"),
@@ -71,13 +73,16 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 			"gid":        intP("Container gid"),
 			"sudo":       strEnumP("Sudo policy", "never", "require"),
 			"secrets":    arrP("Secrets delivered as tmpfs 0600 files", obj(map[string]*jsonschema.Schema{"name": strP("Secret name"), "value": strP("Secret value")})),
-		}),
+		}, "session_id"),
 		objectOutput(),
 		[]def.RedactionField{{Name: "secrets", Secret: true}},
 		func(ctx context.Context, args json.RawMessage) (any, error) {
 			var in createInput
 			if err := json.Unmarshal(args, &in); err != nil {
 				return nil, fmt.Errorf("sandbox_create: %w", err)
+			}
+			if strings.TrimSpace(in.SessionID) == "" {
+				return nil, errors.New("sandbox_create: session_id is required")
 			}
 			s, err := b.svc.Create(ctx, buildSpec(b, in))
 			if err != nil {
@@ -133,17 +138,18 @@ func buildSpec(b builder, in createInput) spec.SandboxSpec {
 	}
 
 	return spec.SandboxSpec{
-		Image:        image,
-		WorkingDir:   in.Cwd,
-		Env:          in.Env,
-		Mounts:       mounts,
-		Resources:    spec.Resources{NanoCPUs: iso.NanoCPUs, Memory: iso.Memory, MemorySwap: iso.MemorySwap, PidsLimit: iso.PidsLimit, Ulimits: iso.Ulimits},
-		Network:      spec.Network{Mode: iso.NetworkMode},
-		UIDGID:       spec.UIDGID{UID: uid, GID: gid},
-		Sudo:         sudo,
-		Secrets:      secrets,
-		ReadOnlyRoot: true,
-		Isolation:    iso,
+		Image:           image,
+		WorkingDir:      in.Cwd,
+		Env:             in.Env,
+		Mounts:          mounts,
+		Resources:       spec.Resources{NanoCPUs: iso.NanoCPUs, Memory: iso.Memory, MemorySwap: iso.MemorySwap, PidsLimit: iso.PidsLimit, Ulimits: iso.Ulimits},
+		Network:         spec.Network{Mode: iso.NetworkMode},
+		UIDGID:          spec.UIDGID{UID: uid, GID: gid},
+		Sudo:            sudo,
+		Secrets:         secrets,
+		ReadOnlyRoot:    true,
+		Isolation:       iso,
+		ClientSessionID: in.SessionID,
 	}
 }
 
@@ -170,7 +176,7 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			"user":        strEnumP("Run as user", "default", "root"),
 		}, "id", "argv"),
 		objectOutput(),
-		[]def.RedactionField{{Name: "argv", Secret: true}},
+		nil, // no secret fields: argv is not sensitive and is kept visible in access logs
 		func(ctx context.Context, args json.RawMessage) (any, error) {
 			var in execInput
 			if err := json.Unmarshal(args, &in); err != nil {

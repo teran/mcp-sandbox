@@ -150,6 +150,14 @@ type SandboxSpec struct {
 	Secrets      []SecretRef
 	ReadOnlyRoot bool
 	Isolation    Isolation
+
+	// ClientSessionID is the OpenCode client session id that created the
+	// sandbox (§4/§7.8). It is passed as a required sandbox_create parameter and
+	// recorded as a container label for traceability. It is OPTIONAL at the
+	// domain layer — the required-ness is enforced at the tool input boundary —
+	// so internal callers and e2e specs that build a SandboxSpec directly can
+	// omit it.
+	ClientSessionID string
 }
 
 // Validate checks that the sandbox spec is well-formed and that the immutable

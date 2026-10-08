@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -65,11 +66,33 @@ func (c *Config) Validate() error {
 		c.AllowNetworkModes[i] = m
 	}
 	for i, d := range c.AllowDirs {
-		resolved, err := filepath.EvalSymlinks(d)
+		expanded, err := expandHome(d)
+		if err != nil {
+			return fmt.Errorf("config: ALLOW_DIRS[%d] %q: %w", i, d, err)
+		}
+		resolved, err := filepath.EvalSymlinks(expanded)
 		if err != nil {
 			return fmt.Errorf("config: ALLOW_DIRS[%d] %q: %w", i, d, err)
 		}
 		c.AllowDirs[i] = resolved
 	}
 	return nil
+}
+
+// expandHome expands a leading "~" or "~/" in p to the current user's home
+// directory. It uses os.UserHomeDir (respecting $HOME). A bare "~" resolves to
+// the home directory itself. Paths not starting with "~" are returned
+// unchanged. This runs before EvalSymlinks, which does not expand tilde.
+func expandHome(p string) (string, error) {
+	if p == "~" {
+		return os.UserHomeDir()
+	}
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, p[2:]), nil
+	}
+	return p, nil
 }

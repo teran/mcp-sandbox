@@ -146,6 +146,40 @@ func TestValidate_RejectsMissingDir(t *testing.T) {
 	}
 }
 
+// TestValidate_ExpandsTildeInAllowDirs verifies that a leading ~ in an
+// ALLOW_DIRS entry is expanded to the user's home directory before
+// canonicalization. Regression: the server previously failed to start with
+// `config: ALLOW_DIRS[0] "~/...": lstat ~: no such file or directory` because
+// the tilde was treated literally by EvalSymlinks.
+//
+// The test overrides $HOME with a writable temp dir so it is independent of the
+// real home (which may be read-only inside a sandbox with a read-only rootfs).
+func TestValidate_ExpandsTildeInAllowDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Create a real subdir under the (overridden) home so EvalSymlinks succeeds.
+	dir := filepath.Join(home, ".mcp-sandbox-test-expand-"+t.Name())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	c := &Config{AllowDirs: []string{"~/" + filepath.Base(dir)}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	// Validate() canonicalizes via EvalSymlinks, which on macOS resolves the
+	// /var -> /private/var symlink. Compare against the canonical form.
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if c.AllowDirs[0] != want {
+		t.Fatalf("AllowDirs[0] = %q, want expanded %q", c.AllowDirs[0], want)
+	}
+}
+
 func TestValidate_InvalidLogFormat(t *testing.T) {
 	c := &Config{LogFormat: "yaml"}
 	err := c.Validate()

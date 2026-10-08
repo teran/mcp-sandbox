@@ -122,7 +122,6 @@ func TestRedactionContracts(t *testing.T) {
 		tool   string
 		secret string
 	}{
-		{"sandbox_exec", "argv"},
 		{"sandbox_create", "secrets"},
 	}
 	for _, c := range cases {
@@ -135,6 +134,18 @@ func TestRedactionContracts(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("%s: redaction contract must include %q", c.tool, c.secret)
+		}
+	}
+}
+
+// TestSandboxExec_NoArgvRedaction verifies that sandbox_exec no longer marks
+// argv as secret, so the executed command is visible in access logs (debugging).
+func TestSandboxExec_NoArgvRedaction(t *testing.T) {
+	svc := newFake()
+	d := toolByName(t, svc, "sandbox_exec")
+	for _, f := range d.RedactionContract {
+		if f.Name == "argv" {
+			t.Fatal("sandbox_exec must not redact argv (it is not secret)")
 		}
 	}
 }
@@ -207,11 +218,12 @@ func TestSandboxCreate_Handler(t *testing.T) {
 	svc := newFake()
 	d := toolByName(t, svc, "sandbox_create")
 	out, err := callHandler(t, d, svc, map[string]any{
-		"image":     "img",
-		"cwd":       "/home/user/proj",
-		"secrets":   []map[string]any{{"name": "k", "value": "v"}},
-		"sudo":      "require",
-		"nano_cpus": int64(2000000000),
+		"image":      "img",
+		"cwd":        "/home/user/proj",
+		"session_id": "opencode-sess-1",
+		"secrets":    []map[string]any{{"name": "k", "value": "v"}},
+		"sudo":       "require",
+		"nano_cpus":  int64(2000000000),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -223,6 +235,9 @@ func TestSandboxCreate_Handler(t *testing.T) {
 	sp := svc.createdSpec
 	if sp.Image != "img" || sp.WorkingDir != "/home/user/proj" {
 		t.Fatalf("spec = %+v", sp)
+	}
+	if sp.ClientSessionID != "opencode-sess-1" {
+		t.Fatalf("client session id = %q, want opencode-sess-1", sp.ClientSessionID)
 	}
 	if sp.Sudo != spec.SudoRequire {
 		t.Fatalf("sudo = %q", sp.Sudo)
@@ -244,7 +259,7 @@ func TestSandboxCreate_Handler(t *testing.T) {
 func TestSandboxCreate_DefaultImageAndIsolation(t *testing.T) {
 	svc := newFake()
 	d := toolByName(t, svc, "sandbox_create")
-	if _, err := callHandler(t, d, svc, map[string]any{}); err != nil {
+	if _, err := callHandler(t, d, svc, map[string]any{"session_id": "s1"}); err != nil {
 		t.Fatal(err)
 	}
 	sp := svc.createdSpec
@@ -272,8 +287,48 @@ func TestSandboxCreate_Error(t *testing.T) {
 	svc := newFake()
 	svc.createErr = errFake
 	d := toolByName(t, svc, "sandbox_create")
-	if _, err := callHandler(t, d, svc, map[string]any{}); !errors.Is(err, errFake) {
+	if _, err := callHandler(t, d, svc, map[string]any{"session_id": "s1"}); !errors.Is(err, errFake) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestSandboxCreate_RequiresSessionID verifies that sandbox_create rejects a
+// missing/empty OpenCode client session id before any creation happens: it is a
+// REQUIRED parameter used to label the container for traceability.
+func TestSandboxCreate_RequiresSessionID(t *testing.T) {
+	svc := newFake()
+	d := toolByName(t, svc, "sandbox_create")
+	for _, args := range []map[string]any{
+		{},
+		{"session_id": ""},
+		{"session_id": "   "},
+	} {
+		if _, err := callHandler(t, d, svc, args); err == nil {
+			t.Fatalf("args %v: expected missing/empty session_id rejection", args)
+		}
+	}
+	if svc.createdSpec.Image != "" || len(svc.createdSpec.Secrets) != 0 {
+		t.Fatal("no spec should be created when session_id is missing")
+	}
+}
+
+// TestSandboxCreate_SchemaRequiresSessionID pins the schema contract: session_id
+// must be declared as a property AND be in the required list of sandbox_create.
+func TestSandboxCreate_SchemaRequiresSessionID(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_create")
+	props := d.InputSchema.Properties
+	if props == nil || props["session_id"] == nil {
+		t.Fatal("sandbox_create schema must declare session_id property")
+	}
+	required := d.InputSchema.Required
+	found := false
+	for _, r := range required {
+		if r == "session_id" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("sandbox_create schema required list %v must include session_id", required)
 	}
 }
 
@@ -489,6 +544,15 @@ func TestBuildSpec_UserOverride(t *testing.T) {
 	sp := buildSpec(b, createInput{UID: 2000, GID: 2000})
 	if sp.UIDGID.UID != 2000 || sp.UIDGID.GID != 2000 {
 		t.Fatalf("uidgid = %+v", sp.UIDGID)
+	}
+}
+
+func TestBuildSpec_ClientSessionID(t *testing.T) {
+	svc := newFake()
+	b := builder{svc: svc}
+	sp := buildSpec(b, createInput{SessionID: "opencode-sess-9"})
+	if sp.ClientSessionID != "opencode-sess-9" {
+		t.Fatalf("client session id = %q, want opencode-sess-9", sp.ClientSessionID)
 	}
 }
 

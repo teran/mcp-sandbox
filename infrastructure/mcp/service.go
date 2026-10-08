@@ -197,12 +197,14 @@ func defaultIsolation() spec.Isolation {
 		Seccomp:         spec.SeccompDefault,
 		User:            spec.UIDGID{UID: 1000, GID: 1000},
 		PidsLimit:       512,
-		Memory:          512 * 1024 * 1024,
-		MemorySwap:      1024 * 1024 * 1024,
-		NanoCPUs:        1_000_000_000,
-		Ulimits:         []spec.Ulimit{{Name: "nofile", Soft: 1024, Hard: 2048}},
-		NetworkMode:     spec.NetworkBridge,
-		TmpfsWorkdir:    true,
-		AutoRemove:      true,
+		Memory:          4 * 1024 * 1024 * 1024,
+		// MemorySwap equal to Memory disables swap entirely (memory + swap limit
+		// == memory => no swap), keeping the sandbox in-RAM only.
+		MemorySwap:   4 * 1024 * 1024 * 1024,
+		NanoCPUs:     1_000_000_000,
+		Ulimits:      []spec.Ulimit{{Name: "nofile", Soft: 1024, Hard: 2048}},
+		NetworkMode:  spec.NetworkBridge,
+		TmpfsWorkdir: true,
+		AutoRemove:   true,
 	}
 }
