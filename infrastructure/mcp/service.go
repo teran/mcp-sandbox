@@ -26,7 +26,6 @@ import (
 var needAll = role.CapabilitySet{
 	Lifecycle:      true,
 	Executable:     true,
-	Filesystem:     true,
 	Introspectable: true,
 }
 
@@ -149,58 +148,6 @@ func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, err
 		return nil, role.ErrCapabilityNotSupported
 	}
 	return ex.Exec(ctx, req.SandboxID, req)
-}
-
-// ReadFile reads a file through the Filesystem role.
-func (s *Service) ReadFile(ctx context.Context, id, path string) ([]byte, error) {
-	_, be, err := s.ensure(ctx)
-	if err != nil {
-		return nil, err
-	}
-	fs, ok := be.(role.Filesystem)
-	if !ok {
-		return nil, role.ErrCapabilityNotSupported
-	}
-	return fs.ReadFile(ctx, id, path)
-}
-
-// WriteFile writes a file through the Filesystem role.
-func (s *Service) WriteFile(ctx context.Context, id, path string, data []byte) error {
-	_, be, err := s.ensure(ctx)
-	if err != nil {
-		return err
-	}
-	fs, ok := be.(role.Filesystem)
-	if !ok {
-		return role.ErrCapabilityNotSupported
-	}
-	return fs.WriteFile(ctx, id, path, data)
-}
-
-// CopyIn copies a host path into a sandbox through the Filesystem role.
-func (s *Service) CopyIn(ctx context.Context, id, srcHost, dstSandbox string) error {
-	_, be, err := s.ensure(ctx)
-	if err != nil {
-		return err
-	}
-	fs, ok := be.(role.Filesystem)
-	if !ok {
-		return role.ErrCapabilityNotSupported
-	}
-	return fs.CopyIn(ctx, id, srcHost, dstSandbox)
-}
-
-// CopyOut copies a sandbox path out to the host through the Filesystem role.
-func (s *Service) CopyOut(ctx context.Context, id, srcSandbox, dstHost string) error {
-	_, be, err := s.ensure(ctx)
-	if err != nil {
-		return err
-	}
-	fs, ok := be.(role.Filesystem)
-	if !ok {
-		return role.ErrCapabilityNotSupported
-	}
-	return fs.CopyOut(ctx, id, srcSandbox, dstHost)
 }
 
 // Info returns detailed state through the Introspectable role.

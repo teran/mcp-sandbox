@@ -23,7 +23,7 @@ type Config struct {
 	LogFilename        string        `envconfig:"LOG_FILENAME"`
 	LogFormat          string        `envconfig:"LOG_FORMAT" default:"text"`
 	SandboxIdleTimeout time.Duration `envconfig:"SANDBOX_IDLE_TIMEOUT" default:"15m"`
-	SandboxCwdMode     string        `envconfig:"SANDBOX_CWD_MODE" default:"rw"`
+	SandboxCwdMode     string        `envconfig:"SANDBOX_CWD_MODE" default:"readonly"`
 }
 
 // Load reads the configuration from the process environment. It does not

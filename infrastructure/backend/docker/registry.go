@@ -18,7 +18,7 @@ func init() {
 	_ = backend.Register(backend.Factory{
 		Name:         name,
 		Priority:     priority,
-		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Filesystem: true, Introspectable: true},
+		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true},
 		Available:    dockerAvailable,
 		New:          newFromConfig,
 	})

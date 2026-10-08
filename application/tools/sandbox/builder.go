@@ -37,13 +37,8 @@ func All(svc Service) []*def.ToolDef {
 		sandboxListDef(b),
 		sandboxInfoDef(b),
 		sandboxStatsDef(b),
-		sandboxReadFileDef(b),
 		sandboxCreateDef(b),
 		sandboxExecDef(b),
-		sandboxWriteFileDef(b),
-		sandboxCopyInDef(b),
-		sandboxCopyOutDef(b),
-		sandboxInstallPackageDef(b),
 		sandboxDestroyDef(b),
 		sandboxDestroyAllDef(b),
 	}

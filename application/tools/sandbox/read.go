@@ -94,29 +94,3 @@ func sandboxStatsDef(b builder) *def.ToolDef {
 			return StatsOutput{ID: in.ID, Details: details}, nil
 		})
 }
-
-// sandboxReadFileDef declares sandbox_read_file: read a file's content.
-func sandboxReadFileDef(b builder) *def.ToolDef {
-	return readTool(b, "sandbox_read_file", "Read a file from a sandbox",
-		"Read a file's content from inside a sandbox. The path must resolve inside the sandbox scope (mounted dirs / tmpfs).",
-		"Read-only. Pass the session id and an absolute path inside the sandbox.",
-		obj(map[string]*jsonschema.Schema{
-			"id":   strP("Sandbox session id"),
-			"path": strP("Absolute path inside the sandbox"),
-		}, "id", "path"),
-		objectOutput(),
-		func(ctx context.Context, args json.RawMessage) (any, error) {
-			var in struct {
-				ID   string `json:"id"`
-				Path string `json:"path"`
-			}
-			if err := json.Unmarshal(args, &in); err != nil {
-				return nil, fmt.Errorf("sandbox_read_file: %w", err)
-			}
-			data, err := b.svc.ReadFile(ctx, in.ID, in.Path)
-			if err != nil {
-				return nil, err
-			}
-			return ReadFileOutput{Path: in.Path, Content: string(data)}, nil
-		})
-}

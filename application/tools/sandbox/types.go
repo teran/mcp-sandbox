@@ -44,12 +44,6 @@ type StatsOutput struct {
 	Details any    `json:"details"`
 }
 
-// ReadFileOutput is the structured output of sandbox_read_file.
-type ReadFileOutput struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
 // CreateOutput is the structured output of sandbox_create.
 type CreateOutput struct {
 	ID string `json:"id"`
@@ -62,29 +56,6 @@ type ExecOutput struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
-}
-
-// WriteFileOutput is the structured output of sandbox_write_file.
-type WriteFileOutput struct {
-	Path  string `json:"path"`
-	Wrote bool   `json:"wrote"`
-	Bytes int    `json:"bytes"`
-}
-
-// CopyOutput is the structured output of sandbox_copy_in / sandbox_copy_out.
-type CopyOutput struct {
-	Source      string `json:"source"`
-	Destination string `json:"destination"`
-	OK          bool   `json:"ok"`
-}
-
-// InstallPackageOutput is the structured output of sandbox_install_package.
-type InstallPackageOutput struct {
-	ID       string `json:"id"`
-	Package  string `json:"package"`
-	Manager  string `json:"manager"`
-	ExitCode int    `json:"exit_code"`
-	Output   string `json:"output"`
 }
 
 // DestroyOutput is the structured output of sandbox_destroy / destroy_all.

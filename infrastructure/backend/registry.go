@@ -131,7 +131,6 @@ func (r *Registry) Select(_ context.Context, need role.CapabilitySet) (Factory, 
 func covers(factory, need role.CapabilitySet) bool {
 	return (!need.Lifecycle || factory.Lifecycle) &&
 		(!need.Executable || factory.Executable) &&
-		(!need.Filesystem || factory.Filesystem) &&
 		(!need.Introspectable || factory.Introspectable)
 }
 

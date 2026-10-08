@@ -47,14 +47,6 @@ type Service interface {
 	DestroyAll(ctx context.Context) error
 	// Exec runs a command as an argument array with no shell (S11).
 	Exec(ctx context.Context, req exec.Request) (*exec.Result, error)
-	// ReadFile reads a file from inside a sandbox.
-	ReadFile(ctx context.Context, id, path string) ([]byte, error)
-	// WriteFile writes a file into a sandbox (idempotent, X02).
-	WriteFile(ctx context.Context, id, path string, data []byte) error
-	// CopyIn copies a host path (within ALLOW_DIRS) into a sandbox.
-	CopyIn(ctx context.Context, id, srcHost, dstSandbox string) error
-	// CopyOut copies a sandbox path out to an allowed host path.
-	CopyOut(ctx context.Context, id, srcSandbox, dstHost string) error
 	// Info returns detailed state of a sandbox.
 	Info(ctx context.Context, id string) (any, error)
 	// Stats returns live resource usage of a sandbox.

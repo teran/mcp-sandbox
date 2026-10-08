@@ -34,15 +34,6 @@ type Executable interface {
 	Exec(ctx context.Context, id string, req exec.Request) (*exec.Result, error)
 }
 
-// Filesystem provides file operations inside an existing sandbox and between
-// the sandbox and allowed host directories.
-type Filesystem interface {
-	ReadFile(ctx context.Context, id, path string) ([]byte, error)
-	WriteFile(ctx context.Context, id, path string, data []byte) error
-	CopyIn(ctx context.Context, id, srcHostPath, dstSandboxPath string) error
-	CopyOut(ctx context.Context, id, srcSandboxPath, dstHostPath string) error
-}
-
 // Introspectable exposes detailed state and live resource usage of a sandbox.
 type Introspectable interface {
 	Info(ctx context.Context, id string) (any, error)
@@ -55,6 +46,5 @@ type Introspectable interface {
 type CapabilitySet struct {
 	Lifecycle      bool
 	Executable     bool
-	Filesystem     bool
 	Introspectable bool
 }
