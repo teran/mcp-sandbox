@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -12,6 +13,11 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
+
+// redactedMarker replaces secret values found in exec output (S02). It matches
+// the marker used by the server's redactors so tool output and logs stay
+// consistent.
+const redactedMarker = "***REDACTED***"
 
 // writeTool builds a non-read-only, non-destructive tool definition (S03).
 func writeTool(b builder, name, title, desc, instructions string, in *jsonschema.Schema, out *jsonschema.Schema, redact []def.RedactionField, h def.ToolHandler) *def.ToolDef {
@@ -187,11 +193,17 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			if err != nil {
 				return nil, err
 			}
+			// Redact stdout/stderr against the sandbox's known secret values
+			// (S02/§7.3). A command may print a secret (e.g. `echo $SECRET`
+			// from the env, or `cat /run/sandbox/<secret>`); the struct-tag
+			// redactor cannot see inside free-form text, so we replace the
+			// known secret values before returning the output.
+			secrets := sandboxSecretValues(b, in.ID)
 			return ExecOutput{
 				ID:       in.ID,
 				ExitCode: res.ExitCode,
-				Stdout:   sanitizeANSI(string(res.Stdout)),
-				Stderr:   sanitizeANSI(string(res.Stderr)),
+				Stdout:   redactSecrets(sanitizeANSI(string(res.Stdout)), secrets),
+				Stderr:   redactSecrets(sanitizeANSI(string(res.Stderr)), secrets),
 			}, nil
 		})
 }
@@ -218,4 +230,43 @@ func resolveUser(b builder, id, requested string) (string, error) {
 		return "65534:65534", nil // nobody
 	}
 	return fmt.Sprintf("%d:%d", uid, gid), nil
+}
+
+// sandboxSecretValues returns the known secret values for a sandbox session:
+// every SecretRef value plus every env value (S02/§7.3). These are the values
+// that must never appear in exec output. The fetch is best-effort — if the
+// session is gone the returned list is empty and no redaction beyond the
+// default is applied.
+func sandboxSecretValues(b builder, id string) []string {
+	sess, err := b.svc.Get(id)
+	if err != nil {
+		return nil
+	}
+	sp := sess.Spec()
+	var vals []string
+	for _, sec := range sp.Secrets {
+		if sec.Value != "" {
+			vals = append(vals, sec.Value)
+		}
+	}
+	for _, v := range sp.Env {
+		if v != "" {
+			vals = append(vals, v)
+		}
+	}
+	return vals
+}
+
+// redactSecrets replaces every occurrence of the given secret values in s with
+// the redaction marker (S02). It is applied at the output boundary to exec
+// stdout/stderr so free-form command output cannot leak a secret.
+func redactSecrets(s string, secrets []string) string {
+	if len(secrets) == 0 {
+		return s
+	}
+	out := s
+	for _, sec := range secrets {
+		out = strings.ReplaceAll(out, sec, redactedMarker)
+	}
+	return out
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
@@ -288,6 +289,62 @@ func TestSandboxExec_Handler(t *testing.T) {
 	}
 	if svc.execReq.Argv[0] != "echo" {
 		t.Fatalf("argv = %v", svc.execReq.Argv)
+	}
+}
+
+func TestSandboxExec_RedactsSecretFromOutput(t *testing.T) {
+	// A command that echoes a secret (e.g. `echo $SECRET` from the sandbox env
+	// or `cat /run/sandbox/<name>`) must not leak the value into tool output
+	// (S02/§7.3).
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Env:       map[string]string{"SECRET": "envsecret", "PLAIN": "visible"},
+		Secrets:   []spec.SecretRef{{Name: "token", Value: "topsecret"}},
+		Isolation: defaultPolicy().Isolation,
+	})
+	svc.execRes = &exec.Result{
+		ExitCode: 0,
+		Stdout:   []byte("value=topsecret env=envsecret ok"),
+		Stderr:   []byte("warning: topsecret leaked here"),
+	}
+	d := toolByName(t, svc, "sandbox_exec")
+	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"echo", "$SECRET"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eo := out.(ExecOutput)
+	if strings.Contains(eo.Stdout, "topsecret") {
+		t.Fatalf("stdout leaked secret: %q", eo.Stdout)
+	}
+	if strings.Contains(eo.Stdout, "envsecret") {
+		t.Fatalf("stdout leaked env secret: %q", eo.Stdout)
+	}
+	if strings.Contains(eo.Stderr, "topsecret") {
+		t.Fatalf("stderr leaked secret: %q", eo.Stderr)
+	}
+	if !strings.Contains(eo.Stdout, redactedMarker) {
+		t.Fatalf("stdout should contain the redaction marker: %q", eo.Stdout)
+	}
+	if !strings.Contains(eo.Stdout, "ok") {
+		t.Fatalf("non-secret stdout should be preserved: %q", eo.Stdout)
+	}
+}
+
+func TestSandboxExec_NoSecrets_OutputUnchanged(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("plain output")}
+	d := toolByName(t, svc, "sandbox_exec")
+	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"echo", "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eo := out.(ExecOutput); eo.Stdout != "plain output" {
+		t.Fatalf("output = %q, want unchanged", eo.Stdout)
 	}
 }
 
