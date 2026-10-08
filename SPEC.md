@@ -138,7 +138,6 @@ the sandbox domain).
 | `sandbox_list` | `true` | `false` | `true` | List sandbox sessions (id, backend, image, created, state). |
 | `sandbox_info` | `true` | `false` | `true` | Detailed spec + state of one sandbox (image, mounts, resources, isolation flags, secrets redacted). |
 | `sandbox_stats` | `true` | `false` | `true` | Live resource usage of one sandbox (CPU/mem/net/IO via Docker stats). |
-| `sandbox_read_file` | `true` | `false` | `true` | Read a file's content from inside the sandbox (path scoped to mounted dirs / tmpfs). |
 
 **Instructions (common to READ):** read-only; never mutate the sandbox; paths
 must resolve inside the sandbox scope; sensitive content is redacted per the
@@ -149,19 +148,22 @@ text without an `outputSchema`.
 
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
-| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. The model-host passes its **session `cwd`**, which is mounted **1:1 at the same absolute path** (writable by default; a global feature flag `SANDBOX_CWD_MODE` can force read-only). **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
-| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem is modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
-| `sandbox_write_file` | `false` | `false` | `true` | Write a file into the sandbox (tmpfs / allowed mount). Idempotent — repeated writes with identical content are a no-op (data-level upsert, X02). |
-| `sandbox_copy_in` | `false` | `false` | `true` | Copy a file/dir **from the host (ALLOW_DIRS)** **into** the sandbox. Idempotent by natural key (dest path). |
-| `sandbox_copy_out` | `false` | `false` | `true` | Copy a file/dir **from the sandbox** **to the host (ALLOW_DIRS)**. Idempotent by natural key (dest path). |
-| `sandbox_install_package` | `false` | `false` | `false` | Install a package inside the sandbox **via the targeted package manager** (apt/dnf) **under a `SudoPolicy`**, running as scoped uid 0 (`exec -u 0`). Targets **pre-provisioned images** (read-only rootfs — see §7.10). This is **not** a generic shell — only the package manager entry point is exposed; arbitrary shell is *not* reachable through this tool. |
+| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. The model-host passes its **session `cwd`**, which is mounted **1:1 at the same absolute path** (read-only by default; opt-in `rw` via `SANDBOX_CWD_MODE=rw`). **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
+| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
+
+> **Files come from the image, the host, or the runtime — never via MCP file-write
+> tools.** The session `cwd` is mounted 1:1, so the model-host writes files on the
+> **host** and the container reads/executes them at the same path; runtime
+> artifacts live in the writable tmpfs workspace. Therefore the MVP exposes **no**
+> `write_file`/`copy_in`/`copy_out`/`read_file`/`install_package` tools — **mount +
+> exec is the core mechanism** (see §7.2). cgroup/namespace knobs and
+> Docker-in-Docker are deferred (see TODO "Deferred").
 
 **Instructions — `sandbox_exec`:** pass command and args as an **array**, never
 a shell string; do **not** log the argv in full (redact paths/values); output
 is ANSI-sanitized; runs under the sandbox user with `no-new-privileges`; only
-allowed capabilities are available. **`sandbox_install_package`:** use only for
-installing known packages; the underlying command is a fixed apt/dnf invocation
-per the sandbox's `SudoPolicy`; never use it to run arbitrary shell.
+allowed capabilities are available. A scoped `user: root` / sudo-classed exec
+runs as uid 0 per the sandbox's `SudoPolicy` (§7.10) — never `--privileged`.
 
 ### 4.3 DELETE tools (`destructiveHint: true`, HITL)
 
@@ -346,7 +348,7 @@ type SandboxSpec struct {
     Resources      Resources        // NanoCPUs, Memory, MemorySwap, PidsLimit, Ulimits
     Network        Network          // default: none
     UIDGID         UIDGID           // non-root user inside
-    Sudo           SudoPolicy       // scoped root ("sudo", exec -u 0) for install_package & sudo-classed ops (§7.10)
+    Sudo           SudoPolicy       // scoped root ("sudo", exec -u 0) for sudo-classed exec ops (§7.10)
     Secrets        []SecretRef      // mounted into tmpfs as 0600 files
     ReadOnlyRoot   bool             // true
     Isolation      Isolation        // IMMUTABLE — server-enforced, caller cannot weaken (§7.1)
@@ -378,8 +380,7 @@ create → use (exec/read/write/copy/install) → destroy
   creation — a session with the same id — is surfaced as an **error** rather
   than creating a duplicate),
   and `sandbox_destroy`/`destroy_all` are naturally idempotent (destroying a
-  non-existent session is a no-op). `sandbox_write_file`/`copy_*` use a natural
-  key (dest path) with upsert semantics.
+  non-existent session is a no-op).
 - **Concurrency (X05):** each session owns a **per-session mutex**; reads and
   writes are serialized per session so no partial/corrupt state results.
   Concurrency is exercised with `go test -race` (C04GO).
@@ -408,7 +409,7 @@ startup (local wiring only):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `-mode` (flag) | `stdio` | Launch mode (**M06/A01**). Local server is fixed to stdio. |
-| `ALLOW_DIRS` | `[]` (none — deny by default) | Permitted host directories for `copy_in`/`copy_out` (**S04**). Empty ⇒ no host dirs reachable. |
+| `ALLOW_DIRS` | `[]` (none — deny by default) | Permitted host directories that may be mounted into sandboxes (e.g. the session `cwd`) (**S04**). Empty ⇒ no host dirs mountable. |
 | `ALLOW_SYMLINKS` | `false` | Symlink policy for host path resolution (**S04**). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level; stdio logging is on **only when set** (**L02**). |
@@ -452,9 +453,9 @@ a spec that disables these protections.
 
 ### 7.2 Filesystem scope & mounts (S04)
 
-- **`ALLOW_DIRS []string`** — the **only** host directories reachable by
-  `sandbox_copy_in` / `sandbox_copy_out`. Anything outside is forbidden
-  (**N03**). Empty by default (deny).
+- **`ALLOW_DIRS []string`** — the **only** host directories permitted to be
+  mounted into a sandbox (e.g. the session `cwd`). Anything outside is
+  forbidden (**N03**). Empty by default (deny).
 - **`ALLOW_SYMLINKS bool`** — default `false`.
   - `false` (safe default): every host path is canonicalized with
     `filepath.EvalSymlinks`, then **open-then-verify** (open the fd, `fstat`,
@@ -469,21 +470,23 @@ a spec that disables these protections.
 - **Mount policy:** only **explicit `ALLOW_DIRS`** may be mounted; **read-only
   by default**; **minimize the number of paths**; **`/` and secret directories
   are forbidden**.
-- **Minimize bind-mounts:** prefer **`copy_in` / `copy_out`** to transfer files;
-  write operations happen **only into tmpfs** (not into bind-mounted host
-  paths). This reduces the host surface a compromised sandbox could reach.
+- **Minimize bind-mounts:** only the session `cwd` (and explicit `ALLOW_DIRS`)
+  are mounted; file transfer is **host-side** (the model-host writes into the
+  mounted cwd), and runtime writes happen **only into tmpfs** (not into
+  bind-mounted host paths). This reduces the host surface a compromised sandbox
+  could reach.
 - **Session working-directory mount (1:1):** `sandbox_create` accepts the
   model-host's **current working directory** and mounts it at the **same
   absolute path** inside the container — host `/Users/myuser/Downloads/blah` →
   container `/Users/myuser/Downloads/blah` — with **no path rewriting**. The
   mounted cwd must be **within `ALLOW_DIRS`** (or explicitly authorized). It is
-  **writable by default** (the model operates in this directory), but a
-  **global feature flag** (`SANDBOX_CWD_MODE`, default `rw`) can force
-  **read-only** for security-sensitive deployments. This is the one sanctioned
-  bind-mount for the model-host use case so the model operates on the session's
-  files with **identical paths**; cross-referenced with the `UIDGID` mapping
-  (§7.10) so the container's unprivileged user can access host files owned by
-  the operator.
+  **read-only by default** (the model-host writes into the mounted cwd on the
+  host; the container reads/executes), with an **opt-in `rw`** per-sandbox flag
+  (`SANDBOX_CWD_MODE=rw`) for cases where the container must write artifacts
+  into the cwd during command execution. This is the one sanctioned bind-mount
+  for the model-host use case so the model operates on the session's files with
+  **identical paths**; cross-referenced with the `UIDGID` mapping (§7.10) so the
+  container's unprivileged user can access host files owned by the operator.
 
 ### 7.3 Secrets & redaction (S02 / N02)
 
@@ -512,9 +515,7 @@ a spec that disables these protections.
 
 - **Commands are executed as argument arrays — no shell** (`sh -c` concatenation
   is banned). `sandbox_exec` runs the command directly inside the container via
-  the Docker SDK exec API.
-- `sandbox_install_package` uses a **fixed, pre-composed** apt/dnf invocation —
-  the package name is validated, never interpolated into a shell string.
+  the Docker SDK exec API; no user string is interpolated into a shell string.
 - No SQL or outbound URL construction exists in the MVP.
 
 ### 7.6 Server process & Docker socket access
@@ -582,8 +583,8 @@ Commands inside the sandbox run **unprivileged by default**; a scoped set of
 - **External images:** fall back to a well-known unprivileged uid (`nobody`,
   `65534:65534`); such images may not permit workspace writes, so **our own
   images are the supported path**.
-- **Sudo (scoped root):** an operation classified as "sudo" (`user: root`, or
-  `sandbox_install_package`) runs with `docker exec -u 0`. Inside the container
+- **Sudo (scoped root):** an operation classified as "sudo" (`user: root` in
+  `sandbox_exec`) runs with `docker exec -u 0`. Inside the container
   uid 0 is **still constrained** by the immutable `Isolation` block —
   `cap-drop ALL` + `no-new-privileges` + read-only rootfs — so it is
   container-internal uid 0, **not** host privilege. `--privileged` is **never**
@@ -607,8 +608,8 @@ Commands inside the sandbox run **unprivileged by default**; a scoped set of
   lifetime). No file/DB, no encryption-at-rest, no schema migration (X04 is not
   applicable).
 - **Write idempotency (X02):** `sandbox_create` = search-before-create;
-  `sandbox_destroy`/`destroy_all` = naturally idempotent (no-op on missing);
-  `sandbox_write_file`/`copy_in`/`copy_out` = natural-key upsert. `idempotentHint:
+  `sandbox_destroy`/`destroy_all` = naturally idempotent (no-op on missing).
+  `idempotentHint:
   true` is declared only where such a mechanism exists.
 - **Upstream connection & limits (X03):** every Docker API call carries an
   explicit timeout/context; on failure the error is **returned to the model and
