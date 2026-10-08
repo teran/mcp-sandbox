@@ -2,6 +2,13 @@
 /dist/
 /coverage.out
 
+# Local tool caches (created by running builds/lint inside a mounted sandbox
+# or on the host). These are excluded so gosec/golangci-lint do not scan them
+# and they never pollute the working tree.
+/.go-cache/
+/.gopath/
+/.lint-bin/
+
 # Editor/OS
 .DS_Store
 *.swp
