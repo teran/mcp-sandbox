@@ -18,8 +18,6 @@ type fakeBackend struct {
 	destroyed     int
 	execReq       exec.Request
 	execRes       *exec.Result
-	readData      []byte
-	readErr       error
 	info          any
 	stats         any
 	capNotSupport bool
@@ -28,7 +26,7 @@ type fakeBackend struct {
 func (f *fakeBackend) Name() string  { return "fake" }
 func (f *fakeBackend) Priority() int { return 0 }
 func (f *fakeBackend) Capabilities() role.CapabilitySet {
-	return role.CapabilitySet{Lifecycle: true, Executable: true, Filesystem: true, Introspectable: true}
+	return role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true}
 }
 
 func (f *fakeBackend) Create(_ context.Context, _ spec.SandboxSpec) (string, error) {
@@ -44,34 +42,6 @@ func (f *fakeBackend) Exec(_ context.Context, _ string, req exec.Request) (*exec
 	}
 	f.execReq = req
 	return f.execRes, nil
-}
-
-func (f *fakeBackend) ReadFile(_ context.Context, _, _ string) ([]byte, error) {
-	if f.capNotSupport {
-		return nil, role.ErrCapabilityNotSupported
-	}
-	return f.readData, f.readErr
-}
-
-func (f *fakeBackend) WriteFile(_ context.Context, _, _ string, _ []byte) error {
-	if f.capNotSupport {
-		return role.ErrCapabilityNotSupported
-	}
-	return nil
-}
-
-func (f *fakeBackend) CopyIn(_ context.Context, _, _, _ string) error {
-	if f.capNotSupport {
-		return role.ErrCapabilityNotSupported
-	}
-	return nil
-}
-
-func (f *fakeBackend) CopyOut(_ context.Context, _, _, _ string) error {
-	if f.capNotSupport {
-		return role.ErrCapabilityNotSupported
-	}
-	return nil
 }
 
 func (f *fakeBackend) Info(_ context.Context, _ string) (any, error) {
@@ -104,7 +74,7 @@ func newTestService(t *testing.T, fb *fakeBackend) *Service {
 	if err := reg.Register(backend.Factory{
 		Name:         "fake",
 		Priority:     0,
-		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Filesystem: true, Introspectable: true},
+		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true},
 		Available:    func() bool { return true },
 		New:          func(backend.Config) (role.Backend, error) { return fb, nil },
 	}); err != nil {
@@ -176,18 +146,6 @@ func TestService_OpsWithoutBackend(t *testing.T) {
 	if _, err := svc.Exec(context.Background(), exec.Request{}); err == nil {
 		t.Fatal("exec should fail without backend")
 	}
-	if _, err := svc.ReadFile(context.Background(), "s", "/p"); err == nil {
-		t.Fatal("read should fail without backend")
-	}
-	if err := svc.WriteFile(context.Background(), "s", "/p", []byte("d")); err == nil {
-		t.Fatal("write should fail without backend")
-	}
-	if err := svc.CopyIn(context.Background(), "s", "/h", "/c"); err == nil {
-		t.Fatal("copyin should fail without backend")
-	}
-	if err := svc.CopyOut(context.Background(), "s", "/c", "/h"); err == nil {
-		t.Fatal("copyout should fail without backend")
-	}
 	if _, err := svc.Info(context.Background(), "s"); err == nil {
 		t.Fatal("info should fail without backend")
 	}
@@ -216,23 +174,6 @@ func TestService_ExecCapabilityNotSupported(t *testing.T) {
 	svc := newTestService(t, fb)
 	if _, err := svc.Exec(context.Background(), exec.Request{}); !errors.Is(err, role.ErrCapabilityNotSupported) {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestService_FilesystemCapabilityNotSupported(t *testing.T) {
-	fb := &fakeBackend{capNotSupport: true}
-	svc := newTestService(t, fb)
-	if _, err := svc.ReadFile(context.Background(), "s", "/p"); !errors.Is(err, role.ErrCapabilityNotSupported) {
-		t.Fatalf("read err = %v", err)
-	}
-	if err := svc.WriteFile(context.Background(), "s", "/p", []byte("d")); !errors.Is(err, role.ErrCapabilityNotSupported) {
-		t.Fatalf("write err = %v", err)
-	}
-	if err := svc.CopyIn(context.Background(), "s", "/h", "/c"); !errors.Is(err, role.ErrCapabilityNotSupported) {
-		t.Fatalf("copyin err = %v", err)
-	}
-	if err := svc.CopyOut(context.Background(), "s", "/c", "/h"); !errors.Is(err, role.ErrCapabilityNotSupported) {
-		t.Fatalf("copyout err = %v", err)
 	}
 }
 
@@ -290,24 +231,6 @@ type roleOnlyBackend struct{}
 func (roleOnlyBackend) Name() string                     { return "only" }
 func (roleOnlyBackend) Priority() int                    { return 0 }
 func (roleOnlyBackend) Capabilities() role.CapabilitySet { return needAll }
-
-func TestService_ReadWriteCopy(t *testing.T) {
-	fb := &fakeBackend{readData: []byte("data")}
-	svc := newTestService(t, fb)
-	data, err := svc.ReadFile(context.Background(), "s", "/p")
-	if err != nil || string(data) != "data" {
-		t.Fatalf("read = %q, %v", data, err)
-	}
-	if err := svc.WriteFile(context.Background(), "s", "/p", []byte("d")); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.CopyIn(context.Background(), "s", "/h", "/c"); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.CopyOut(context.Background(), "s", "/c", "/h"); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestService_Introspect(t *testing.T) {
 	fb := &fakeBackend{info: "info", stats: "stats"}

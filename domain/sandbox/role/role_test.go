@@ -21,7 +21,7 @@ func (f *fakeBackend) Capabilities() CapabilitySet { return f.caps }
 
 func TestBackendInterface(t *testing.T) {
 	var b Backend = &fakeBackend{name: "docker", priority: 0, caps: CapabilitySet{
-		Lifecycle: true, Executable: true, Filesystem: true, Introspectable: true,
+		Lifecycle: true, Executable: true, Introspectable: true,
 	}}
 	if b.Name() != "docker" {
 		t.Fatalf("Name() = %q", b.Name())
@@ -30,7 +30,7 @@ func TestBackendInterface(t *testing.T) {
 		t.Fatalf("Priority() = %d", b.Priority())
 	}
 	caps := b.Capabilities()
-	if !caps.Lifecycle || !caps.Executable || !caps.Filesystem || !caps.Introspectable {
+	if !caps.Lifecycle || !caps.Executable || !caps.Introspectable {
 		t.Fatalf("unexpected capabilities: %+v", caps)
 	}
 }
@@ -44,18 +44,13 @@ func (f *fullBackend) Destroy(context.Context, string) error                    
 func (f *fullBackend) Exec(context.Context, string, exec.Request) (*exec.Result, error) {
 	return &exec.Result{}, nil
 }
-func (f *fullBackend) ReadFile(context.Context, string, string) ([]byte, error) { return nil, nil }
-func (f *fullBackend) WriteFile(context.Context, string, string, []byte) error  { return nil }
-func (f *fullBackend) CopyIn(context.Context, string, string, string) error     { return nil }
-func (f *fullBackend) CopyOut(context.Context, string, string, string) error    { return nil }
-func (f *fullBackend) Info(context.Context, string) (any, error)                { return nil, nil }
-func (f *fullBackend) Stats(context.Context, string) (any, error)               { return nil, nil }
+func (f *fullBackend) Info(context.Context, string) (any, error)  { return nil, nil }
+func (f *fullBackend) Stats(context.Context, string) (any, error) { return nil, nil }
 
 func TestRoleInterfaces(_ *testing.T) {
 	b := &fullBackend{}
 	var _ Lifecycle = b
 	var _ Executable = b
-	var _ Filesystem = b
 	var _ Introspectable = b
 }
 

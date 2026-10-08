@@ -67,7 +67,7 @@ func newBackend(t *testing.T, allowDir string) *docker.Backend {
 	}
 	_ = rd.Close()
 
-	return docker.New([]string{allowDir}, false, "rw", e2eImage, cli)
+	return docker.New([]string{allowDir}, false, "readonly", e2eImage, cli)
 }
 
 // mkSpec returns a valid spec satisfying spec.Validate for the docker backend:
@@ -102,20 +102,10 @@ func TestContractSuite(t *testing.T) {
 	allowDir := t.TempDir()
 	b := newBackend(t, allowDir)
 
-	// FilesystemWrites is false because of a real, documented Phase 2 defect
-	// surfaced by this suite: the docker backend writes sandbox files via
-	// Docker's archive/copy API, which refuses to write into a
-	// ReadonlyRootfs:true container even to a writable tmpfs (SPEC §7.1). Until
-	// that write path is fixed (e.g. exec-based writes), the fs-write and
-	// copy-in scenarios are skipped while the read, read-only-root-enforcement,
-	// copy-path-validation, lifecycle, exec, uid/gid, concurrency, introspect
-	// and cleanup scenarios run against the real daemon.
 	contract.RunContractSuite(t, contract.Contract{
-		Lifecycle:        b,
-		Executable:       b,
-		Filesystem:       b,
-		Introspectable:   b,
-		AllowDir:         allowDir,
-		FilesystemWrites: false,
+		Lifecycle:      b,
+		Executable:     b,
+		Introspectable: b,
+		AllowDir:       allowDir,
 	}, mkSpec)
 }

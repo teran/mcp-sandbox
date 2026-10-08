@@ -35,27 +35,27 @@ func TestBuildHostConfig_NetworkDefaultsToNone(t *testing.T) {
 
 func TestResolveMounts(t *testing.T) {
 	dir := t.TempDir()
-	b := New([]string{dir}, false, "rw", "img", newFakeClient())
+	b := New([]string{dir}, false, "readonly", "img", newFakeClient())
 
-	// Cwd mounted 1:1, writable by default.
+	// Cwd mounted 1:1, read-only by default.
 	s := baseSpec()
 	s.WorkingDir = dir
 	mounts, err := b.resolveMounts(s)
 	if err != nil {
 		t.Fatalf("resolveMounts: %v", err)
 	}
-	if len(mounts) != 1 || mounts[0].Source != dir || mounts[0].Target != dir || mounts[0].ReadOnly {
+	if len(mounts) != 1 || mounts[0].Source != dir || mounts[0].Target != dir || !mounts[0].ReadOnly {
 		t.Fatalf("cwd mount = %+v", mounts[0])
 	}
 
-	// Read-only cwd when mode=readonly.
-	rb := New([]string{dir}, false, "readonly", "img", newFakeClient())
-	mounts, err = rb.resolveMounts(s)
+	// Writable cwd when mode=rw (opt-in).
+	wb := New([]string{dir}, false, "rw", "img", newFakeClient())
+	mounts, err = wb.resolveMounts(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mounts[0].ReadOnly {
-		t.Fatal("cwd should be read-only in readonly mode")
+	if mounts[0].ReadOnly {
+		t.Fatal("cwd should be writable in rw mode")
 	}
 
 	// No cwd, one additional mount.
@@ -97,17 +97,6 @@ func TestBuildConfig_WorkingDirDefaults(t *testing.T) {
 	cfg = b.buildConfig(s, "img", nil)
 	if len(cfg.Env) != 1 || cfg.Env[0] != "A=1" {
 		t.Fatalf("Env = %v", cfg.Env)
-	}
-}
-
-func TestFirstTarEntry_Error(t *testing.T) {
-	// A reader that errors mid-stream.
-	rc, err := singleFileTar("x", []byte("y"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := firstTarEntry(rc); err != nil {
-		t.Fatalf("firstTarEntry on valid tar: %v", err)
 	}
 }
 

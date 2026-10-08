@@ -35,12 +35,12 @@ func callHandler(t *testing.T, d *def.ToolDef, _ Service, args any) (any, error)
 
 func TestAll_ToolCountAndOrder(t *testing.T) {
 	defs := All(newFake())
-	if len(defs) != 12 {
-		t.Fatalf("got %d tools, want 12", len(defs))
+	if len(defs) != 7 {
+		t.Fatalf("got %d tools, want 7", len(defs))
 	}
 	want := []string{
-		"sandbox_list", "sandbox_info", "sandbox_stats", "sandbox_read_file",
-		"sandbox_create", "sandbox_exec", "sandbox_write_file", "sandbox_copy_in", "sandbox_copy_out", "sandbox_install_package",
+		"sandbox_list", "sandbox_info", "sandbox_stats",
+		"sandbox_create", "sandbox_exec",
 		"sandbox_destroy", "sandbox_destroy_all",
 	}
 	for i, w := range want {
@@ -72,7 +72,7 @@ func TestAll_RequiredFieldsAndSchemas(t *testing.T) {
 
 func TestAnnotations_ReadTools(t *testing.T) {
 	svc := newFake()
-	for _, name := range []string{"sandbox_list", "sandbox_info", "sandbox_stats", "sandbox_read_file"} {
+	for _, name := range []string{"sandbox_list", "sandbox_info", "sandbox_stats"} {
 		d := toolByName(t, svc, name)
 		if !d.Annotations.ReadOnlyHint {
 			t.Fatalf("%s: ReadOnlyHint must be true", name)
@@ -88,7 +88,7 @@ func TestAnnotations_ReadTools(t *testing.T) {
 
 func TestAnnotations_WriteTools(t *testing.T) {
 	svc := newFake()
-	for _, name := range []string{"sandbox_create", "sandbox_exec", "sandbox_write_file", "sandbox_copy_in", "sandbox_copy_out", "sandbox_install_package"} {
+	for _, name := range []string{"sandbox_create", "sandbox_exec"} {
 		d := toolByName(t, svc, name)
 		if d.Annotations.ReadOnlyHint {
 			t.Fatalf("%s: ReadOnlyHint must be false", name)
@@ -123,7 +123,6 @@ func TestRedactionContracts(t *testing.T) {
 	}{
 		{"sandbox_exec", "argv"},
 		{"sandbox_create", "secrets"},
-		{"sandbox_write_file", "content"},
 	}
 	for _, c := range cases {
 		d := toolByName(t, svc, c.tool)
@@ -200,20 +199,6 @@ func TestSandboxStats_Handler(t *testing.T) {
 	so := out.(StatsOutput)
 	if so.ID != "abc" {
 		t.Fatalf("output = %+v", so)
-	}
-}
-
-func TestSandboxReadFile_Handler(t *testing.T) {
-	svc := newFake()
-	svc.readData = []byte("hello")
-	d := toolByName(t, svc, "sandbox_read_file")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "path": "/tmp/x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ro := out.(ReadFileOutput)
-	if ro.Content != "hello" || ro.Path != "/tmp/x" {
-		t.Fatalf("output = %+v", ro)
 	}
 }
 
@@ -364,128 +349,6 @@ func TestSandboxExec_ExecError(t *testing.T) {
 	}
 }
 
-func TestSandboxWriteFile_Handler(t *testing.T) {
-	svc := newFake()
-	d := toolByName(t, svc, "sandbox_write_file")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "path": "/w/f", "content": "data"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wo := out.(WriteFileOutput)
-	if !wo.Wrote || wo.Bytes != 4 {
-		t.Fatalf("output = %+v", wo)
-	}
-}
-
-func TestSandboxWriteFile_Error(t *testing.T) {
-	svc := newFake()
-	svc.writeErr = errFake
-	d := toolByName(t, svc, "sandbox_write_file")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "path": "/w/f", "content": "d"}); !errors.Is(err, errFake) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestSandboxCopyIn_Handler(t *testing.T) {
-	svc := newFake()
-	d := toolByName(t, svc, "sandbox_copy_in")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "source": "/host", "destination": "/sand"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.(CopyOutput).OK {
-		t.Fatalf("output = %+v", out)
-	}
-}
-
-func TestSandboxCopyIn_Error(t *testing.T) {
-	svc := newFake()
-	svc.copyInErr = errFake
-	d := toolByName(t, svc, "sandbox_copy_in")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "source": "/h", "destination": "/s"}); !errors.Is(err, errFake) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestSandboxCopyOut_Handler(t *testing.T) {
-	svc := newFake()
-	d := toolByName(t, svc, "sandbox_copy_out")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "source": "/s", "destination": "/h"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.(CopyOutput).OK {
-		t.Fatalf("output = %+v", out)
-	}
-}
-
-func TestSandboxCopyOut_Error(t *testing.T) {
-	svc := newFake()
-	svc.copyOutErr = errFake
-	d := toolByName(t, svc, "sandbox_copy_out")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "source": "/s", "destination": "/h"}); !errors.Is(err, errFake) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestSandboxInstallPackage_Handler(t *testing.T) {
-	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Sudo: spec.SudoRequire, Isolation: defaultPolicy().Isolation})
-	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("installed")}
-	d := toolByName(t, svc, "sandbox_install_package")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "package": "curl", "manager": "apt"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	io := out.(InstallPackageOutput)
-	if io.ExitCode != 0 || io.Manager != "apt" {
-		t.Fatalf("output = %+v", io)
-	}
-	got := svc.execReq.Argv
-	if len(got) != 4 || got[0] != "apt-get" || got[3] != "curl" {
-		t.Fatalf("argv = %v", got)
-	}
-	if svc.execReq.User != "0" {
-		t.Fatalf("user = %q", svc.execReq.User)
-	}
-}
-
-func TestSandboxInstallPackage_InvalidName(t *testing.T) {
-	svc := newFake()
-	d := toolByName(t, svc, "sandbox_install_package")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "package": "curl; rm -rf /", "manager": "apt"}); err == nil {
-		t.Fatal("expected invalid package name error")
-	}
-}
-
-func TestSandboxInstallPackage_NoSudoPolicy(t *testing.T) {
-	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Sudo: spec.SudoNever, Isolation: defaultPolicy().Isolation})
-	d := toolByName(t, svc, "sandbox_install_package")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "package": "curl", "manager": "apt"}); err == nil {
-		t.Fatal("expected sudo policy error")
-	}
-}
-
-func TestSandboxInstallPackage_BadManager(t *testing.T) {
-	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Sudo: spec.SudoRequire, Isolation: defaultPolicy().Isolation})
-	d := toolByName(t, svc, "sandbox_install_package")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "package": "curl", "manager": "zypper"}); err == nil {
-		t.Fatal("expected unsupported manager error")
-	}
-}
-
-func TestSandboxInstallPackage_Dnf(t *testing.T) {
-	argv, err := packageManagerArgv("dnf", "vim")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(argv) != 4 || argv[0] != "dnf" || argv[3] != "vim" {
-		t.Fatalf("argv = %v", argv)
-	}
-}
-
 func TestSandboxDestroy_Handler(t *testing.T) {
 	svc := newFake()
 	d := toolByName(t, svc, "sandbox_destroy")
@@ -571,7 +434,7 @@ func TestRegister(t *testing.T) {
 	if err := Register(reg, newFake()); err != nil {
 		t.Fatal(err)
 	}
-	if reg.Len() != 12 {
+	if reg.Len() != 7 {
 		t.Fatalf("Len = %d", reg.Len())
 	}
 }
@@ -584,12 +447,6 @@ func TestRegister_Duplicate(t *testing.T) {
 	}
 	if err := Register(reg, svc); err == nil {
 		t.Fatal("expected duplicate registration error")
-	}
-}
-
-func TestPackageManagerArgv_Unsupported(t *testing.T) {
-	if _, err := packageManagerArgv("pacman", "x"); err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -627,9 +484,8 @@ func TestHandlers_RejectMalformedArgs(t *testing.T) {
 	svc := newFake()
 	svc.session = runningSession("abc", spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
 	for _, name := range []string{
-		"sandbox_info", "sandbox_stats", "sandbox_read_file", "sandbox_create",
-		"sandbox_exec", "sandbox_write_file", "sandbox_copy_in", "sandbox_copy_out",
-		"sandbox_install_package", "sandbox_destroy",
+		"sandbox_info", "sandbox_stats", "sandbox_create",
+		"sandbox_exec", "sandbox_destroy",
 	} {
 		d := toolByName(t, svc, name)
 		if _, err := d.Handler(context.Background(), json.RawMessage(`{invalid`)); err == nil {
@@ -664,17 +520,6 @@ func TestSanitizeControl_StripAllControl(t *testing.T) {
 	// NUL and vertical tab are dropped; printable stays.
 	if got := sanitizeControl("a\x00\x0b\x1a b"); got != "a b" {
 		t.Fatalf("got %q", got)
-	}
-}
-
-func TestPackageManagerArgv_FixedArrays(t *testing.T) {
-	apt, _ := packageManagerArgv("apt", "curl")
-	if len(apt) != 4 || apt[1] != "install" || apt[2] != "-y" {
-		t.Fatalf("apt argv = %v", apt)
-	}
-	dnf, _ := packageManagerArgv("dnf", "vim")
-	if len(dnf) != 4 || dnf[0] != "dnf" {
-		t.Fatalf("dnf argv = %v", dnf)
 	}
 }
 

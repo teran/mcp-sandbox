@@ -20,8 +20,6 @@ package contract
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -41,23 +39,12 @@ import (
 type Contract struct {
 	Lifecycle      role.Lifecycle
 	Executable     role.Executable
-	Filesystem     role.Filesystem
 	Introspectable role.Introspectable
 
 	// AllowDir is a host directory that lies within the backend's ALLOW_DIRS
-	// (SPEC §7.2). The copy_in/copy_out and mount scenarios use it; when empty
-	// those scenarios are skipped.
+	// (SPEC §7.2). The mount scenario uses it; when empty that scenario is
+	// skipped.
 	AllowDir string
-
-	// FilesystemWrites reports whether the backend can write into the sandbox's
-	// writable area (tmpfs workdir) and copy files into it. This is a real,
-	// documented platform limitation: Docker's archive/copy API refuses to write
-	// into a ReadonlyRootfs:true container even to a writable tmpfs (SPEC §7.1),
-	// so the docker backend cannot perform fs writes until that write path is
-	// fixed (Phase 2 defect surfaced by this suite). When false, the write and
-	// copy-in scenarios are skipped while the read, read-only-root-enforcement
-	// and copy-path-validation scenarios still run.
-	FilesystemWrites bool
 }
 
 // Command paths the exec scenarios use. They must exist in the base image the
@@ -92,23 +79,6 @@ func RunContractSuite(t *testing.T, c Contract, mkSpec func() spec.SandboxSpec) 
 			t.Skip("backend lacks Lifecycle or Executable capability")
 		}
 		runExec(t, c, mkSpec())
-	})
-
-	t.Run("filesystem", func(t *testing.T) {
-		if c.Lifecycle == nil || c.Filesystem == nil {
-			t.Skip("backend lacks Lifecycle or Filesystem capability")
-		}
-		runFilesystem(t, c, mkSpec())
-	})
-
-	t.Run("copy", func(t *testing.T) {
-		if c.Lifecycle == nil || c.Filesystem == nil {
-			t.Skip("backend lacks Lifecycle or Filesystem capability")
-		}
-		if c.AllowDir == "" {
-			t.Skip("no allowed host directory provided (copy scenarios need ALLOW_DIRS)")
-		}
-		runCopy(t, c, mkSpec())
 	})
 
 	t.Run("mount-immutability", func(t *testing.T) {
@@ -298,127 +268,6 @@ func runExec(t *testing.T, c Contract, base spec.SandboxSpec) {
 }
 
 // ---------------------------------------------------------------------------
-// filesystem
-// ---------------------------------------------------------------------------
-
-func runFilesystem(t *testing.T, c Contract, base spec.SandboxSpec) {
-	t.Run("write-read-roundtrip", func(t *testing.T) {
-		if !c.FilesystemWrites {
-			t.Skip("backend cannot write into the sandbox (FilesystemWrites=false)")
-		}
-		id := create(t, c, base)
-		const data = "roundtrip-content"
-		if err := c.Filesystem.WriteFile(context.Background(), id, writableWorkdir+"/roundtrip.txt", []byte(data)); err != nil {
-			t.Fatalf("WriteFile: %v", err)
-		}
-		got, err := c.Filesystem.ReadFile(context.Background(), id, writableWorkdir+"/roundtrip.txt")
-		if err != nil {
-			t.Fatalf("ReadFile: %v", err)
-		}
-		if string(got) != data {
-			t.Fatalf("roundtrip = %q, want %q", got, data)
-		}
-	})
-
-	t.Run("readonly-root-write-fails", func(t *testing.T) {
-		id := create(t, c, base)
-		// Writing to "/" must fail: the rootfs is read-only (immutable
-		// Isolation, SPEC §7.1). The backend must refuse it, whether via a
-		// copy-API error or an exec-into-read-only-root failure.
-		if err := c.Filesystem.WriteFile(context.Background(), id, "/escape.txt", []byte("x")); err == nil {
-			t.Fatal("write to read-only root should fail")
-		}
-	})
-
-	t.Run("writable-workdir-write-succeeds", func(t *testing.T) {
-		if !c.FilesystemWrites {
-			t.Skip("backend cannot write into the sandbox (FilesystemWrites=false)")
-		}
-		id := create(t, c, base)
-		if err := c.Filesystem.WriteFile(context.Background(), id, writableWorkdir+"/work.txt", []byte("ok")); err != nil {
-			t.Fatalf("write to writable workdir should succeed, got %v", err)
-		}
-	})
-
-	t.Run("missing-file-read-fails", func(t *testing.T) {
-		id := create(t, c, base)
-		if _, err := c.Filesystem.ReadFile(context.Background(), id, writableWorkdir+"/does-not-exist.txt"); err == nil {
-			t.Fatal("read of a missing file should fail")
-		}
-	})
-
-	t.Run("not-found-session", func(t *testing.T) {
-		if _, err := c.Filesystem.ReadFile(context.Background(), newID(), "/x"); err == nil {
-			t.Fatal("read against unknown session should fail (not found)")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// copy in / copy out (ALLOW_DIRS)
-// ---------------------------------------------------------------------------
-
-func runCopy(t *testing.T, c Contract, base spec.SandboxSpec) {
-	t.Run("copy-in-then-read", func(t *testing.T) {
-		if !c.FilesystemWrites {
-			t.Skip("backend cannot write into the sandbox (FilesystemWrites=false)")
-		}
-		id := create(t, c, base)
-		src := filepath.Join(c.AllowDir, "host-file.txt")
-		if err := os.WriteFile(src, []byte("from-host"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.Filesystem.CopyIn(context.Background(), id, src, writableWorkdir); err != nil {
-			t.Fatalf("CopyIn: %v", err)
-		}
-		got, err := c.Filesystem.ReadFile(context.Background(), id, writableWorkdir+"/host-file.txt")
-		if err != nil {
-			t.Fatalf("ReadFile after CopyIn: %v", err)
-		}
-		if string(got) != "from-host" {
-			t.Fatalf("copied content = %q, want %q", got, "from-host")
-		}
-	})
-
-	t.Run("copy-out-roundtrip", func(t *testing.T) {
-		if !c.FilesystemWrites {
-			t.Skip("backend cannot write into the sandbox (FilesystemWrites=false)")
-		}
-		id := create(t, c, base)
-		if err := c.Filesystem.WriteFile(context.Background(), id, writableWorkdir+"/to-host.txt", []byte("to-host")); err != nil {
-			t.Fatalf("WriteFile: %v", err)
-		}
-		dst := filepath.Join(c.AllowDir, "copied-out.txt")
-		if err := c.Filesystem.CopyOut(context.Background(), id, writableWorkdir+"/to-host.txt", dst); err != nil {
-			t.Fatalf("CopyOut: %v", err)
-		}
-		got, err := os.ReadFile(dst)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != "to-host" {
-			t.Fatalf("copied-out = %q, want %q", got, "to-host")
-		}
-	})
-
-	t.Run("copy-in-outside-allow-dirs-fails", func(t *testing.T) {
-		id := create(t, c, base)
-		outside := filepath.Join(os.TempDir(), "contract-outside-"+newID())
-		if err := os.MkdirAll(outside, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		defer os.RemoveAll(outside)
-		src := filepath.Join(outside, "secret.txt")
-		if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.Filesystem.CopyIn(context.Background(), id, src, writableWorkdir); err == nil {
-			t.Fatal("copy_in from outside ALLOW_DIRS should fail")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // mount-immutability
 // ---------------------------------------------------------------------------
 
@@ -567,11 +416,6 @@ func runCleanup(t *testing.T, c Contract, base spec.SandboxSpec) {
 		if c.Executable != nil {
 			if _, err := c.Executable.Exec(context.Background(), id, exec.Request{Argv: []string{binTrue}}); err == nil {
 				t.Fatal("exec after destroy should fail (not found)")
-			}
-		}
-		if c.Filesystem != nil {
-			if _, err := c.Filesystem.ReadFile(context.Background(), id, writableWorkdir+"/x"); err == nil {
-				t.Fatal("read after destroy should fail (not found)")
 			}
 		}
 		if c.Introspectable != nil {

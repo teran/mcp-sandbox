@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -84,14 +83,12 @@ type fakeClient struct {
 	execInspectErr error
 	statsBody      string
 
-	createErr   error
-	startErr    error
-	removeErr   error
-	listErr     error
-	inspectErr  error
-	statsErr    error
-	copyFromErr error
-	copyOutErr  error
+	createErr  error
+	startErr   error
+	removeErr  error
+	listErr    error
+	inspectErr error
+	statsErr   error
 
 	createdHostConfigs []*container.HostConfig
 	createdConfigs     []*container.Config
@@ -101,8 +98,6 @@ type fakeClient struct {
 	execCreates        []container.ExecOptions
 	execAttaches       []string
 	copyTos            []copyToCall
-	readFileBytes      map[string][]byte
-	copyOutTar         []byte
 	inspects           []string
 	statsCalls         []string
 }
@@ -110,8 +105,7 @@ type fakeClient struct {
 // newFakeClient returns an initialized fake client.
 func newFakeClient() *fakeClient {
 	return &fakeClient{
-		containers:    make(map[string]*fakeContainer),
-		readFileBytes: make(map[string][]byte),
+		containers: make(map[string]*fakeContainer),
 	}
 }
 
@@ -262,30 +256,6 @@ func (f *fakeClient) ContainerExecInspect(_ context.Context, _ string) (containe
 	return container.ExecInspect{ExitCode: 0}, nil
 }
 
-func (f *fakeClient) CopyFromContainer(_ context.Context, containerID, srcPath string) (io.ReadCloser, container.PathStat, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.copyFromErr != nil {
-		return nil, container.PathStat{}, f.copyFromErr
-	}
-	c, ok := f.containers[containerID]
-	if !ok {
-		return nil, container.PathStat{}, errors.New("no such container")
-	}
-	if f.copyOutErr != nil {
-		return nil, container.PathStat{}, f.copyOutErr
-	}
-	if data, ok := f.readFileBytes[srcPath]; ok {
-		rc, err := singleFileTar("file", data, 0o644)
-		return io.NopCloser(rc), container.PathStat{Name: "file", Size: int64(len(data))}, err
-	}
-	if f.copyOutTar != nil {
-		return io.NopCloser(bytes.NewReader(f.copyOutTar)), container.PathStat{Name: "file"}, nil
-	}
-	_ = c
-	return nil, container.PathStat{}, errors.New("no such path")
-}
-
 func (f *fakeClient) CopyToContainer(_ context.Context, containerID, dstPath string, content io.Reader, _ container.CopyToContainerOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -333,18 +303,4 @@ func (f *fakeClient) lastConfig() *container.Config {
 		return nil
 	}
 	return f.createdConfigs[len(f.createdConfigs)-1]
-}
-
-// mustTarForTest builds a single-file tar for CopyOut test fixtures.
-func mustTarForTest(t *testing.T, name, content string) []byte {
-	t.Helper()
-	rc, err := singleFileTar(name, []byte(content), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
 }

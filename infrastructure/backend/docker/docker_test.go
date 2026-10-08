@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -36,9 +35,10 @@ func baseSpec() spec.SandboxSpec {
 	}
 }
 
-// newBackendForDirs builds a backend whose ALLOW_DIRS are the given dirs.
+// newBackendForDirs builds a backend whose ALLOW_DIRS are the given dirs. The
+// cwd mount defaults to read-only (SPEC §7.2) unless an explicit mode is given.
 func newBackendForDirs(api dockerAPI, dirs ...string) *Backend {
-	return New(dirs, false, "rw", "default-image:latest", api)
+	return New(dirs, false, "readonly", "default-image:latest", api)
 }
 
 func TestNamePriorityCapabilities(t *testing.T) {
@@ -50,7 +50,7 @@ func TestNamePriorityCapabilities(t *testing.T) {
 		t.Fatalf("Priority = %d", b.Priority())
 	}
 	c := b.Capabilities()
-	if !c.Lifecycle || !c.Executable || !c.Filesystem || !c.Introspectable {
+	if !c.Lifecycle || !c.Executable || !c.Introspectable {
 		t.Fatalf("capabilities = %+v", c)
 	}
 }
@@ -159,10 +159,10 @@ func TestCreate_InvalidSpec(t *testing.T) {
 	}
 }
 
-func TestCreate_CwdMounted11Writable(t *testing.T) {
+func TestCreate_CwdMounted11ReadOnlyByDefault(t *testing.T) {
 	dir := t.TempDir()
 	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api)
+	b := New([]string{dir}, false, "readonly", "img", api)
 	s := baseSpec()
 	s.WorkingDir = dir
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -176,25 +176,25 @@ func TestCreate_CwdMounted11Writable(t *testing.T) {
 	if m.Source != dir || m.Target != dir {
 		t.Errorf("cwd mount not 1:1: %+v", m)
 	}
-	if m.ReadOnly {
-		t.Error("cwd should be writable by default")
+	if !m.ReadOnly {
+		t.Error("cwd should be read-only by default (opt-in rw)")
 	}
 	if cfg := api.lastConfig(); cfg.WorkingDir != dir {
 		t.Errorf("WorkingDir = %q, want %q", cfg.WorkingDir, dir)
 	}
 }
 
-func TestCreate_CwdReadonlyWhenModeReadonly(t *testing.T) {
+func TestCreate_CwdWritableWhenModeRW(t *testing.T) {
 	dir := t.TempDir()
 	api := newFakeClient()
-	b := New([]string{dir}, false, "readonly", "img", api)
+	b := New([]string{dir}, false, "rw", "img", api)
 	s := baseSpec()
 	s.WorkingDir = dir
 	if _, err := b.Create(context.Background(), s); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if hc := api.lastHostConfig(); !hc.Mounts[0].ReadOnly {
-		t.Error("cwd should be read-only when SANDBOX_CWD_MODE=readonly")
+	if hc := api.lastHostConfig(); hc.Mounts[0].ReadOnly {
+		t.Error("cwd should be writable when SANDBOX_CWD_MODE=rw")
 	}
 }
 
@@ -334,100 +334,6 @@ func TestExec_UnknownSession(t *testing.T) {
 	}
 }
 
-func TestReadWriteFile(t *testing.T) {
-	api := newFakeClient()
-	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-f")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.WriteFile(context.Background(), "sess-f", "/workspace/a.txt", []byte("content")); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if len(api.copyTos) != 1 || api.copyTos[0].dst != "/workspace" {
-		t.Errorf("write not targeted at /workspace: %+v", api.copyTos)
-	}
-	// ReadFile returns the bytes stored in the fake.
-	api.readFileBytes["/workspace/a.txt"] = []byte("content")
-	got, err := b.ReadFile(context.Background(), "sess-f", "/workspace/a.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if string(got) != "content" {
-		t.Errorf("ReadFile = %q", got)
-	}
-}
-
-func TestCopyIn_ValidatesHostPath(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-c")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.CopyIn(context.Background(), "sess-c", outside, "/workspace"); err == nil {
-		t.Fatal("expected escape error for copy_in")
-	}
-}
-
-func TestCopyIn_WithinAllowDirs(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "f.txt")
-	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-c2")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.CopyIn(context.Background(), "sess-c2", src, "/workspace"); err != nil {
-		t.Fatalf("CopyIn: %v", err)
-	}
-	if len(api.copyTos) != 1 {
-		t.Fatalf("copyTos = %d", len(api.copyTos))
-	}
-}
-
-func TestCopyOut_WritesToAllowedHostPath(t *testing.T) {
-	dir := t.TempDir()
-	api := newFakeClient()
-	api.copyOutTar = mustTarForTest(t, "out.txt", "data")
-	b := New([]string{dir}, false, "rw", "img", api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-o")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	dst := filepath.Join(dir, "out.txt")
-	if err := b.CopyOut(context.Background(), "sess-o", "/workspace/out.txt", dst); err != nil {
-		t.Fatalf("CopyOut: %v", err)
-	}
-	data, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "data" {
-		t.Errorf("copied = %q", data)
-	}
-}
-
-func TestCopyOut_RejectsPathOutsideAllowDirs(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-o2")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.CopyOut(context.Background(), "sess-o2", "/x", filepath.Join(outside, "x")); err == nil {
-		t.Fatal("expected escape error for copy_out")
-	}
-}
-
 func TestInfo(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
@@ -509,47 +415,6 @@ func TestExec_AttachError(t *testing.T) {
 	}
 	if _, err := b.Exec(context.Background(), "sess-at", exec.Request{Argv: []string{"x"}}); err == nil {
 		t.Fatal("expected attach error")
-	}
-}
-
-func TestWriteFile_CopyError(t *testing.T) {
-	api := newFakeClient()
-	api.copyToErr = errors.New("copy fail")
-	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-wf")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.WriteFile(context.Background(), "sess-wf", "/workspace/x", []byte("d")); err == nil {
-		t.Fatal("expected write copy error")
-	}
-}
-
-func TestWriteFile_UnknownSession(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
-	if err := b.WriteFile(context.Background(), "ghost", "/x", []byte("d")); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestReadFile_UnknownSession(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
-	if _, err := b.ReadFile(context.Background(), "ghost", "/x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestCopyIn_UnknownSession(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
-	if err := b.CopyIn(context.Background(), "ghost", "/x", "/y"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestCopyOut_UnknownSession(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
-	if err := b.CopyOut(context.Background(), "ghost", "/x", "/y"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -642,51 +507,6 @@ func TestVerifyHostPath_OpenThenVerify(t *testing.T) {
 	}
 }
 
-func TestReadFile_CopyError(t *testing.T) {
-	api := newFakeClient()
-	api.copyFromErr = errors.New("copy fail")
-	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-rf")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if _, err := b.ReadFile(context.Background(), "sess-rf", "/x"); err == nil {
-		t.Fatal("expected read copy error")
-	}
-}
-
-func TestCopyIn_CopyError(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "f")
-	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	api := newFakeClient()
-	api.copyToErr = errors.New("copy fail")
-	b := New([]string{dir}, false, "rw", "img", api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-ci")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.CopyIn(context.Background(), "sess-ci", src, "/workspace"); err == nil {
-		t.Fatal("expected copy_in error")
-	}
-}
-
-func TestCopyOut_CopyError(t *testing.T) {
-	dir := t.TempDir()
-	api := newFakeClient()
-	api.copyFromErr = errors.New("copy fail")
-	b := New([]string{dir}, false, "rw", "img", api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-co")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.CopyOut(context.Background(), "sess-co", "/x", filepath.Join(dir, "o")); err == nil {
-		t.Fatal("expected copy_out error")
-	}
-}
-
 func TestInfo_InspectError(t *testing.T) {
 	api := newFakeClient()
 	api.inspectErr = errors.New("inspect fail")
@@ -720,41 +540,6 @@ func TestCreate_SecretsCopyError(t *testing.T) {
 	}
 }
 
-func TestTarHelpers_ErrorPaths(t *testing.T) {
-	// tarHostPath on a nonexistent path errors.
-	if _, err := tarHostPath("/definitely/not/here"); err == nil {
-		t.Fatal("tarHostPath should error on missing path")
-	}
-	// firstTarEntry on an empty tar errors.
-	empty := bytes.NewReader(nil)
-	if _, err := firstTarEntry(empty); err == nil {
-		t.Fatal("firstTarEntry should error on empty tar")
-	}
-	// extractTarTo with an unreadable tar errors.
-	if err := extractTarTo(bytes.NewReader(nil), filepath.Join(t.TempDir(), "o")); err == nil {
-		t.Fatal("extractTarTo should error on empty tar")
-	}
-}
-
-func TestExtractTarTo_WritesContent(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "out")
-	rc, err := singleFileTar("out", []byte("abc"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := extractTarTo(rc, dst); err != nil {
-		t.Fatalf("extractTarTo: %v", err)
-	}
-	data, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "abc" {
-		t.Fatalf("extracted = %q", data)
-	}
-}
-
 func TestVerifyHostPath_AllowSymlinksValid(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "sub")
@@ -764,17 +549,6 @@ func TestVerifyHostPath_AllowSymlinksValid(t *testing.T) {
 	b := New([]string{dir}, true, "rw", "img", newFakeClient())
 	if err := b.verifyHostPath(sub); err != nil {
 		t.Fatalf("verifyHostPath with allowSymlinks: %v", err)
-	}
-}
-
-func TestExtractTarTo_OpenError(t *testing.T) {
-	rc, err := singleFileTar("out", []byte("abc"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Destination in a non-existent directory -> OpenFile fails.
-	if err := extractTarTo(rc, filepath.Join(t.TempDir(), "no", "dir", "out")); err == nil {
-		t.Fatal("expected open error")
 	}
 }
 
@@ -817,43 +591,5 @@ func TestNew_NonexistentAllowDir(t *testing.T) {
 	b := New([]string{"/definitely/not/a/real/dir"}, false, "rw", "img", newFakeClient())
 	if len(b.cfg.allowDirs) != 1 || b.cfg.allowDirs[0] != "/definitely/not/a/real/dir" {
 		t.Fatalf("allowDirs = %v", b.cfg.allowDirs)
-	}
-}
-
-func TestTarHostPath_SymlinkEntry(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "target"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(dir, "target"), filepath.Join(dir, "link")); err != nil {
-		t.Fatal(err)
-	}
-	rc, err := tarHostPath(dir)
-	if err != nil {
-		t.Fatalf("tarHostPath: %v", err)
-	}
-	if _, err := firstTarEntry(rc); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-}
-
-func TestTarHostPath_SymlinkSource(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	// A symlink used directly as the source is recorded as a link entry, not
-	// dereferenced.
-	rc, err := tarHostPath(link)
-	if err != nil {
-		t.Fatalf("tarHostPath(symlink): %v", err)
-	}
-	if _, err := firstTarEntry(rc); err != nil {
-		t.Fatalf("read: %v", err)
 	}
 }

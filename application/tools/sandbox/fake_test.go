@@ -29,14 +29,6 @@ type fakeService struct {
 	execErr error
 	execReq exec.Request
 
-	readData []byte
-	readErr  error
-
-	writeErr error
-
-	copyInErr  error
-	copyOutErr error
-
 	info    any
 	infoErr error
 
@@ -95,22 +87,6 @@ func (f *fakeService) Exec(_ context.Context, req exec.Request) (*exec.Result, e
 	f.execReq = req
 	f.mu.Unlock()
 	return f.execRes, f.execErr
-}
-
-func (f *fakeService) ReadFile(_ context.Context, _, _ string) ([]byte, error) {
-	return f.readData, f.readErr
-}
-
-func (f *fakeService) WriteFile(_ context.Context, _, _ string, _ []byte) error {
-	return f.writeErr
-}
-
-func (f *fakeService) CopyIn(_ context.Context, _, _, _ string) error {
-	return f.copyInErr
-}
-
-func (f *fakeService) CopyOut(_ context.Context, _, _, _ string) error {
-	return f.copyOutErr
 }
 
 func (f *fakeService) Info(_ context.Context, _ string) (any, error) {

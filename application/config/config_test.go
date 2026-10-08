@@ -76,7 +76,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.SandboxIdleTimeout != 15*time.Minute {
 		t.Fatalf("SandboxIdleTimeout default = %v", c.SandboxIdleTimeout)
 	}
-	if c.SandboxCwdMode != "rw" {
+	if c.SandboxCwdMode != "readonly" {
 		t.Fatalf("SandboxCwdMode default = %q", c.SandboxCwdMode)
 	}
 }

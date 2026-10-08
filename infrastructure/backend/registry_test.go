@@ -19,7 +19,7 @@ func newFactory(name string, priority int, caps role.CapabilitySet, avail func()
 }
 
 func allCaps() role.CapabilitySet {
-	return role.CapabilitySet{Lifecycle: true, Executable: true, Filesystem: true, Introspectable: true}
+	return role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true}
 }
 
 func TestRegisterAndGet(t *testing.T) {

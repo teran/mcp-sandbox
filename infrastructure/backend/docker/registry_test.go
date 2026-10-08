@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -110,75 +109,6 @@ func TestClampUint64(t *testing.T) {
 	big := ^uint64(0)
 	if clampUint64(big) != int64(^uint64(0)>>1) {
 		t.Fatalf("clamp(MaxUint64) = %d, want MaxInt64", clampUint64(big))
-	}
-}
-
-func TestWalkRoot(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = root.Close() }()
-
-	var visited []string
-	if err := walkRoot(root, ".", func(p string, _ os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		visited = append(visited, p)
-		return nil
-	}); err != nil {
-		t.Fatalf("walkRoot: %v", err)
-	}
-	if len(visited) == 0 {
-		t.Fatal("no entries visited")
-	}
-
-	// Lstat error propagates for a missing entry.
-	if err := walkRoot(root, "nope", func(_ string, _ os.FileInfo, err error) error {
-		return err
-	}); err == nil {
-		t.Fatal("expected error for missing entry")
-	}
-}
-
-func TestTarHostPath_FileAndDir(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "a.txt")
-	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	sub := filepath.Join(dir, "sub")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Directory.
-	rc, err := tarHostPath(dir)
-	if err != nil {
-		t.Fatalf("tarHostPath(dir): %v", err)
-	}
-	data, err := firstTarEntry(rc)
-	if err != nil {
-		t.Fatalf("read dir tar: %v", err)
-	}
-	_ = data // directory entries carry no body; the read itself is the check
-
-	// Single file.
-	rc, err = tarHostPath(file)
-	if err != nil {
-		t.Fatalf("tarHostPath(file): %v", err)
-	}
-	data, err = firstTarEntry(rc)
-	if err != nil {
-		t.Fatalf("read file tar: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("file tar content = %q", data)
 	}
 }
 
