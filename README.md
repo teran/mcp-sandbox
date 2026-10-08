@@ -187,8 +187,10 @@ server:
 - `ALLOW_DIRS` scopes which host directories the sandbox may reach; the session
   working directory is mounted **1:1** at the same absolute path (see
   `SPEC.md` §7.2).
-- opencode passes its session id to the server (`_meta.ai.opencode/sessionID`),
-  which the server uses to correlate and label sandboxes.
+- opencode passes its session id as a **required** `session_id` parameter to
+  `sandbox_create`; the server records it as a container label so each sandbox
+  is traceable to the OpenCode session that created it. The session `cwd` is
+  mounted 1:1 read-only by default (see `SPEC.md` §7.2).
 - Use `opencode mcp list` / `/mcps` to check the server is connected.
 
 > **HITL note:** because mcp-sandbox is Local/stdio (no HTTP UI), destructive
@@ -202,15 +204,16 @@ Grouped **read → write → delete** (S03):
 - **Read** (`readOnlyHint: true`): `sandbox_list`, `sandbox_info`,
   `sandbox_stats`.
 - **Write/update** (`readOnlyHint: false`, `destructiveHint: false`):
-  `sandbox_create` (session `cwd` mounted 1:1 read-only by default, opt-in `rw`
-  via `SANDBOX_CWD_MODE=rw`), `sandbox_exec` (write-classified; ANSI-sanitized;
-  redacted argv).
+  `sandbox_create` (requires `session_id` — the OpenCode client session id,
+  recorded as a container label for traceability; session `cwd` mounted 1:1
+  read-only by default, opt-in `rw` via `SANDBOX_CWD_MODE=rw`),
+  `sandbox_exec` (write-classified; ANSI-sanitized; redacted argv).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
 
 > **Files come from the image, the host, or the runtime — never via MCP
 > file-write tools.** The session `cwd` is mounted 1:1, so the model-host writes
 > files on the **host** and the container reads/executes them at the same path;
-> runtime artifacts live in the writable tmpfs workspace. There are **no**
+> runtime artifacts live in the writable, executable tmpfs `/tmp`. There are **no**
 > `sandbox_read_file` / `sandbox_write_file` / `sandbox_copy_in` /
 > `sandbox_copy_out` / `sandbox_install_package` tools — **mount + exec is the
 > core mechanism** (`SPEC.md` §4.2, §7.2).
@@ -233,12 +236,12 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   roadmap); **non-root** user inside.
 - Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits`.
 - **Network `bridge` by default** (Docker's default bridged network); `host` networking forbidden at policy level.
-- tmpfs working dir (`rw,noexec,nosuid,nodev`); `AutoRemove=true`.
+- tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, **writable and executable** so the sandbox can compile/run binaries); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
   symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); the session
   `cwd` is the one sanctioned bind-mount (read-only default).
 - Single **redaction layer** hides `secret:true` fields from all output and
-  logs; secrets delivered as tmpfs `0600` files, never argv/image.
+  logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never argv/image.
 - Sessions use opaque `crypto/rand` ids with label-based Docker ownership.
 - Supply chain: sandbox images **pinned by digest**, trusted registries,
   signed packages.

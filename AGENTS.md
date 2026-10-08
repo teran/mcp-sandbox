@@ -71,15 +71,16 @@ See `SPEC.md` §7.
 - **Immutable `Isolation` block:** `ReadOnlyRootfs=true`, `CapDrop:ALL` (minimal
   re-add), `no-new-privileges`, seccomp (default MVP; custom is mandatory
   roadmap), **non-root** user, bounded `PidsLimit`/`Memory`/`NanoCPUs`/
-  `Ulimits`, **Network `bridge`** (host forbidden), tmpfs workdir
-  (`rw,noexec,nosuid,nodev`), `AutoRemove=true`. A caller must **never** be able
+  `Ulimits`, **Network `bridge`** (host forbidden), tmpfs mounts — `/run`
+  (`rw,noexec,nosuid,nodev`, sandbox-user-owned) and `/tmp` (`rw,nosuid,nodev`,
+  writable + executable) — `AutoRemove=true`. A caller must **never** be able
   to weaken these.
 - **TLS is never implemented in-server (S01).** This is a Local/stdio server —
   no HTTP listener at all.
 - **No secret leakage (S02/N02).** All API requests/responses/config are
   structs; sensitive fields annotated `secret:true`. The single redaction
   helper hides them from **all output and logs**. Secrets go into tmpfs `0600`
-  files, **never** argv/image. Do **not** log the full `argv` of `sandbox_exec`.
+  files under `/run/sandbox`, **never** argv/image. Do **not** log the full `argv` of `sandbox_exec`.
 - **Filesystem scope (S04/N03):** host access only via `ALLOW_DIRS`, empty by
   default. `ALLOW_SYMLINKS=false` by default — canonicalize with
   `EvalSymlinks`, open-then-verify, `O_NOFOLLOW`; reject anything escaping the

@@ -1,9 +1,9 @@
 // Package docker implements the sandbox backend roles through the official
 // docker SDK over the unix socket (SPEC §6.2, §7; L02GO/N05GO). It applies the
 // immutable Isolation block on every create (§7.1), mounts the session cwd 1:1
-// at the same absolute path (§7.2), delivers secrets as tmpfs 0600 files
-// (§7.3) and executes commands as argument arrays with no shell (S11). It
-// registers itself into the backend registry via init() (§6.3).
+// at the same absolute path (§7.2), delivers secrets as tmpfs 0600 files under
+// /run/sandbox (§7.3) and executes commands as argument arrays with no shell
+// (S11). It registers itself into the backend registry via init() (§6.3).
 package docker
 
 import (
@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -49,14 +51,29 @@ const (
 	// sessionLabelKey labels a container with its session id (label-based
 	// ownership, §7.8).
 	sessionLabelKey = "dev.teran.sandbox.session"
+	// opencodeSessionLabelKey labels a container with the OpenCode client session
+	// id that created it (§4/§7.8), so each sandbox container is traceable to the
+	// OpenCode session that created it. It is set only when non-empty (the
+	// required-ness is enforced at the tool input boundary, not here).
+	opencodeSessionLabelKey = "dev.teran.sandbox.opencode_session"
 
-	// tmpfsConfDir is where secret files are mounted as a private tmpfs dir
-	// (files are written with mode 0600, §7.3). The name deliberately avoids
-	// the "secret" keyword because gosec's G101 heuristic would otherwise
-	// flag this filesystem path as a hardcoded credential.
+	// tmpfsConfDir is where secret files are placed as a private directory
+	// inside the /run tmpfs (files are written with mode 0600, §7.3). The name
+	// deliberately avoids the "secret" keyword because gosec's G101 heuristic
+	// would otherwise flag this filesystem path as a hardcoded credential.
 	tmpfsConfDir = "/run/sandbox"
-	// tmpfsWorkdir is the writable tmpfs working directory for the sandbox.
-	tmpfsWorkdir = "/workspace"
+	// tmpfsRunDir is the tmpfs mounted at /run: it is owned by the sandbox user
+	// so the unprivileged process can create the secret dir and its 0600 files
+	// (§7.3). It stays noexec (a secrets location does not need to execute).
+	tmpfsRunDir = "/run"
+	// tmpfsTmpDir is the tmpfs mounted at /tmp: writable AND executable (no
+	// noexec) so the sandbox can compile and run Go binaries (e.g. `go build`,
+	// govulncheck) against a read-only rootfs. nosuid,nodev are kept for safety.
+	tmpfsTmpDir = "/tmp"
+	// defaultWorkdir is the working directory when the spec does not request one
+	// (SPEC §7.1): a writable, executable tmpfs so exec and file operations work
+	// without guessing.
+	defaultWorkdir = tmpfsTmpDir
 )
 
 // trustedRegistries is the allowlist of image registries the sandbox may pull
@@ -88,6 +105,7 @@ type dockerAPI interface {
 	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
 }
 
 // Backend implements the sandbox role interfaces (role.Backend, Lifecycle,
@@ -205,6 +223,9 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	if id, ok := domainsession.IDFromContext(ctx); ok {
 		labels[sessionLabelKey] = id
 	}
+	if s.ClientSessionID != "" {
+		labels[opencodeSessionLabelKey] = s.ClientSessionID
+	}
 
 	mounts, err := b.resolveMounts(s)
 	if err != nil {
@@ -219,7 +240,18 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	cfg := b.buildConfig(s, s.Image, labels)
 	hostCfg := b.buildHostConfig(s, mounts, tmpfs)
 	resp, err := b.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
-	if err != nil {
+	if isNoSuchImage(err) {
+		// The image is not present locally. Pull the (already validated)
+		// trusted image (§7.9, C05/T7), then retry the create. validateImageRef
+		// ran above, so only a trusted-registry image can ever reach a pull.
+		if perr := b.pullImage(ctx, s.Image); perr != nil {
+			return "", perr
+		}
+		resp, err = b.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
+		if err != nil {
+			return "", fmt.Errorf("docker: create container (after pull): %w", err)
+		}
+	} else if err != nil {
 		return "", fmt.Errorf("docker: create container: %w", err)
 	}
 	if err := b.api.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
@@ -251,7 +283,7 @@ func (b *Backend) Destroy(ctx context.Context, id string) error {
 func (b *Backend) buildConfig(s spec.SandboxSpec, image string, labels map[string]string) *container.Config {
 	workdir := s.WorkingDir
 	if workdir == "" {
-		workdir = tmpfsWorkdir
+		workdir = defaultWorkdir
 	}
 	return &container.Config{
 		Image:      image,
@@ -335,17 +367,22 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 	return out, nil
 }
 
-// buildTmpfs mounts the secrets dir (mode 0700) and the writable workspace.
-// Both are tmpfs with rw,noexec,nosuid,nodev (§7.1/§7.3). The secrets dir is
-// additionally owned by the sandbox user (uid/gid) so the unprivileged process
-// can create and read its own 0600 secret files; with a read-only rootfs the
-// only writable location is this tmpfs.
+// buildTmpfs mounts /run and /tmp as tmpfs (§7.1/§7.3).
+//
+//   - /run is owned by the sandbox user (uid/gid) and stays noexec, so the
+//     unprivileged process can create the secret dir (/run/sandbox) and its own
+//     0600 secret files; a secrets location does not need to execute.
+//   - /tmp is writable AND executable (no noexec) so the sandbox can compile
+//     and run Go binaries against a read-only rootfs; nosuid,nodev are kept.
+//
+// Both carry rw,nosuid,nodev. With a read-only rootfs these tmpfs are the only
+// writable locations.
 func (b *Backend) buildTmpfs(s spec.SandboxSpec) (map[string]string, error) {
 	uid := fmt.Sprintf("%d", s.Isolation.User.UID)
 	gid := fmt.Sprintf("%d", s.Isolation.User.GID)
 	return map[string]string{
-		tmpfsConfDir: "rw,noexec,nosuid,nodev,mode=0700,uid=" + uid + ",gid=" + gid,
-		tmpfsWorkdir: "rw,noexec,nosuid,nodev,mode=0755",
+		tmpfsRunDir: "rw,noexec,nosuid,nodev,mode=0755,uid=" + uid + ",gid=" + gid,
+		tmpfsTmpDir: "rw,nosuid,nodev,mode=1777",
 	}, nil
 }
 
@@ -371,13 +408,14 @@ func (b *Backend) writeSecrets(ctx context.Context, cid string, secrets []spec.S
 // writeSecret writes a single secret file into the sandbox. The writer command
 // is a fixed script with no user input interpolated into it (S11); the target
 // path is passed as a distinct positional argument and referenced only as
-// "$1", so no value ever appears in the shell string or argv. The secret value
-// is streamed over the exec's stdin and never surfaces in argv, image or env
-// exposed to exec (§7.3).
+// "$1", so no value ever appears in the shell string or argv. The script
+// creates the parent /run/sandbox directory (owned by the sandbox user via the
+// /run tmpfs, §7.3) and streams the value over the exec's stdin with umask 077.
+// The secret value never surfaces in argv, image or env exposed to exec (§7.3).
 func (b *Backend) writeSecret(ctx context.Context, cid, name, value string) error {
 	writer := []string{
 		"/bin/sh", "-c",
-		`umask 077; cat > "$1"`,
+		`mkdir -p "$(dirname "$1")"; umask 077; cat > "$1"`,
 		"sh",
 		filepath.Join(tmpfsConfDir, name),
 	}
@@ -594,6 +632,33 @@ func validateImageRef(ref string) error {
 	}
 	if _, ok := trustedRegistries[domain]; !ok {
 		return fmt.Errorf("sandbox: image registry %q is not in the trusted allowlist", domain)
+	}
+	return nil
+}
+
+// isNoSuchImage reports whether a ContainerCreate error means the image is not
+// present in the local cache ("No such image"), which triggers an auto-pull of
+// the already-validated trusted image (§7.9). It relies on the daemon's stable
+// error message rather than error-type assertion so no deprecated/versioned SDK
+// API is needed. Only called after validateImageRef has already accepted the
+// reference.
+func isNoSuchImage(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "No such image")
+}
+
+// pullImage pulls the given image reference from its trusted registry (§7.9,
+// C05/T7). The caller MUST have run validateImageRef on ref first — this helper
+// never re-validates, so it must never be reached with an untrusted reference.
+// The pull stream is drained and discarded: image content is never logged (L05)
+// and never carries secrets. The error is surfaced clearly to the model (X03).
+func (b *Backend) pullImage(ctx context.Context, ref string) error {
+	reader, err := b.api.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("docker: pull image %q: %w", ref, err)
+	}
+	defer func() { _ = reader.Close() }()
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return fmt.Errorf("docker: pull image %q: read: %w", ref, err)
 	}
 	return nil
 }

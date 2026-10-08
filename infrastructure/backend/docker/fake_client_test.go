@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -96,6 +98,17 @@ type fakeClient struct {
 	inspectErr error
 	statsErr   error
 
+	// Image auto-pull simulation (SPEC §7.9). When requirePull is true,
+	// ContainerCreate fails with a "No such image" error until the image has
+	// been pulled — modelling a daemon with an empty local image cache.
+	requirePull bool
+	// pullErr makes ImagePull fail, surfacing a pull error to the backend.
+	pullErr error
+	// pullBodyErr makes the pull stream fail on read, exercising the drain path.
+	pullBodyErr error
+	// pulledImages records every ref passed to ImagePull in order.
+	pulledImages []string
+
 	createdHostConfigs []*container.HostConfig
 	createdConfigs     []*container.Config
 	starts             []string
@@ -121,6 +134,11 @@ func (f *fakeClient) ContainerCreate(_ context.Context, config *container.Config
 	if f.createErr != nil {
 		return container.CreateResponse{}, f.createErr
 	}
+	if f.requirePull && !f.wasPulledLocked(config.Image) {
+		// Mirror the docker daemon: a create for a not-yet-local image fails
+		// until it has been pulled.
+		return container.CreateResponse{}, fmt.Errorf("Error response from daemon: No such image: %s", config.Image)
+	}
 	f.nextID++
 	id := "cid-" + strconv.Itoa(f.nextID)
 	labels := config.Labels
@@ -137,6 +155,41 @@ func (f *fakeClient) ContainerCreate(_ context.Context, config *container.Config
 	f.createdConfigs = append(f.createdConfigs, config)
 	f.createdHostConfigs = append(f.createdHostConfigs, hostConfig)
 	return container.CreateResponse{ID: id}, nil
+}
+
+// ImagePull records the pull of a trusted image reference and returns a dummy
+// stream that the backend drains and discards (image content is never logged).
+func (f *fakeClient) ImagePull(_ context.Context, refStr string, _ image.PullOptions) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pullErr != nil {
+		return nil, f.pullErr
+	}
+	f.pulledImages = append(f.pulledImages, refStr)
+	if f.pullBodyErr != nil {
+		return io.NopCloser(errReader{f.pullBodyErr}), nil
+	}
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+// wasPulledLocked reports whether the given image ref has been pulled. Callers
+// must hold f.mu.
+func (f *fakeClient) wasPulledLocked(ref string) bool {
+	for _, p := range f.pulledImages {
+		if p == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// pulledRefs returns a copy of the pulled image references for assertions.
+func (f *fakeClient) pulledRefs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.pulledImages))
+	copy(out, f.pulledImages)
+	return out
 }
 
 func (f *fakeClient) ContainerStart(_ context.Context, containerID string, _ container.StartOptions) error {

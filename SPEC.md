@@ -148,13 +148,13 @@ text without an `outputSchema`.
 
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
-| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. The model-host passes its **session `cwd`**, which is mounted **1:1 at the same absolute path** (read-only by default; opt-in `rw` via `SANDBOX_CWD_MODE=rw`). **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
+| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. Takes a **required** `session_id` — the OpenCode client session id — which is recorded as a container label (`dev.teran.sandbox.opencode_session`) for traceability (§7.8). The model-host passes its **session `cwd`**, which is mounted **1:1 at the same absolute path** (read-only by default; opt-in `rw` via `SANDBOX_CWD_MODE=rw`). **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
 | `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
 
 > **Files come from the image, the host, or the runtime — never via MCP file-write
 > tools.** The session `cwd` is mounted 1:1, so the model-host writes files on the
 > **host** and the container reads/executes them at the same path; runtime
-> artifacts live in the writable tmpfs workspace. Therefore the MVP exposes **no**
+> artifacts live in the writable, executable tmpfs `/tmp`. Therefore the MVP exposes **no**
 > `write_file`/`copy_in`/`copy_out`/`read_file`/`install_package` tools — **mount +
 > exec is the core mechanism** (see §7.2). cgroup/namespace knobs and
 > Docker-in-Docker are deferred (see TODO "Deferred").
@@ -444,7 +444,7 @@ create, regardless of the input spec:
 | `NanoCPUs` | Bounded. |
 | `Ulimits` | Set. |
 | `NetworkMode` | **`bridge` by default** (Docker's default bridged network); **`host` is forbidden at policy level**. |
-| `tmpfs` working dir | Mounted `rw,noexec,nosuid,nodev`. |
+| `tmpfs` mounts | **`/run`** tmpfs `rw,noexec,nosuid,nodev` (owned by the sandbox user; holds the `/run/sandbox` secret dir) and **`/tmp`** tmpfs `rw,nosuid,nodev` — **writable and executable** (no `noexec`) so the sandbox can compile/run binaries against the read-only rootfs. |
 | `AutoRemove` | `true` — container auto-removed on stop. |
 
 Because the block is immutable and applied by the server, a caller cannot pass
@@ -494,7 +494,8 @@ a spec that disables these protections.
 - **Secrets are modeled as structs with `secret:true` annotations**; the
   redaction helper hides annotated fields from tool output and logs — **no
   heuristics/regex "guessing"**; the struct is authoritative.
-- **Secrets in the sandbox** are delivered as **tmpfs files with mode `0600`** —
+- **Secrets in the sandbox** are delivered as **tmpfs files with mode `0600`** under
+  `/run/sandbox` (a subdir of the sandbox-user-owned `/run` tmpfs, §7.1) —
   **never** in argv, never baked into the image, never in environment exposed to
   `exec`.
 - **Do not log the full `argv`** of `sandbox_exec` — redact paths/values while
@@ -546,6 +547,16 @@ a spec that disables these protections.
 - Ownership uses **label-based ownership** in Docker (containers are labelled
   with the session id) so the server can identify, reap and destroy exactly its
   own containers.
+- **OpenCode session id (`session_id`):** `sandbox_create` takes a **required**
+  `session_id` parameter carrying the OpenCode client session id that created
+  the sandbox. The backend records it as a dedicated container label
+  (`dev.teran.sandbox.opencode_session`, set only when non-empty) so each
+  sandbox container is traceable to the OpenCode session that created it. This
+  is **distinct** from the internal sandbox session id (the opaque `crypto/rand`
+  id above, returned by `sandbox_create` as `id` and never passed as a tool
+  parameter). The required-ness is enforced at the tool input boundary; the
+  domain-level `SandboxSpec.ClientSessionID` is optional so internal callers and
+  e2e specs that build a spec directly can omit it.
 - Each session has a **per-session mutex**; `destroy` is **idempotent** (X02).
 
 ### 7.9 Supply-chain (T7 / C05 / S05)
@@ -556,6 +567,13 @@ a spec that disables these protections.
   reference and its registry is in the allowlist (`docker.io`,
   `index.docker.io`, `registry-1.docker.io`, `ghcr.io`). Images from
   arbitrary/untrusted registries are **rejected**.
+- **Auto-pull of a trusted-but-missing image**: on `sandbox_create`, if the
+  (already validated) image is not present in the local cache the backend pulls
+  it from its trusted registry before creating the container. The pull only
+  ever happens **after** `validateImageRef` has accepted the reference, so an
+  untrusted image is never pulled. A create for an already-local image issues
+  no pull. The pull stream is drained and discarded — image content is never
+  logged (L05) and carries no secrets.
 - **Digest-pinning is the recommended deployment posture**: images **should**
   be referenced by digest (`image@sha256:…`) rather than a floating tag, and
   this is the documented production guideline (C05/T7); the hard enforcement
@@ -584,10 +602,11 @@ Commands inside the sandbox run **unprivileged by default**; a scoped set of
 
 - **Default user:** `sandbox_exec` runs with the sandbox's **unprivileged
   user** (`SandboxSpec.UIDGID`, or the image's `USER`). For our own base images
-  that user is a known fixed non-root uid (e.g. `1000`) which owns the writable
-  tmpfs `/workspace`, so exec and file operations work without guessing.
+  that user is a known fixed non-root uid (e.g. `1000`) which owns the writable,
+  executable tmpfs `/tmp` (and the `/run` tmpfs for secrets), so exec and file
+  operations work without guessing.
 - **External images:** fall back to a well-known unprivileged uid (`nobody`,
-  `65534:65534`); such images may not permit workspace writes, so **our own
+  `65534:65534`); such images may not permit tmpfs writes, so **our own
   images are the supported path**.
 - **Sudo (scoped root):** an operation classified as "sudo" (`user: root` in
   `sandbox_exec`) runs with `docker exec -u 0`. Inside the container

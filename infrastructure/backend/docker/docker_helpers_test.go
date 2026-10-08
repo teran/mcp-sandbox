@@ -102,8 +102,8 @@ func TestBuildConfig_WorkingDirDefaults(t *testing.T) {
 	b := newBackendForDirs(newFakeClient())
 	s := baseSpec()
 	cfg := b.buildConfig(s, "img", nil)
-	if cfg.WorkingDir != tmpfsWorkdir {
-		t.Fatalf("WorkingDir = %q, want %q", cfg.WorkingDir, tmpfsWorkdir)
+	if cfg.WorkingDir != defaultWorkdir {
+		t.Fatalf("WorkingDir = %q, want %q", cfg.WorkingDir, defaultWorkdir)
 	}
 	s.WorkingDir = "/work"
 	cfg = b.buildConfig(s, "img", nil)

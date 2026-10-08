@@ -50,19 +50,18 @@ type Contract struct {
 // Command paths the exec scenarios use. They must exist in the base image the
 // harness provides (a busybox-based image such as alpine).
 const (
-	binSh           = "/bin/sh"
-	binPwd          = "/bin/pwd"
-	binPrintenv     = "/bin/printenv"
-	binTrue         = "/bin/true"
-	usrBinPrintf    = "/usr/bin/printf"
-	usrBinID        = "/usr/bin/id"
-	writableWorkdir = "/workspace"
+	binSh        = "/bin/sh"
+	binPwd       = "/bin/pwd"
+	binPrintenv  = "/bin/printenv"
+	binTrue      = "/bin/true"
+	usrBinPrintf = "/usr/bin/printf"
+	usrBinID     = "/usr/bin/id"
 )
 
 // RunContractSuite runs the full cross-backend contract suite. mkSpec returns a
 // valid spec satisfying spec.Validate (the suite clones and extends it per
-// scenario). The writable tmpfs workdir is assumed to be mounted at
-// "/workspace" (SPEC §7.1 tmpfs working dir); the server contract requires it.
+// scenario). The default writable workdir is assumed to be a tmpfs (SPEC §7.1);
+// the server contract requires it.
 func RunContractSuite(t *testing.T, c Contract, mkSpec func() spec.SandboxSpec) {
 	t.Helper()
 

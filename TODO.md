@@ -24,12 +24,12 @@
 
 - [ ] 2.1 Backend registry + capability select; `init()`-registration of docker; lazy `Available()` — `A02/N35 M06`
 - [ ] 2.2 Docker implementation of roles via official docker SDK (unix socket) — `L02GO N05GO`
-- [ ] 2.3 Isolation: read-only root, cap-drop ALL, no-new-privileges, seccomp (default), non-root user, pids/mem/cpu/ulimits, network bridge (host forbidden), tmpfs workdir, AutoRemove — `§7.1` (server-enforced, immutable)
+- [ ] 2.3 Isolation: read-only root, cap-drop ALL, no-new-privileges, seccomp (default), non-root user, pids/mem/cpu/ulimits, network bridge (host forbidden), tmpfs mounts (`/run` noexec + `/tmp` writable/executable), AutoRemove — `§7.1` (server-enforced, immutable)
 - [ ] 2.4 Mounts/`ALLOW_DIRS`: EvalSymlinks + open-then-verify + `O_NOFOLLOW`, read-only default, minimize bind-mounts (`copy_in`/`copy_out`); **session `cwd` mounted 1:1 at the same absolute path** (read-only default) — `S04 N03 §7.2`
 - [ ] 2.5 Secrets → tmpfs `0600`, redactor at output boundary (incl. Docker errors) — `S02 N02 L05`
 - [ ] 2.6 Session: reaper (idle), `DestroyAll`, label ownership, idempotent destroy — `X01 X02 X05`
 - [ ] 2.7 Docker unit tests (fake client) — `C01 C04GO`
-- [ ] 2.8 Privilege model: default non-root + scoped root (`exec -u 0`); base image with known non-root user + writable `/workspace`; `SudoPolicy` gating — `§7.10 S11`
+- [ ] 2.8 Privilege model: default non-root + scoped root (`exec -u 0`); base image with known non-root user + writable/executable `/tmp` (and `/run` for secrets); `SudoPolicy` gating — `§7.10 S11`
 
 ## Phase 3 — Declarative tool framework + MCP surface
 

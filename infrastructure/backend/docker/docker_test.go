@@ -133,13 +133,61 @@ func TestCreate_AppliesIsolation(t *testing.T) {
 	if hc.NanoCPUs != 1_000_000_000 {
 		t.Errorf("NanoCPUs wrong")
 	}
-	if hc.Tmpfs == nil || hc.Tmpfs[tmpfsConfDir] == "" || hc.Tmpfs[tmpfsWorkdir] == "" {
+	if hc.Tmpfs == nil || hc.Tmpfs[tmpfsRunDir] == "" || hc.Tmpfs[tmpfsTmpDir] == "" {
 		t.Errorf("tmpfs mounts missing: %v", hc.Tmpfs)
 	}
 
 	cfg := api.lastConfig()
 	if cfg.User != "1000:1000" {
 		t.Errorf("Config.User = %q, want non-root 1000:1000", cfg.User)
+	}
+}
+
+// TestCreate_TmpfsLayout locks the reworked tmpfs layout (SPEC §7.1):
+//   - the two separate tmpfs mounts (/run/sandbox and /workspace) are gone;
+//   - /run is a tmpfs, owned by the sandbox user, and stays noexec (a secrets
+//     location does not need to execute);
+//   - /tmp is a tmpfs, writable AND executable (no noexec), so the sandbox can
+//     compile and run Go binaries against a read-only rootfs; nosuid,nodev kept.
+func TestCreate_TmpfsLayout(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	if _, err := b.Create(context.Background(), baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	hc := api.lastHostConfig()
+	tm := hc.Tmpfs
+	if tm == nil {
+		t.Fatal("no tmpfs mounts")
+	}
+	// The old separate mounts must not exist.
+	if _, ok := tm["/run/sandbox"]; ok {
+		t.Error("/run/sandbox must not be a separate tmpfs mount")
+	}
+	if _, ok := tm["/workspace"]; ok {
+		t.Error("/workspace must not be a separate tmpfs mount")
+	}
+	// /run is a tmpfs, owned by the sandbox user, and stays noexec.
+	run, ok := tm["/run"]
+	if !ok {
+		t.Fatal("/run must be a tmpfs")
+	}
+	if !strings.Contains(run, "uid=1000") || !strings.Contains(run, "gid=1000") {
+		t.Errorf("/run tmpfs must be owned by sandbox user 1000:1000: %q", run)
+	}
+	if !strings.Contains(run, "noexec") {
+		t.Errorf("/run tmpfs must keep noexec: %q", run)
+	}
+	// /tmp is a tmpfs, writable and executable (no noexec), nosuid,nodev kept.
+	tmp, ok := tm["/tmp"]
+	if !ok {
+		t.Fatal("/tmp must be a tmpfs")
+	}
+	if strings.Contains(tmp, "noexec") {
+		t.Errorf("/tmp tmpfs must NOT be noexec (must be executable): %q", tmp)
+	}
+	if !strings.Contains(tmp, "nosuid") || !strings.Contains(tmp, "nodev") {
+		t.Errorf("/tmp tmpfs must keep nosuid,nodev: %q", tmp)
 	}
 }
 
@@ -156,6 +204,40 @@ func TestCreate_LabelsAndSessionID(t *testing.T) {
 	}
 	if cfg.Labels[sessionLabelKey] != "sess-123" {
 		t.Errorf("session label = %q, want sess-123", cfg.Labels[sessionLabelKey])
+	}
+}
+
+func TestCreate_OpenCodeSessionLabel(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.ClientSessionID = "opencode-sess-1"
+	ctx := domainsession.WithSessionID(context.Background(), "sess-123")
+	if _, err := b.Create(ctx, s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cfg := api.lastConfig()
+	if cfg.Labels[opencodeSessionLabelKey] != "opencode-sess-1" {
+		t.Errorf("opencode session label = %q, want opencode-sess-1", cfg.Labels[opencodeSessionLabelKey])
+	}
+	// The existing owner and sandbox-session labels must remain intact.
+	if cfg.Labels[ownerLabelKey] != ownerLabelValue {
+		t.Errorf("owner label missing: %v", cfg.Labels)
+	}
+	if cfg.Labels[sessionLabelKey] != "sess-123" {
+		t.Errorf("session label = %q, want sess-123", cfg.Labels[sessionLabelKey])
+	}
+}
+
+func TestCreate_NoOpenCodeSessionLabelWhenEmpty(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	if _, err := b.Create(context.Background(), baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cfg := api.lastConfig()
+	if _, ok := cfg.Labels[opencodeSessionLabelKey]; ok {
+		t.Errorf("opencode session label must not be set when empty: %v", cfg.Labels)
 	}
 }
 
@@ -264,11 +346,12 @@ func TestCreate_SecretsDeliveredViaExecOnTmpfs(t *testing.T) {
 	if _, err := b.Create(context.Background(), s); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// The tmpfs secrets dir must be owned by the sandbox user so the unprivileged
-	// process can create and read its own 0600 secret files (§7.3).
+	// The /run tmpfs must be owned by the sandbox user so the unprivileged
+	// process can create the /run/sandbox secret dir and its own 0600 secret
+	// files (§7.3).
 	hc := api.lastHostConfig()
-	if !strings.Contains(hc.Tmpfs[tmpfsConfDir], "uid=1000") || !strings.Contains(hc.Tmpfs[tmpfsConfDir], "gid=1000") {
-		t.Errorf("secrets tmpfs %q must be owned by sandbox user 1000:1000", hc.Tmpfs[tmpfsConfDir])
+	if !strings.Contains(hc.Tmpfs[tmpfsRunDir], "uid=1000") || !strings.Contains(hc.Tmpfs[tmpfsRunDir], "gid=1000") {
+		t.Errorf("secrets tmpfs %q must be owned by sandbox user 1000:1000", hc.Tmpfs[tmpfsRunDir])
 	}
 	// Secrets must NOT be delivered via CopyToContainer (`docker cp`), which is
 	// incompatible with a read-only rootfs (§7.1); they are written by a docker
@@ -714,6 +797,9 @@ func TestCreate_RejectsUntrustedImage(t *testing.T) {
 	if len(api.createdConfigs) != 0 {
 		t.Fatal("no container create should have happened")
 	}
+	if pulls := api.pulledRefs(); len(pulls) != 0 {
+		t.Fatalf("no image pull should happen for an untrusted registry: %v", pulls)
+	}
 }
 
 func TestCreate_AcceptsTrustedImage(t *testing.T) {
@@ -726,5 +812,109 @@ func TestCreate_AcceptsTrustedImage(t *testing.T) {
 	}
 	if len(api.createdConfigs) != 1 {
 		t.Fatalf("created = %d, want 1", len(api.createdConfigs))
+	}
+}
+
+// TestCreate_ImageAlreadyPresent_NoPull verifies that when the image is already
+// in the local cache the create succeeds without issuing an image pull (SPEC
+// §7.9) — pulls are only a fallback for a missing-but-trusted image.
+func TestCreate_ImageAlreadyPresent_NoPull(t *testing.T) {
+	api := newFakeClient()
+	api.requirePull = false // image is already local
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "alpine:3.20"
+	if _, err := b.Create(context.Background(), s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(api.createdConfigs) != 1 {
+		t.Fatalf("created = %d, want 1", len(api.createdConfigs))
+	}
+	if pulls := api.pulledRefs(); len(pulls) != 0 {
+		t.Fatalf("unexpected image pulls for a local image: %v", pulls)
+	}
+}
+
+// TestCreate_MissingImage_PullsThenCreates verifies the auto-pull path: when the
+// image is not present locally the first ContainerCreate fails with "No such
+// image", the backend pulls the (validated, trusted) image and retries the
+// create, which then succeeds.
+func TestCreate_MissingImage_PullsThenCreates(t *testing.T) {
+	api := newFakeClient()
+	api.requirePull = true // image is not in the local cache
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "alpine:3.20"
+	if _, err := b.Create(context.Background(), s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if pulls := api.pulledRefs(); len(pulls) != 1 || pulls[0] != "alpine:3.20" {
+		t.Fatalf("pulled = %v, want exactly [alpine:3.20]", pulls)
+	}
+	if len(api.createdConfigs) != 1 {
+		t.Fatalf("created = %d, want 1 (the retried create)", len(api.createdConfigs))
+	}
+}
+
+// TestCreate_PullError verifies a failed pull is surfaced as a clear error and
+// no container is created (no partial state).
+func TestCreate_PullError(t *testing.T) {
+	api := newFakeClient()
+	api.requirePull = true
+	api.pullErr = errors.New("pull exploded")
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "alpine:3.20"
+	_, err := b.Create(context.Background(), s)
+	if err == nil {
+		t.Fatal("expected pull error")
+	}
+	if !strings.Contains(err.Error(), "pull exploded") {
+		t.Fatalf("error = %v, want pull error surfaced", err)
+	}
+	if len(api.createdConfigs) != 0 {
+		t.Fatal("no container should be created when the pull fails")
+	}
+}
+
+// TestCreate_PullReadError verifies a failure while draining the pull stream is
+// surfaced (image content is never logged, but a broken stream must not be
+// silently swallowed).
+func TestCreate_PullReadError(t *testing.T) {
+	api := newFakeClient()
+	api.requirePull = true
+	api.pullBodyErr = errors.New("stream broken")
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "alpine:3.20"
+	_, err := b.Create(context.Background(), s)
+	if err == nil {
+		t.Fatal("expected pull stream error")
+	}
+	if !strings.Contains(err.Error(), "stream broken") {
+		t.Fatalf("error = %v, want pull stream error surfaced", err)
+	}
+	if len(api.createdConfigs) != 0 {
+		t.Fatal("no container should be created when the pull stream fails")
+	}
+}
+
+// TestCreate_CreateError verifies a generic (non-"No such image") create error
+// is surfaced unchanged and does not trigger an image pull.
+func TestCreate_CreateError(t *testing.T) {
+	api := newFakeClient()
+	api.createErr = errors.New("daemon exploded")
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "alpine:3.20"
+	_, err := b.Create(context.Background(), s)
+	if err == nil {
+		t.Fatal("expected create error")
+	}
+	if !strings.Contains(err.Error(), "daemon exploded") {
+		t.Fatalf("error = %v, want create error surfaced", err)
+	}
+	if pulls := api.pulledRefs(); len(pulls) != 0 {
+		t.Fatalf("no image pull should happen for a generic create error: %v", pulls)
 	}
 }
