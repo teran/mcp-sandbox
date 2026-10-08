@@ -103,12 +103,18 @@ type config struct {
 	allowSymlinks bool
 	cwdMode       string
 	defaultImage  string
+	// allowedNetworkModes is the operator-configured allowlist of sandbox
+	// network modes (SPEC §7.1). When empty it defaults to the safe bridge mode
+	// only. A spec whose network mode is not in this set is rejected.
+	allowedNetworkModes []spec.NetworkMode
 }
 
 // New returns a docker backend for the given server configuration. Allow dirs
 // are canonicalized with EvalSymlinks so path checks compare like-for-like
 // (config.Validate already does this; canonicalizing again is idempotent).
-func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, api dockerAPI) *Backend {
+// allowedNetworkModes is optional; when omitted or empty the backend permits
+// only spec.DefaultNetworkModes() (the safe bridge default).
+func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, api dockerAPI, allowedNetworkModes ...[]spec.NetworkMode) *Backend {
 	canon := make([]string, 0, len(allowDirs))
 	for _, d := range allowDirs {
 		if r, err := filepath.EvalSymlinks(d); err == nil {
@@ -117,15 +123,29 @@ func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, a
 			canon = append(canon, d)
 		}
 	}
+	var allowed []spec.NetworkMode
+	if len(allowedNetworkModes) > 0 {
+		allowed = allowedNetworkModes[0]
+	}
 	return &Backend{
 		api: api,
 		cfg: config{
-			allowDirs:     canon,
-			allowSymlinks: allowSymlinks,
-			cwdMode:       cwdMode,
-			defaultImage:  defaultImage,
+			allowDirs:           canon,
+			allowSymlinks:       allowSymlinks,
+			cwdMode:             cwdMode,
+			defaultImage:        defaultImage,
+			allowedNetworkModes: allowed,
 		},
 	}
+}
+
+// allowedModes returns the effective network-mode allowlist, defaulting to the
+// safe bridge mode only when none was configured.
+func (b *Backend) allowedModes() []spec.NetworkMode {
+	if len(b.cfg.allowedNetworkModes) == 0 {
+		return spec.DefaultNetworkModes()
+	}
+	return b.cfg.allowedNetworkModes
 }
 
 // Name returns the backend name.
@@ -172,7 +192,7 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	if s.Image == "" {
 		s.Image = b.cfg.defaultImage
 	}
-	if err := s.Validate(); err != nil {
+	if err := s.ValidateWithNetworkModes(b.allowedModes()); err != nil {
 		return "", err
 	}
 	// Enforce the trusted-registry / digest policy (§7.9) before any Docker
@@ -250,7 +270,12 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 	pids := iso.PidsLimit
 
 	networkMode := string(iso.NetworkMode)
-	if networkMode == "" || networkMode == string(spec.NetworkHost) {
+	if networkMode == "" {
+		networkMode = string(spec.NetworkNone)
+	} else if networkMode == string(spec.NetworkHost) && !hasNetworkMode(b.allowedModes(), spec.NetworkHost) {
+		// Defense-in-depth (SPEC §7.1): never apply host networking unless the
+		// operator has explicitly allowed it via ALLOW_NETWORK_MODES. When host
+		// is not allowed it is coerced to none.
 		networkMode = string(spec.NetworkNone)
 	}
 
@@ -614,4 +639,14 @@ func clampUint64(v uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(v)
+}
+
+// hasNetworkMode reports whether m is present in the given allowlist.
+func hasNetworkMode(allowed []spec.NetworkMode, m spec.NetworkMode) bool {
+	for _, n := range allowed {
+		if n == m {
+			return true
+		}
+	}
+	return false
 }

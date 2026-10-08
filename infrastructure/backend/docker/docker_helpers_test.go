@@ -7,35 +7,55 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
-func TestBuildHostConfig_NetworkDefaultsToNone(t *testing.T) {
+func TestBuildHostConfig_NetworkMode(t *testing.T) {
 	b := newBackendForDirs(newFakeClient())
-	// host networking is forcibly downgraded to none (policy, §7.1).
+
+	// bridge (the default) must pass through to container.NetworkMode.
 	s := baseSpec()
-	s.Isolation.NetworkMode = spec.NetworkHost
+	s.Isolation.NetworkMode = spec.NetworkBridge
 	hc := b.buildHostConfig(s, nil, nil)
-	if string(hc.NetworkMode) != "none" {
-		t.Fatalf("NetworkMode = %q, want none (host forbidden)", hc.NetworkMode)
+	if string(hc.NetworkMode) != "bridge" {
+		t.Fatalf("bridge NetworkMode = %q, want bridge (default)", hc.NetworkMode)
 	}
 
+	// host networking is forcibly downgraded to none when it is not allowed
+	// (defense-in-depth, §7.1).
 	s2 := baseSpec()
-	s2.Isolation.NetworkMode = ""
+	s2.Isolation.NetworkMode = spec.NetworkHost
 	hc2 := b.buildHostConfig(s2, nil, nil)
 	if string(hc2.NetworkMode) != "none" {
-		t.Fatalf("empty NetworkMode = %q, want none", hc2.NetworkMode)
+		t.Fatalf("NetworkMode = %q, want none (host not allowed)", hc2.NetworkMode)
+	}
+
+	// host passes through only when the operator has explicitly allowed it.
+	bh := New(nil, false, "ro", "img", newFakeClient(), []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+	s5 := baseSpec()
+	s5.Isolation.NetworkMode = spec.NetworkHost
+	hc5 := bh.buildHostConfig(s5, nil, nil)
+	if string(hc5.NetworkMode) != "host" {
+		t.Fatalf("NetworkMode = %q, want host (allowed by config)", hc5.NetworkMode)
+	}
+
+	// an empty mode is coerced to none.
+	s3 := baseSpec()
+	s3.Isolation.NetworkMode = ""
+	hc3 := b.buildHostConfig(s3, nil, nil)
+	if string(hc3.NetworkMode) != "none" {
+		t.Fatalf("empty NetworkMode = %q, want none", hc3.NetworkMode)
 	}
 
 	// Ulimits passthrough.
-	s3 := baseSpec()
-	s3.Isolation.Ulimits = []spec.Ulimit{{Name: "nofile", Soft: 100, Hard: 200}}
-	hc3 := b.buildHostConfig(s3, nil, nil)
-	if len(hc3.Ulimits) != 1 || hc3.Ulimits[0].Name != "nofile" {
-		t.Fatalf("ulimits = %+v", hc3.Ulimits)
+	s4 := baseSpec()
+	s4.Isolation.Ulimits = []spec.Ulimit{{Name: "nofile", Soft: 100, Hard: 200}}
+	hc4 := b.buildHostConfig(s4, nil, nil)
+	if len(hc4.Ulimits) != 1 || hc4.Ulimits[0].Name != "nofile" {
+		t.Fatalf("ulimits = %+v", hc4.Ulimits)
 	}
 }
 
 func TestResolveMounts(t *testing.T) {
 	dir := t.TempDir()
-	b := New([]string{dir}, false, "readonly", "img", newFakeClient())
+	b := New([]string{dir}, false, "ro", "img", newFakeClient())
 
 	// Cwd mounted 1:1, read-only by default.
 	s := baseSpec()

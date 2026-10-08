@@ -71,7 +71,7 @@ See `SPEC.md` §7.
 - **Immutable `Isolation` block:** `ReadOnlyRootfs=true`, `CapDrop:ALL` (minimal
   re-add), `no-new-privileges`, seccomp (default MVP; custom is mandatory
   roadmap), **non-root** user, bounded `PidsLimit`/`Memory`/`NanoCPUs`/
-  `Ulimits`, **Network `none`** (host forbidden), tmpfs workdir
+  `Ulimits`, **Network `bridge`** (host forbidden), tmpfs workdir
   (`rw,noexec,nosuid,nodev`), `AutoRemove=true`. A caller must **never** be able
   to weaken these.
 - **TLS is never implemented in-server (S01).** This is a Local/stdio server —

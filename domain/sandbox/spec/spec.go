@@ -11,12 +11,47 @@ import (
 type NetworkMode string
 
 const (
-	// NetworkNone disables networking entirely (safe default).
+	// NetworkBridge attaches the sandbox to Docker's default bridged network
+	// (safe default).
+	NetworkBridge NetworkMode = "bridge"
+	// NetworkNone disables networking entirely.
 	NetworkNone NetworkMode = "none"
-	// NetworkHost exposes the host network namespace. It is forbidden at the
-	// policy level (immutable Isolation) and never applied.
+	// NetworkHost exposes the host network namespace. It is never allowed
+	// implicitly: a sandbox may use it only when the operator explicitly lists
+	// it in ALLOW_NETWORK_MODES (SPEC §7.1).
 	NetworkHost NetworkMode = "host"
 )
+
+// AllNetworkModes returns every network mode the server knows about.
+func AllNetworkModes() []NetworkMode {
+	return []NetworkMode{NetworkNone, NetworkBridge, NetworkHost}
+}
+
+// DefaultNetworkModes returns the default allowlist of network modes when the
+// operator does not configure ALLOW_NETWORK_MODES: only the safe bridge mode.
+// Host networking is never allowed implicitly (SPEC §7.1).
+func DefaultNetworkModes() []NetworkMode {
+	return []NetworkMode{NetworkBridge}
+}
+
+// IsValidNetworkMode reports whether m is one of the known network modes.
+func IsValidNetworkMode(m NetworkMode) bool {
+	for _, n := range AllNetworkModes() {
+		if m == n {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNetworkMode(allowed []NetworkMode, m NetworkMode) bool {
+	for _, n := range allowed {
+		if n == m {
+			return true
+		}
+	}
+	return false
+}
 
 // SudoPolicy controls whether sandbox_install_package may use privilege
 // escalation (via sudo).
@@ -118,9 +153,21 @@ type SandboxSpec struct {
 }
 
 // Validate checks that the sandbox spec is well-formed and that the immutable
-// Isolation hardening cannot be weakened by a caller (§7.1). It returns a
-// descriptive error identifying the first problem found.
+// Isolation hardening cannot be weakened by a caller (§7.1). It permits only
+// the default network-mode allowlist (DefaultNetworkModes).
 func (s *SandboxSpec) Validate() error {
+	return s.ValidateWithNetworkModes(DefaultNetworkModes())
+}
+
+// ValidateWithNetworkModes is like Validate but permits only the given network
+// modes for the immutable Isolation (§7.1). A requested mode not in the allowed
+// set — including host when the operator has not listed it — is rejected.
+// allowed must be non-empty; an empty allowlist rejects every spec. It returns
+// a descriptive error identifying the first problem found.
+func (s *SandboxSpec) ValidateWithNetworkModes(allowed []NetworkMode) error {
+	if len(allowed) == 0 {
+		return fmt.Errorf("sandbox: no network modes are allowed")
+	}
 	if strings.TrimSpace(s.Image) == "" {
 		return fmt.Errorf("sandbox: Image is required")
 	}
@@ -141,11 +188,11 @@ func (s *SandboxSpec) Validate() error {
 	if !hasCapDropAll(iso.CapDrop) {
 		return fmt.Errorf("sandbox: Isolation.CapDrop must drop ALL (server-enforced)")
 	}
-	if iso.NetworkMode == NetworkHost {
-		return fmt.Errorf("sandbox: host networking is forbidden by policy")
-	}
 	if iso.NetworkMode == "" {
-		return fmt.Errorf("sandbox: Isolation.NetworkMode must be set (default none)")
+		return fmt.Errorf("sandbox: Isolation.NetworkMode must be set (default bridge)")
+	}
+	if !containsNetworkMode(allowed, iso.NetworkMode) {
+		return fmt.Errorf("sandbox: network mode %q is not in the allowed set %v", iso.NetworkMode, allowed)
 	}
 	if iso.User.UID == 0 {
 		return fmt.Errorf("sandbox: Isolation.User must be non-root (server-enforced)")

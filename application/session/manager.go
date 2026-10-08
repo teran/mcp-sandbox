@@ -33,17 +33,28 @@ type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*domainsession.Session
 	life     role.Lifecycle
+	// allowedNetworkModes is the operator-configured allowlist of sandbox
+	// network modes (SPEC §7.1). When empty it defaults to the safe bridge mode
+	// only. A spec whose network mode is not in this set is rejected.
+	allowedNetworkModes []spec.NetworkMode
 	// newID generates the opaque session id. It is a field so tests can force
 	// deterministic ids or failures.
 	newID func() (string, error)
 }
 
 // NewManager returns a session manager backed by the given lifecycle backend.
-func NewManager(life role.Lifecycle) *Manager {
+// allowedNetworkModes is optional; when omitted or empty the manager permits
+// only spec.DefaultNetworkModes() (the safe bridge default).
+func NewManager(life role.Lifecycle, allowedNetworkModes ...[]spec.NetworkMode) *Manager {
+	var allowed []spec.NetworkMode
+	if len(allowedNetworkModes) > 0 {
+		allowed = allowedNetworkModes[0]
+	}
 	return &Manager{
-		sessions: make(map[string]*domainsession.Session),
-		life:     life,
-		newID:    newID,
+		sessions:            make(map[string]*domainsession.Session),
+		life:                life,
+		newID:               newID,
+		allowedNetworkModes: allowed,
 	}
 }
 
@@ -66,7 +77,11 @@ func newIDFrom(r io.Reader) (string, error) {
 // registers the resulting session. It surfaces duplicate ids as an error
 // (search-before-create, X02).
 func (m *Manager) Create(ctx context.Context, s spec.SandboxSpec) (*domainsession.Session, error) {
-	if err := s.Validate(); err != nil {
+	allowed := m.allowedNetworkModes
+	if len(allowed) == 0 {
+		allowed = spec.DefaultNetworkModes()
+	}
+	if err := s.ValidateWithNetworkModes(allowed); err != nil {
 		return nil, err
 	}
 

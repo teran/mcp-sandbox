@@ -97,10 +97,11 @@ var newStdioTransport = func() mcp.Transport { return &mcp.StdioTransport{} }
 // happen here (A02/N35); the backend is selected lazily on the first tool call.
 func buildServer(cfg *config.Config, logger *logging.Logger) *mcp.Server {
 	svc := mcpserver.NewService(backend.Default, backend.Config{
-		DockerHost:    cfg.DockerHost,
-		AllowDirs:     cfg.AllowDirs,
-		AllowSymlinks: cfg.AllowSymlinks,
-		CwdMode:       cfg.SandboxCwdMode,
+		DockerHost:        cfg.DockerHost,
+		AllowDirs:         cfg.AllowDirs,
+		AllowSymlinks:     cfg.AllowSymlinks,
+		CwdMode:           cfg.SandboxCwdMode,
+		AllowNetworkModes: cfg.AllowNetworkModes,
 	})
 	deps := mcpserver.HandlerDependencies(logger)
 	return mcpserver.NewServer(

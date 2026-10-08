@@ -66,7 +66,7 @@ func validSpec() spec.SandboxSpec {
 			Memory:          128 * 1024 * 1024,
 			MemorySwap:      128 * 1024 * 1024,
 			NanoCPUs:        1_000_000_000,
-			NetworkMode:     spec.NetworkNone,
+			NetworkMode:     spec.NetworkBridge,
 			TmpfsWorkdir:    true,
 			AutoRemove:      true,
 		},
@@ -128,6 +128,32 @@ func TestCreate_BackendError(t *testing.T) {
 	}
 	if len(m.List()) != 0 {
 		t.Fatal("no session should be registered on backend failure")
+	}
+}
+
+func TestCreate_NetworkModeNotAllowedRejected(t *testing.T) {
+	life := newFakeLife()
+	m := NewManager(life, spec.DefaultNetworkModes()) // bridge only
+	s := validSpec()
+	s.Isolation.NetworkMode = spec.NetworkHost
+	if _, err := m.Create(context.Background(), s); err == nil {
+		t.Fatal("expected host networking to be rejected")
+	}
+	if len(life.created) != 0 {
+		t.Fatal("backend should not be called for a disallowed network mode")
+	}
+}
+
+func TestCreate_NetworkModeAllowedWhenListed(t *testing.T) {
+	life := newFakeLife()
+	m := NewManager(life, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+	s := validSpec()
+	s.Isolation.NetworkMode = spec.NetworkHost
+	if _, err := m.Create(context.Background(), s); err != nil {
+		t.Fatalf("host should be allowed when listed: %v", err)
+	}
+	if len(life.created) != 1 {
+		t.Fatal("backend should be called for an allowed network mode")
 	}
 }
 

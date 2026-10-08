@@ -415,7 +415,7 @@ startup (local wiring only):
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600` (**L01/L03**). |
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Reaper idle window. |
-| `SANDBOX_CWD_MODE` | `readonly` | Session `cwd` mount mode: `readonly` (default) or `rw` (opt-in, global feature flag, §7.2). |
+| `SANDBOX_CWD_MODE` | `ro` | Session `cwd` mount mode: `ro` (default) or `rw` (opt-in, global feature flag, §7.2). |
 
 ---
 
@@ -443,7 +443,7 @@ create, regardless of the input spec:
 | `Memory` / `MemorySwap` | Set and bounded. |
 | `NanoCPUs` | Bounded. |
 | `Ulimits` | Set. |
-| `NetworkMode` | **`none` by default**; **`host` is forbidden at policy level**. |
+| `NetworkMode` | **`bridge` by default** (Docker's default bridged network); **`host` is forbidden at policy level**. |
 | `tmpfs` working dir | Mounted `rw,noexec,nosuid,nodev`. |
 | `AutoRemove` | `true` — container auto-removed on stop. |
 

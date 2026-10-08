@@ -29,7 +29,7 @@ func baseSpec() spec.SandboxSpec {
 			Memory:          128 * 1024 * 1024,
 			MemorySwap:      128 * 1024 * 1024,
 			NanoCPUs:        1_000_000_000,
-			NetworkMode:     spec.NetworkNone,
+			NetworkMode:     spec.NetworkBridge,
 			TmpfsWorkdir:    true,
 			AutoRemove:      true,
 		},
@@ -39,7 +39,7 @@ func baseSpec() spec.SandboxSpec {
 // newBackendForDirs builds a backend whose ALLOW_DIRS are the given dirs. The
 // cwd mount defaults to read-only (SPEC §7.2) unless an explicit mode is given.
 func newBackendForDirs(api dockerAPI, dirs ...string) *Backend {
-	return New(dirs, false, "readonly", "default-image:latest", api)
+	return New(dirs, false, "ro", "default-image:latest", api)
 }
 
 func TestNamePriorityCapabilities(t *testing.T) {
@@ -53,6 +53,33 @@ func TestNamePriorityCapabilities(t *testing.T) {
 	c := b.Capabilities()
 	if !c.Lifecycle || !c.Executable || !c.Introspectable {
 		t.Fatalf("capabilities = %+v", c)
+	}
+}
+
+func TestCreate_RejectsHostNetwork(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Isolation.NetworkMode = spec.NetworkHost
+	if _, err := b.Create(context.Background(), s); err == nil {
+		t.Fatal("expected host networking to be rejected")
+	}
+	if len(api.createdConfigs) != 0 {
+		t.Fatal("no container create should have happened for host networking")
+	}
+}
+
+func TestCreate_AllowsHostNetworkWhenAllowed(t *testing.T) {
+	api := newFakeClient()
+	b := New(nil, false, "readonly", "img", api, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+	s := baseSpec()
+	s.Isolation.NetworkMode = spec.NetworkHost
+	if _, err := b.Create(context.Background(), s); err != nil {
+		t.Fatalf("host should be allowed when listed: %v", err)
+	}
+	hc := api.lastHostConfig()
+	if string(hc.NetworkMode) != "host" {
+		t.Fatalf("NetworkMode = %q, want host", hc.NetworkMode)
 	}
 }
 
@@ -94,8 +121,8 @@ func TestCreate_AppliesIsolation(t *testing.T) {
 	if !hc.AutoRemove {
 		t.Error("AutoRemove must be true")
 	}
-	if string(hc.NetworkMode) != "none" {
-		t.Errorf("NetworkMode = %q, want none", hc.NetworkMode)
+	if string(hc.NetworkMode) != "bridge" {
+		t.Errorf("NetworkMode = %q, want bridge", hc.NetworkMode)
 	}
 	if hc.PidsLimit == nil || *hc.PidsLimit != 100 {
 		t.Errorf("PidsLimit wrong")
@@ -163,7 +190,7 @@ func TestCreate_InvalidSpec(t *testing.T) {
 func TestCreate_CwdMounted11ReadOnlyByDefault(t *testing.T) {
 	dir := t.TempDir()
 	api := newFakeClient()
-	b := New([]string{dir}, false, "readonly", "img", api)
+	b := New([]string{dir}, false, "ro", "img", api)
 	s := baseSpec()
 	s.WorkingDir = dir
 	if _, err := b.Create(context.Background(), s); err != nil {

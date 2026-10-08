@@ -15,6 +15,7 @@ import (
 // fakeBackend implements every role so the Service can exercise all paths.
 type fakeBackend struct {
 	created       bool
+	createdSpec   spec.SandboxSpec
 	destroyed     int
 	execReq       exec.Request
 	execRes       *exec.Result
@@ -29,8 +30,9 @@ func (f *fakeBackend) Capabilities() role.CapabilitySet {
 	return role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true}
 }
 
-func (f *fakeBackend) Create(_ context.Context, _ spec.SandboxSpec) (string, error) {
+func (f *fakeBackend) Create(_ context.Context, s spec.SandboxSpec) (string, error) {
 	f.created = true
+	f.createdSpec = s
 	return "cid-1", nil
 }
 
@@ -253,8 +255,66 @@ func TestService_PolicyAndBackendName(t *testing.T) {
 	if svc.BackendName() != "docker" {
 		t.Fatalf("backend name = %q", svc.BackendName())
 	}
-	if pol.Isolation.NetworkMode != spec.NetworkNone {
+	if pol.Isolation.NetworkMode != spec.NetworkBridge {
 		t.Fatalf("isolation = %+v", pol.Isolation)
+	}
+}
+
+func TestService_DefaultIsolationIsBridgeAndAppliedOnCreate(t *testing.T) {
+	// The server-enforced default isolation must use a bridged network.
+	if got := defaultIsolation().NetworkMode; got != spec.NetworkBridge {
+		t.Fatalf("defaultIsolation().NetworkMode = %q, want bridge", got)
+	}
+
+	// sandbox_create (via the service) applies the bridge default to every spec.
+	fb := &fakeBackend{}
+	svc := newTestService(t, fb)
+	if _, err := svc.Create(context.Background(), testSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if !fb.created {
+		t.Fatal("backend Create not called")
+	}
+	if fb.createdSpec.Isolation.NetworkMode != spec.NetworkBridge {
+		t.Fatalf("created spec Isolation.NetworkMode = %q, want bridge", fb.createdSpec.Isolation.NetworkMode)
+	}
+	if err := fb.createdSpec.Validate(); err != nil {
+		t.Fatalf("created spec must validate: %v", err)
+	}
+}
+
+func TestService_CreateNetworkModeAllowlist(t *testing.T) {
+	mkService := func(cfg backend.Config) (*Service, *fakeBackend) {
+		fb := &fakeBackend{}
+		reg := backend.NewRegistry()
+		if err := reg.Register(backend.Factory{
+			Name:         "fake",
+			Priority:     0,
+			Capabilities: needAll,
+			Available:    func() bool { return true },
+			New:          func(backend.Config) (role.Backend, error) { return fb, nil },
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return NewService(reg, cfg), fb
+	}
+
+	hostSpec := testSpec()
+	hostSpec.Isolation.NetworkMode = spec.NetworkHost
+
+	// Default config (no allowlist → bridge only) rejects host.
+	svc, _ := mkService(backend.Config{})
+	if _, err := svc.Create(context.Background(), hostSpec); err == nil {
+		t.Fatal("expected host to be rejected by default")
+	}
+
+	// Config listing host passes the host spec through to the backend.
+	svc2, fb2 := mkService(backend.Config{AllowNetworkModes: []string{"bridge", "host"}})
+	if _, err := svc2.Create(context.Background(), hostSpec); err != nil {
+		t.Fatalf("host should be allowed when listed: %v", err)
+	}
+	if !fb2.created || fb2.createdSpec.Isolation.NetworkMode != spec.NetworkHost {
+		t.Fatal("host spec should reach the backend")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
@@ -51,7 +52,7 @@ func dockerAvailable() bool {
 // unix socket per DOCKER_HOST) with an ALLOW_DIRS rooted at the given host dir.
 // It first pulls the e2e base image so ContainerCreate can start from it
 // (pre-provisioned images, SPEC §7.10).
-func newBackend(t *testing.T, allowDir string) *docker.Backend {
+func newBackend(t *testing.T, allowDir string, allowedNetworkModes ...[]spec.NetworkMode) *docker.Backend {
 	t.Helper()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -71,7 +72,7 @@ func newBackend(t *testing.T, allowDir string) *docker.Backend {
 	}
 	_ = rd.Close()
 
-	return docker.New([]string{allowDir}, false, "readonly", e2eImage, cli)
+	return docker.New([]string{allowDir}, false, "ro", e2eImage, cli, allowedNetworkModes...)
 }
 
 // mkSpec returns a valid spec satisfying spec.Validate for the docker backend:
@@ -89,7 +90,7 @@ func mkSpec() spec.SandboxSpec {
 			Memory:          256 * 1024 * 1024,
 			MemorySwap:      256 * 1024 * 1024,
 			NanoCPUs:        1_000_000_000,
-			NetworkMode:     spec.NetworkNone,
+			NetworkMode:     spec.NetworkBridge,
 			TmpfsWorkdir:    true,
 			AutoRemove:      true,
 		},
@@ -161,5 +162,94 @@ func TestSecretsDelivery(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(res.Stdout)); got != "600" {
 		t.Fatalf("secret file mode = %q, want 600", got)
+	}
+}
+
+// TestNetworkBridgeConnectivity verifies the default bridged network: a sandbox
+// created without an explicit network reaches the network over Docker's default
+// bridge, i.e. it can resolve and fetch a remote resource. This guards the
+// default-network-mode change from `none` to `bridge`.
+func TestNetworkBridgeConnectivity(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker daemon not available; skipping bridge connectivity e2e")
+	}
+
+	allowDir := t.TempDir()
+	b := newBackend(t, allowDir)
+
+	s := mkSpec()
+	s.Isolation.NetworkMode = spec.NetworkBridge
+
+	id := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := b.Create(domainsession.WithSessionID(ctx, id), s); err != nil {
+		t.Fatalf("create sandbox with bridge network: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(context.Background(), id) })
+
+	res, err := b.Exec(ctx, id, exec.Request{Argv: []string{"/usr/bin/wget", "-q", "-O", "/dev/null", "http://example.com"}})
+	if err != nil {
+		t.Fatalf("exec wget: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("bridge network fetch failed: exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+}
+
+// TestNetworkHostRejected verifies that host networking remains forbidden at the
+// backend level (SPEC §7.1) and no container is created for it.
+func TestNetworkHostRejected(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker daemon not available; skipping host-rejection e2e")
+	}
+
+	allowDir := t.TempDir()
+	b := newBackend(t, allowDir)
+
+	s := mkSpec()
+	s.Isolation.NetworkMode = spec.NetworkHost
+
+	id := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := b.Create(domainsession.WithSessionID(ctx, id), s); err == nil {
+		t.Fatal("expected host networking to be rejected")
+	}
+}
+
+// TestNetworkHostAllowedWhenConfigured verifies that host networking is applied
+// when the operator has explicitly allowed it via ALLOW_NETWORK_MODES
+// (SPEC §7.1): the backend accepts the host spec and the container is created
+// with host networking.
+func TestNetworkHostAllowedWhenConfigured(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker daemon not available; skipping host-allowed e2e")
+	}
+
+	allowDir := t.TempDir()
+	b := newBackend(t, allowDir, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+
+	s := mkSpec()
+	s.Isolation.NetworkMode = spec.NetworkHost
+
+	id := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := b.Create(domainsession.WithSessionID(ctx, id), s); err != nil {
+		t.Fatalf("host should be allowed when configured: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(context.Background(), id) })
+
+	ins, err := b.Info(context.Background(), id)
+	if err != nil {
+		t.Fatalf("inspect sandbox: %v", err)
+	}
+	resp, ok := ins.(container.InspectResponse)
+	if !ok {
+		t.Fatalf("Info returned %T, want container.InspectResponse", ins)
+	}
+	if resp.HostConfig == nil || string(resp.HostConfig.NetworkMode) != "host" {
+		t.Fatalf("container NetworkMode = %v, want host", resp.HostConfig.NetworkMode)
 	}
 }

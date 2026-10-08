@@ -76,7 +76,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.SandboxIdleTimeout != 15*time.Minute {
 		t.Fatalf("SandboxIdleTimeout default = %v", c.SandboxIdleTimeout)
 	}
-	if c.SandboxCwdMode != "readonly" {
+	if c.SandboxCwdMode != "ro" {
 		t.Fatalf("SandboxCwdMode default = %q", c.SandboxCwdMode)
 	}
 }
@@ -84,13 +84,13 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_CwdModeOverrides(t *testing.T) {
 	unsetEnv(t, "ALLOW_DIRS")
 	unsetEnv(t, "SANDBOX_CWD_MODE")
-	t.Setenv("SANDBOX_CWD_MODE", "readonly")
+	t.Setenv("SANDBOX_CWD_MODE", "rw")
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.SandboxCwdMode != "readonly" {
-		t.Fatalf("SandboxCwdMode = %q, want readonly", c.SandboxCwdMode)
+	if c.SandboxCwdMode != "rw" {
+		t.Fatalf("SandboxCwdMode = %q, want rw", c.SandboxCwdMode)
 	}
 }
 
@@ -171,5 +171,59 @@ func TestValidate_ValidLogFormats(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Fatalf("Validate(format=%q): %v", f, err)
 		}
+	}
+}
+
+func TestLoad_AllowNetworkModes(t *testing.T) {
+	t.Setenv("ALLOW_NETWORK_MODES", "bridge,host")
+	t.Setenv("LOG_LEVEL", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.AllowNetworkModes) != 2 || c.AllowNetworkModes[0] != "bridge" || c.AllowNetworkModes[1] != "host" {
+		t.Fatalf("AllowNetworkModes = %v, want [bridge host]", c.AllowNetworkModes)
+	}
+}
+
+func TestValidate_AllowNetworkModesDefaultsToBridge(t *testing.T) {
+	c := &Config{}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(c.AllowNetworkModes) != 1 || c.AllowNetworkModes[0] != "bridge" {
+		t.Fatalf("AllowNetworkModes default = %v, want [bridge]", c.AllowNetworkModes)
+	}
+}
+
+func TestValidate_InvalidNetworkMode(t *testing.T) {
+	c := &Config{AllowNetworkModes: []string{"bridge", "wifi"}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid network mode")
+	}
+	if !strings.Contains(err.Error(), "ALLOW_NETWORK_MODES[1]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ValidNetworkModes(t *testing.T) {
+	for _, modes := range [][]string{{"none"}, {"bridge"}, {"host"}, {"none", "bridge", "host"}} {
+		c := &Config{AllowNetworkModes: modes}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate(%v): %v", modes, err)
+		}
+	}
+}
+
+func TestLoad_UnknownNetworkModeFailsValidation(t *testing.T) {
+	t.Setenv("ALLOW_NETWORK_MODES", "host,lan")
+	t.Setenv("LOG_LEVEL", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected validation error for unknown network mode")
 	}
 }

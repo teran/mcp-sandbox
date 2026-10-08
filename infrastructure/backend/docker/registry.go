@@ -7,6 +7,7 @@ import (
 	"github.com/docker/docker/api/types"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
+	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
 )
 
@@ -50,5 +51,16 @@ func newFromConfig(cfg backend.Config) (role.Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(cfg.AllowDirs, cfg.AllowSymlinks, cfg.CwdMode, cfg.DefaultImage, cli), nil
+	return New(cfg.AllowDirs, cfg.AllowSymlinks, cfg.CwdMode, cfg.DefaultImage, cli, toNetworkModes(cfg.AllowNetworkModes)), nil
+}
+
+// toNetworkModes converts the validated ALLOW_NETWORK_MODES strings into typed
+// spec.NetworkMode values. config.Validate has already guaranteed every entry
+// is a known mode, so the cast is safe.
+func toNetworkModes(modes []string) []spec.NetworkMode {
+	out := make([]spec.NetworkMode, 0, len(modes))
+	for _, m := range modes {
+		out = append(out, spec.NetworkMode(m))
+	}
+	return out
 }

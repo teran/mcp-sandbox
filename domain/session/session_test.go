@@ -21,7 +21,7 @@ func validSpec() spec.SandboxSpec {
 			Memory:          128 * 1024 * 1024,
 			MemorySwap:      128 * 1024 * 1024,
 			NanoCPUs:        1_000_000_000,
-			NetworkMode:     spec.NetworkNone,
+			NetworkMode:     spec.NetworkBridge,
 			TmpfsWorkdir:    true,
 			AutoRemove:      true,
 		},

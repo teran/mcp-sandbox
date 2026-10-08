@@ -118,7 +118,7 @@ auth via environment, no HTTP headers).
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
 | `LOG_FORMAT` | `text` | `text` or `json`. |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
-| `SANDBOX_CWD_MODE` | `readonly` | Session `cwd` mount mode: `readonly` (default) or `rw` (opt-in, global feature flag). |
+| `SANDBOX_CWD_MODE` | `ro` | Session `cwd` mount mode: `ro` (default) or `rw` (opt-in, global feature flag). |
 
 Example:
 
@@ -232,7 +232,7 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   privileges; **seccomp** (default MVP profile; custom profile is mandatory
   roadmap); **non-root** user inside.
 - Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits`.
-- **Network `none` by default**; `host` networking forbidden at policy level.
+- **Network `bridge` by default** (Docker's default bridged network); `host` networking forbidden at policy level.
 - tmpfs working dir (`rw,noexec,nosuid,nodev`); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
   symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); the session

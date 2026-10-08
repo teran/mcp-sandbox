@@ -101,7 +101,7 @@ func (f *fakeService) Stats(_ context.Context, _ string) (any, error) {
 var errFake = errors.New("boom")
 
 // policy returns a server-enforced policy whose Isolation satisfies
-// spec.Validate (non-root user, network none, bounded resources, tmpfs,
+// spec.Validate (non-root user, network bridge, bounded resources, tmpfs,
 // auto-remove, cap-drop ALL, read-only root, no-new-privileges).
 func defaultPolicy() Policy {
 	return Policy{
@@ -116,7 +116,7 @@ func defaultPolicy() Policy {
 			Memory:          512 * 1024 * 1024,
 			MemorySwap:      1024 * 1024 * 1024,
 			NanoCPUs:        1_000_000_000,
-			NetworkMode:     spec.NetworkNone,
+			NetworkMode:     spec.NetworkBridge,
 			TmpfsWorkdir:    true,
 			AutoRemove:      true,
 		},

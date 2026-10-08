@@ -29,12 +29,18 @@ type Config struct {
 	AllowDirs []string
 	// AllowSymlinks controls whether host path symlinks are followed (S04).
 	AllowSymlinks bool
-	// CwdMode is the session working-directory mount mode: "rw" (default)
-	// or "readonly" (global feature flag, SPEC §7.2).
+	// CwdMode is the session working-directory mount mode: "rw" (writable)
+	// or "ro" (read-only, default; global feature flag, SPEC §7.2).
 	CwdMode string
 	// DefaultImage is the base image used when a sandbox spec does not
 	// pin one (pre-provisioned, non-root user, SPEC §7.10).
 	DefaultImage string
+	// AllowNetworkModes are the sandbox network modes the operator permits
+	// (SPEC §7.1), as validated strings ("none", "bridge", "host"). A sandbox
+	// may use a network mode only if it is listed here; host networking is
+	// allowed only when explicitly listed. Empty means the server defaults to
+	// the safe bridge mode only.
+	AllowNetworkModes []string
 }
 
 // Factory describes how to construct a backend. Backends are registered by

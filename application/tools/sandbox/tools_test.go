@@ -257,6 +257,12 @@ func TestSandboxCreate_DefaultImageAndIsolation(t *testing.T) {
 	if sp.UIDGID.UID != 1000 {
 		t.Fatalf("uid = %d", sp.UIDGID.UID)
 	}
+	if sp.Isolation.NetworkMode != spec.NetworkBridge {
+		t.Fatalf("default isolation network = %q, want bridge", sp.Isolation.NetworkMode)
+	}
+	if sp.Network.Mode != spec.NetworkBridge {
+		t.Fatalf("default network mode = %q, want bridge", sp.Network.Mode)
+	}
 	if err := sp.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}

@@ -67,7 +67,7 @@ func (s *Service) ensure(ctx context.Context) (*session.Manager, role.Backend, e
 		return nil, nil, role.ErrCapabilityNotSupported
 	}
 	s.be = be
-	s.mgr = session.NewManager(life)
+	s.mgr = session.NewManager(life, toNetworkModes(s.cfg.AllowNetworkModes))
 	return s.mgr, be, nil
 }
 
@@ -176,6 +176,17 @@ func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 	return ins.Stats(ctx, id)
 }
 
+// toNetworkModes converts the validated ALLOW_NETWORK_MODES strings into typed
+// spec.NetworkMode values for the session manager. config.Validate has already
+// guaranteed every entry is a known mode, so the cast is safe.
+func toNetworkModes(modes []string) []spec.NetworkMode {
+	out := make([]spec.NetworkMode, 0, len(modes))
+	for _, m := range modes {
+		out = append(out, spec.NetworkMode(m))
+	}
+	return out
+}
+
 // defaultIsolation is the immutable, server-enforced hardening block (SPEC
 // §7.1). sandbox_create applies it to every spec; a caller can never weaken it.
 func defaultIsolation() spec.Isolation {
@@ -190,7 +201,7 @@ func defaultIsolation() spec.Isolation {
 		MemorySwap:      1024 * 1024 * 1024,
 		NanoCPUs:        1_000_000_000,
 		Ulimits:         []spec.Ulimit{{Name: "nofile", Soft: 1024, Hard: 2048}},
-		NetworkMode:     spec.NetworkNone,
+		NetworkMode:     spec.NetworkBridge,
 		TmpfsWorkdir:    true,
 		AutoRemove:      true,
 	}
