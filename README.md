@@ -34,10 +34,9 @@ restrictive than the host, never less.
 - Per-session, isolated, **ephemeral** Docker sandboxes.
 - Execute arbitrary commands inside the sandbox (argument-array exec — **no
   shell**).
-- File operations: read/write inside the sandbox, `copy_in` / `copy_out` scoped
-  to `ALLOW_DIRS`.
-- Targeted package install (`apt`/`dnf`) under a `SudoPolicy` — not a generic
-  shell.
+- The session `cwd` is mounted **1:1 at the same absolute path** (read-only by
+  default; opt-in `rw` via `SANDBOX_CWD_MODE=rw`); files come from the image,
+  the host, or the runtime — **mount + exec is the core mechanism**.
 - **Hardened by default**: read-only rootfs, drop-all capabilities, no-new-
   privileges, seccomp, non-root user, bounded resources, network `none`, tmpfs
   working dir, auto-remove.
@@ -78,7 +77,7 @@ Highlights:
   (`cmd/mcp-sandbox/`, `domain/`, `application/`, `infrastructure/`, `e2e/`) —
   no `internal/`.
 - **Role-based backend interfaces** (`Backend`, `Lifecycle`, `Executable`,
-  `Filesystem`, `Introspectable`) with capability dispatch via type-assertion
+  `Introspectable`) with capability dispatch via type-assertion
   and `ErrCapabilityNotSupported` — no stubs.
 - **Constructor-register backend factory**; Docker registers in `init()` and is
   selected **lazily** on the first create (no outbound calls at startup).
@@ -112,14 +111,14 @@ auth via environment, no HTTP headers).
 | Env | Default | Description |
 |-----|---------|-------------|
 | `-mode` (CLI flag) | `stdio` | Launch mode. Local server is fixed to `stdio`. |
-| `ALLOW_DIRS` | `[]` (none) | Permitted host directories for `copy_in`/`copy_out`. Empty ⇒ deny all. |
+| `ALLOW_DIRS` | `[]` (none) | Permitted host directories for mounts (incl. the session `cwd`). Empty ⇒ deny all. |
 | `ALLOW_SYMLINKS` | `false` | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level. stdio logging is **on only when set**. |
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
 | `LOG_FORMAT` | `text` | `text` or `json`. |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
-| `SANDBOX_CWD_MODE` | `rw` | Session `cwd` mount mode: `rw` (default) or `readonly` (global feature flag). |
+| `SANDBOX_CWD_MODE` | `readonly` | Session `cwd` mount mode: `readonly` (default) or `rw` (opt-in, global feature flag). |
 
 Example:
 
@@ -201,13 +200,20 @@ server:
 Grouped **read → write → delete** (S03):
 
 - **Read** (`readOnlyHint: true`): `sandbox_list`, `sandbox_info`,
-  `sandbox_stats`, `sandbox_read_file`.
+  `sandbox_stats`.
 - **Write/update** (`readOnlyHint: false`, `destructiveHint: false`):
-  `sandbox_create`, `sandbox_exec` (write-classified; ANSI-sanitized; redacted
-  paths), `sandbox_write_file` (idempotent), `sandbox_copy_in`,
-  `sandbox_copy_out`, `sandbox_install_package` (targeted apt/dnf; **not** a
-  generic shell).
+  `sandbox_create` (session `cwd` mounted 1:1 read-only by default, opt-in `rw`
+  via `SANDBOX_CWD_MODE=rw`), `sandbox_exec` (write-classified; ANSI-sanitized;
+  redacted argv).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
+
+> **Files come from the image, the host, or the runtime — never via MCP
+> file-write tools.** The session `cwd` is mounted 1:1, so the model-host writes
+> files on the **host** and the container reads/executes them at the same path;
+> runtime artifacts live in the writable tmpfs workspace. There are **no**
+> `sandbox_read_file` / `sandbox_write_file` / `sandbox_copy_in` /
+> `sandbox_copy_out` / `sandbox_install_package` tools — **mount + exec is the
+> core mechanism** (`SPEC.md` §4.2, §7.2).
 
 All tools are `openWorldHint: false` and carry per-tool annotations +
 instructions (`SPEC.md` §4).
@@ -229,8 +235,8 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
 - **Network `none` by default**; `host` networking forbidden at policy level.
 - tmpfs working dir (`rw,noexec,nosuid,nodev`); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
-  symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`), `copy_in`/
-  `copy_out` preferred over bind-mounts.
+  symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); the session
+  `cwd` is the one sanctioned bind-mount (read-only default).
 - Single **redaction layer** hides `secret:true` fields from all output and
   logs; secrets delivered as tmpfs `0600` files, never argv/image.
 - Sessions use opaque `crypto/rand` ids with label-based Docker ownership.

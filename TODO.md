@@ -39,8 +39,8 @@
 - [x] 3.4 WRITE tools: `sandbox_create`, `sandbox_exec` (argument-array, no shell) (originally also `write_file`/`copy_in`/`copy_out`/`install_package` — trimmed) — `S11 N21 S02`
 - [x] 3.5 DELETE tools: `sandbox_destroy`, `sandbox_destroy_all` (destructiveHint, client-side HITL) — `S12 S03`
 - [x] 3.6 Tool tests (annotations, schemas, redaction, access-log) — `M04 S08 S09`
-- [ ] 3.7 **Trim** MCP surface to the minimal 7-tool set — remove `sandbox_read_file`, `sandbox_write_file`, `sandbox_copy_in`, `sandbox_copy_out`, `sandbox_install_package` (files come from image/host/runtime; **mount + exec is the core**; §4.2) — `M07 S03`
-- [ ] 3.8 cwd mount **read-only by default** + opt-in `rw` via `SANDBOX_CWD_MODE` (align with host-side writes) — `§7.2`
+- [x] 3.7 **Trim** MCP surface to the minimal 7-tool set — remove `sandbox_read_file`, `sandbox_write_file`, `sandbox_copy_in`, `sandbox_copy_out`, `sandbox_install_package` (files come from image/host/runtime; **mount + exec is the core**; §4.2) — `M07 S03`
+- [x] 3.8 cwd mount **read-only by default** + opt-in `rw` via `SANDBOX_CWD_MODE` (align with host-side writes) — `§7.2`
 
 ## Phase 4 — e2e contract suite
 

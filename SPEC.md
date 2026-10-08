@@ -228,7 +228,7 @@ domain/                    pure domain model, no infra dependencies
                            ReadOnlyRoot, Isolation), validation
     exec/                  exec request/result types, result classification
     role/                  ISP role interfaces: Backend, Lifecycle, Executable,
-                           Filesystem, Introspectable (+ ErrCapabilityNotSupported)
+                           Introspectable (+ ErrCapabilityNotSupported)
     capability/            capability set types
   session/                 Session aggregate: id, spec, state, reaper, mutex
 application/               use-case orchestration
@@ -271,7 +271,6 @@ Role interfaces, each implemented *by* a backend and discovered via
 ```go
 type Lifecycle      interface { Create(ctx, spec) (id, error); Destroy(ctx, id) error }
 type Executable     interface { Exec(ctx, id, req) (*ExecResult, error) }
-type Filesystem     interface { ReadFile(ctx, id, path) ([]byte, error); WriteFile(...); CopyIn(...); CopyOut(...) }
 type Introspectable interface { Info(ctx, id); Stats(ctx, id) }
 ```
 
@@ -416,7 +415,7 @@ startup (local wiring only):
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600` (**L01/L03**). |
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Reaper idle window. |
-| `SANDBOX_CWD_MODE` | `rw` | Session `cwd` mount mode: `rw` (default) or `readonly` (global feature flag, §7.2). |
+| `SANDBOX_CWD_MODE` | `readonly` | Session `cwd` mount mode: `readonly` (default) or `rw` (opt-in, global feature flag, §7.2). |
 
 ---
 
