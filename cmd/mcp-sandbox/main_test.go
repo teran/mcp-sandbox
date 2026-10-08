@@ -13,8 +13,26 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teran/mcp-sandbox/application/config"
+	"github.com/teran/mcp-sandbox/infrastructure/backend"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
+
+// TestDockerBackend_Registered guards the composition root (SPEC §6.3): the
+// concrete docker backend must be blank-imported so its init() registers it into
+// backend.Default. Regression: without the blank import in main.go the registry
+// has zero backends and every capability dispatch fails with
+// ErrNoAvailableBackend ("no available backend covers the required capabilities")
+// regardless of Docker availability.
+func TestDockerBackend_Registered(t *testing.T) {
+	t.Setenv("ALLOW_DIRS", "")
+	f, ok := backend.Default.Get("docker")
+	if !ok {
+		t.Fatal("docker backend is not registered in backend.Default; missing blank import in main.go")
+	}
+	if !f.Capabilities.Lifecycle || !f.Capabilities.Executable || !f.Capabilities.Introspectable {
+		t.Fatalf("docker backend must advertise Lifecycle+Executable+Introspectable, got %+v", f.Capabilities)
+	}
+}
 
 func newTestLogger(t *testing.T) *logging.Logger {
 	t.Helper()

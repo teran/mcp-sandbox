@@ -11,13 +11,17 @@ package docker
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/google/uuid"
 
+	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
+	domainsession "github.com/teran/mcp-sandbox/domain/session"
 	"github.com/teran/mcp-sandbox/e2e/contract"
 	"github.com/teran/mcp-sandbox/infrastructure/backend/docker"
 )
@@ -108,4 +112,54 @@ func TestContractSuite(t *testing.T) {
 		Introspectable: b,
 		AllowDir:       allowDir,
 	}, mkSpec)
+}
+
+// TestSecretsDelivery reproduces the read-only-rootfs secret bug: the container
+// is created with a read-only rootfs (§7.1), so secrets cannot be written with
+// a `docker cp` (CopyToContainer) call. Secrets must instead be delivered as
+// tmpfs 0600 files at /run/sandbox/<name> (§7.3) via a `docker exec` that
+// streams the value over stdin. This test asserts the secret file exists with
+// the right content and mode 0600 against the real Docker daemon.
+func TestSecretsDelivery(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker daemon not available; skipping secrets delivery e2e")
+	}
+
+	allowDir := t.TempDir()
+	b := newBackend(t, allowDir)
+
+	const secretName = "token"
+	const secretValue = "s3cr3t-value-42"
+
+	s := mkSpec()
+	s.Secrets = []spec.SecretRef{{Name: secretName, Value: secretValue}}
+
+	id := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := b.Create(domainsession.WithSessionID(ctx, id), s); err != nil {
+		t.Fatalf("create sandbox with secret: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(context.Background(), id) })
+
+	// Read the secret file back as the sandbox user and check its content.
+	res, err := b.Exec(ctx, id, exec.Request{Argv: []string{"/bin/cat", "/run/sandbox/" + secretName}})
+	if err != nil {
+		t.Fatalf("exec cat secret: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("cat secret exit code = %d, stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if got := string(res.Stdout); got != secretValue {
+		t.Fatalf("secret content = %q, want %q", got, secretValue)
+	}
+
+	// The secret file must be mode 0600 (§7.3).
+	res, err = b.Exec(ctx, id, exec.Request{Argv: []string{"/bin/stat", "-c", "%a", "/run/sandbox/" + secretName}})
+	if err != nil {
+		t.Fatalf("exec stat secret: %v", err)
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); got != "600" {
+		t.Fatalf("secret file mode = %q, want 600", got)
+	}
 }

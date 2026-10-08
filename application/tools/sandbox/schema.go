@@ -6,7 +6,14 @@ import (
 
 // falseSchema represents `additionalProperties: false` in jsonschema-go. It
 // enforces the strict, closed input schema required by SPEC §7.4 (S08).
-var falseSchema = &jsonschema.Schema{Not: &jsonschema.Schema{}}
+//
+// A fresh instance is returned per call: the schema is resolved as a tree by
+// jsonschema-go, so a single shared instance reused in multiple places (e.g.
+// top-level plus nested object items) would make the schema a graph and fail
+// client-side resolution with "schemas ... do not form a tree".
+func falseSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Not: &jsonschema.Schema{}}
+}
 
 // obj builds a strict object schema with additionalProperties disabled (S08).
 func obj(props map[string]*jsonschema.Schema, required ...string) *jsonschema.Schema {
@@ -14,7 +21,7 @@ func obj(props map[string]*jsonschema.Schema, required ...string) *jsonschema.Sc
 		Type:                 "object",
 		Properties:           props,
 		Required:             required,
-		AdditionalProperties: falseSchema,
+		AdditionalProperties: falseSchema(),
 	}
 }
 

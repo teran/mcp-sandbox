@@ -15,6 +15,10 @@ import (
 
 	"github.com/teran/mcp-sandbox/application/config"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
+	// Blank-import the concrete docker backend so its init() registers it into
+	// backend.Default (SPEC §6.3). Without this the registry has zero backends
+	// and every capability dispatch fails with ErrNoAvailableBackend.
+	_ "github.com/teran/mcp-sandbox/infrastructure/backend/docker"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 	mcpserver "github.com/teran/mcp-sandbox/infrastructure/mcp"
 )

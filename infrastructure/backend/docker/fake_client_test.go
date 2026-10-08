@@ -38,6 +38,19 @@ func (fakeConn) SetDeadline(time.Time) error      { return nil }
 func (fakeConn) SetReadDeadline(time.Time) error  { return nil }
 func (fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
+// recordingConn wraps fakeConn and records every byte written to it, so tests
+// can assert the bytes streamed to a docker exec's stdin (used for secret
+// delivery, §7.3).
+type recordingConn struct {
+	fakeConn
+	dst *[]byte
+}
+
+func (c *recordingConn) Write(b []byte) (int, error) {
+	*c.dst = append(*c.dst, b...)
+	return len(b), nil
+}
+
 type fakeAddr struct{}
 
 func (fakeAddr) Network() string { return "test" }
@@ -60,13 +73,6 @@ type execResult struct {
 	err      error
 }
 
-// copyToCall records a CopyToContainer invocation.
-type copyToCall struct {
-	containerID string
-	dst         string
-	data        []byte
-}
-
 // fakeClient implements dockerAPI with in-memory behavior, recording calls so
 // tests can assert on them. It never talks to a real daemon.
 type fakeClient struct {
@@ -79,8 +85,8 @@ type fakeClient struct {
 
 	execAttachErr  error
 	execReaderErr  error
-	copyToErr      error
 	execInspectErr error
+	execExitCode   int
 	statsBody      string
 
 	createErr  error
@@ -97,7 +103,7 @@ type fakeClient struct {
 	removedOpts        []container.RemoveOptions
 	execCreates        []container.ExecOptions
 	execAttaches       []string
-	copyTos            []copyToCall
+	execStdin          [][]byte
 	inspects           []string
 	statsCalls         []string
 }
@@ -224,8 +230,12 @@ func (f *fakeClient) ContainerExecAttach(_ context.Context, execID string, _ con
 		return types.HijackedResponse{}, f.execAttachErr
 	}
 	f.execAttaches = append(f.execAttaches, execID)
+	// Capture bytes written to the exec's stdin (secrets are delivered this
+	// way) so tests can assert the value landed on stdin, not argv.
+	f.execStdin = append(f.execStdin, nil)
+	idx := len(f.execStdin) - 1
 	if f.execReaderErr != nil {
-		return types.HijackedResponse{Conn: &fakeConn{}, Reader: bufio.NewReader(errReader{f.execReaderErr})}, nil
+		return types.HijackedResponse{Conn: &recordingConn{dst: &f.execStdin[idx]}, Reader: bufio.NewReader(errReader{f.execReaderErr})}, nil
 	}
 	var buf bytes.Buffer
 	if len(f.execResults) > 0 {
@@ -240,7 +250,7 @@ func (f *fakeClient) ContainerExecAttach(_ context.Context, execID string, _ con
 			_, _ = w.Write([]byte(r.stderr))
 		}
 	}
-	return types.HijackedResponse{Conn: &fakeConn{}, Reader: bufio.NewReader(&buf)}, nil
+	return types.HijackedResponse{Conn: &recordingConn{dst: &f.execStdin[idx]}, Reader: bufio.NewReader(&buf)}, nil
 }
 
 func (f *fakeClient) ContainerExecInspect(_ context.Context, _ string) (container.ExecInspect, error) {
@@ -249,28 +259,14 @@ func (f *fakeClient) ContainerExecInspect(_ context.Context, _ string) (containe
 	if f.execInspectErr != nil {
 		return container.ExecInspect{}, f.execInspectErr
 	}
+	if f.execExitCode != 0 {
+		return container.ExecInspect{ExitCode: f.execExitCode}, nil
+	}
 	if len(f.execResults) > 0 {
 		r := f.execResults[0]
 		return container.ExecInspect{ExitCode: r.exitCode}, r.err
 	}
 	return container.ExecInspect{ExitCode: 0}, nil
-}
-
-func (f *fakeClient) CopyToContainer(_ context.Context, containerID, dstPath string, content io.Reader, _ container.CopyToContainerOptions) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.copyToErr != nil {
-		return f.copyToErr
-	}
-	if _, ok := f.containers[containerID]; !ok {
-		return errors.New("no such container")
-	}
-	data, err := io.ReadAll(content)
-	if err != nil {
-		return err
-	}
-	f.copyTos = append(f.copyTos, copyToCall{containerID: containerID, dst: dstPath, data: data})
-	return nil
 }
 
 func (f *fakeClient) ContainerRemove(_ context.Context, containerID string, options container.RemoveOptions) error {

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -227,7 +228,7 @@ func TestCreate_AdditionalMountReadOnlyFlag(t *testing.T) {
 	}
 }
 
-func TestCreate_SecretsDeliveredAsTmpfsFiles(t *testing.T) {
+func TestCreate_SecretsDeliveredViaExecOnTmpfs(t *testing.T) {
 	dir := t.TempDir()
 	api := newFakeClient()
 	b := New([]string{dir}, false, "rw", "img", api)
@@ -236,16 +237,32 @@ func TestCreate_SecretsDeliveredAsTmpfsFiles(t *testing.T) {
 	if _, err := b.Create(context.Background(), s); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if len(api.copyTos) != 1 {
-		t.Fatalf("copyTos = %d, want 1 secret copy", len(api.copyTos))
+	// The tmpfs secrets dir must be owned by the sandbox user so the unprivileged
+	// process can create and read its own 0600 secret files (§7.3).
+	hc := api.lastHostConfig()
+	if !strings.Contains(hc.Tmpfs[tmpfsConfDir], "uid=1000") || !strings.Contains(hc.Tmpfs[tmpfsConfDir], "gid=1000") {
+		t.Errorf("secrets tmpfs %q must be owned by sandbox user 1000:1000", hc.Tmpfs[tmpfsConfDir])
 	}
-	ct := api.copyTos[0]
-	if ct.dst != tmpfsConfDir {
-		t.Errorf("secret dst = %q, want %q", ct.dst, tmpfsConfDir)
+	// Secrets must NOT be delivered via CopyToContainer (`docker cp`), which is
+	// incompatible with a read-only rootfs (§7.1); they are written by a docker
+	// exec instead.
+	if len(api.execCreates) != 1 {
+		t.Fatalf("exec creates = %d, want 1 (secret writer)", len(api.execCreates))
 	}
-	// The tar payload must carry the secret value (not argv).
-	if !bytesContains(ct.data, []byte("supersecret")) {
-		t.Error("secret value not present in tmpfs write")
+	opts := api.execCreates[0]
+	// The writer argv is a fixed script; the secret value must never appear in
+	// argv, image or env exposed to exec (§7.3).
+	if bytes.Contains([]byte(strings.Join(opts.Cmd, "\x00")), []byte("supersecret")) {
+		t.Fatal("secret value leaked into exec argv")
+	}
+	// The writer must target /run/sandbox/token inside the sandbox.
+	last := opts.Cmd[len(opts.Cmd)-1]
+	if last != filepath.Join(tmpfsConfDir, "token") {
+		t.Fatalf("secret writer target = %q, want %q", last, filepath.Join(tmpfsConfDir, "token"))
+	}
+	// The secret value must be streamed over the exec's stdin (never argv).
+	if len(api.execStdin) != 1 || !bytes.Contains(api.execStdin[0], []byte("supersecret")) {
+		t.Fatalf("secret value not delivered on exec stdin, got %d payloads", len(api.execStdin))
 	}
 }
 
@@ -401,10 +418,6 @@ func TestExec_ErrFromCreate(t *testing.T) {
 	}
 }
 
-func bytesContains(haystack, needle []byte) bool {
-	return strings.Contains(string(haystack), string(needle))
-}
-
 func TestExec_AttachError(t *testing.T) {
 	api := newFakeClient()
 	api.execAttachErr = errors.New("attach fail")
@@ -528,15 +541,51 @@ func TestNewFromConfig_Error(t *testing.T) {
 	}
 }
 
-func TestCreate_SecretsCopyError(t *testing.T) {
+func TestCreate_SecretsExecCreateError(t *testing.T) {
 	dir := t.TempDir()
 	api := newFakeClient()
-	api.copyToErr = errors.New("copy fail")
+	api.execErr = errors.New("exec create fail")
 	b := New([]string{dir}, false, "rw", "img", api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
-		t.Fatal("expected secret copy error")
+		t.Fatal("expected secret exec create error")
+	}
+}
+
+func TestCreate_SecretsExecNonZeroExit(t *testing.T) {
+	dir := t.TempDir()
+	api := newFakeClient()
+	api.execExitCode = 1
+	b := New([]string{dir}, false, "rw", "img", api)
+	s := baseSpec()
+	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
+	if _, err := b.Create(context.Background(), s); err == nil {
+		t.Fatal("expected secret exec non-zero exit error")
+	}
+}
+
+func TestCreate_SecretsExecAttachError(t *testing.T) {
+	dir := t.TempDir()
+	api := newFakeClient()
+	api.execAttachErr = errors.New("attach fail")
+	b := New([]string{dir}, false, "rw", "img", api)
+	s := baseSpec()
+	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
+	if _, err := b.Create(context.Background(), s); err == nil {
+		t.Fatal("expected secret exec attach error")
+	}
+}
+
+func TestCreate_SecretsExecInspectError(t *testing.T) {
+	dir := t.TempDir()
+	api := newFakeClient()
+	api.execInspectErr = errors.New("inspect fail")
+	b := New([]string{dir}, false, "rw", "img", api)
+	s := baseSpec()
+	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
+	if _, err := b.Create(context.Background(), s); err == nil {
+		t.Fatal("expected secret exec inspect error")
 	}
 }
 

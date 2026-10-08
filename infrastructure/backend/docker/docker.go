@@ -7,13 +7,11 @@
 package docker
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -89,7 +87,6 @@ type dockerAPI interface {
 	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error)
 	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
-	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader, options container.CopyToContainerOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 }
 
@@ -314,30 +311,90 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 }
 
 // buildTmpfs mounts the secrets dir (mode 0700) and the writable workspace.
-// Both are tmpfs with rw,noexec,nosuid,nodev (§7.1/§7.3).
-func (b *Backend) buildTmpfs(_ spec.SandboxSpec) (map[string]string, error) {
+// Both are tmpfs with rw,noexec,nosuid,nodev (§7.1/§7.3). The secrets dir is
+// additionally owned by the sandbox user (uid/gid) so the unprivileged process
+// can create and read its own 0600 secret files; with a read-only rootfs the
+// only writable location is this tmpfs.
+func (b *Backend) buildTmpfs(s spec.SandboxSpec) (map[string]string, error) {
+	uid := fmt.Sprintf("%d", s.Isolation.User.UID)
+	gid := fmt.Sprintf("%d", s.Isolation.User.GID)
 	return map[string]string{
-		tmpfsConfDir: "rw,noexec,nosuid,nodev,mode=0700",
+		tmpfsConfDir: "rw,noexec,nosuid,nodev,mode=0700,uid=" + uid + ",gid=" + gid,
 		tmpfsWorkdir: "rw,noexec,nosuid,nodev,mode=0755",
 	}, nil
 }
 
 // writeSecrets delivers each secret into the sandbox as a tmpfs file with
 // mode 0600 (§7.3). Values are never placed in argv, the image or env exposed
-// to exec.
+// to exec. Because the rootfs is read-only (§7.1), a CopyToContainer
+// (`docker cp`) write would fail — so each secret is written by a `docker exec`
+// that streams the value over the exec's stdin (never argv) into the writable
+// tmpfs secrets dir owned by the sandbox user.
 func (b *Backend) writeSecrets(ctx context.Context, cid string, secrets []spec.SecretRef) error {
 	for _, secret := range secrets {
 		name := filepath.Base(secret.Name)
 		if name == "" || name == "." || name == ".." {
 			return fmt.Errorf("docker: invalid secret name %q", secret.Name)
 		}
-		rc, err := singleFileTar(name, []byte(secret.Value), 0o600)
-		if err != nil {
+		if err := b.writeSecret(ctx, cid, name, secret.Value); err != nil {
 			return err
 		}
-		if err := b.api.CopyToContainer(ctx, cid, tmpfsConfDir, rc, container.CopyToContainerOptions{}); err != nil {
-			return fmt.Errorf("docker: copy secret %q: %w", name, err)
-		}
+	}
+	return nil
+}
+
+// writeSecret writes a single secret file into the sandbox. The writer command
+// is a fixed script with no user input interpolated into it (S11); the target
+// path is passed as a distinct positional argument and referenced only as
+// "$1", so no value ever appears in the shell string or argv. The secret value
+// is streamed over the exec's stdin and never surfaces in argv, image or env
+// exposed to exec (§7.3).
+func (b *Backend) writeSecret(ctx context.Context, cid, name, value string) error {
+	writer := []string{
+		"/bin/sh", "-c",
+		`umask 077; cat > "$1"`,
+		"sh",
+		filepath.Join(tmpfsConfDir, name),
+	}
+	execResp, err := b.api.ContainerExecCreate(ctx, cid, container.ExecOptions{
+		Cmd:          writer,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty:          false,
+	})
+	if err != nil {
+		return fmt.Errorf("docker: exec create for secret %q: %w", name, err)
+	}
+
+	hijacked, err := b.api.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("docker: exec attach for secret %q: %w", name, err)
+	}
+
+	if _, err := hijacked.Conn.Write([]byte(value)); err != nil {
+		hijacked.Close()
+		return fmt.Errorf("docker: write secret %q stdin: %w", name, err)
+	}
+	if err := hijacked.CloseWrite(); err != nil {
+		hijacked.Close()
+		return fmt.Errorf("docker: close secret %q stdin: %w", name, err)
+	}
+
+	// Drain the exec output so the stream is fully consumed before the exec
+	// completes. `cat > "$1"` writes nothing to stdout/stderr in the happy path;
+	// any output here is discarded and never logged (L05).
+	var stdout, stderr bytes.Buffer
+	_, _ = stdcopy.StdCopy(&stdout, &stderr, hijacked.Reader)
+
+	hijacked.Close()
+
+	inspect, err := b.api.ContainerExecInspect(ctx, execResp.ID)
+	if err != nil {
+		return fmt.Errorf("docker: exec inspect for secret %q: %w", name, err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("docker: write secret %q: exec exited with code %d", name, inspect.ExitCode)
 	}
 	return nil
 }
@@ -557,26 +614,4 @@ func clampUint64(v uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(v)
-}
-
-// singleFileTar builds a tar stream containing a single file entry with the
-// given mode. The entry name is the base name, safe from traversal.
-func singleFileTar(name string, data []byte, mode int64) (io.Reader, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	hdr := &tar.Header{
-		Name: name,
-		Mode: mode,
-		Size: int64(len(data)),
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		return nil, err
-	}
-	if _, err := tw.Write(data); err != nil {
-		return nil, err
-	}
-	if err := tw.Close(); err != nil {
-		return nil, err
-	}
-	return &buf, nil
 }
