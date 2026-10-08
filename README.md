@@ -213,7 +213,9 @@ Grouped **read → write → delete** (S03):
 > **Files come from the image, the host, or the runtime — never via MCP
 > file-write tools.** The session `cwd` is mounted 1:1, so the model-host writes
 > files on the **host** and the container reads/executes them at the same path;
-> runtime artifacts live in the writable, executable tmpfs `/tmp`. There are **no**
+> runtime artifacts live in the writable tmpfs `/tmp` (executable where the
+> daemon honours `exec`; on daemons that force `noexec` — e.g. Docker Desktop —
+> compilation goes into the writable bind-mounted `cwd`). There are **no**
 > `sandbox_read_file` / `sandbox_write_file` / `sandbox_copy_in` /
 > `sandbox_copy_out` / `sandbox_install_package` tools — **mount + exec is the
 > core mechanism** (`SPEC.md` §4.2, §7.2).
@@ -236,7 +238,7 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   roadmap); **non-root** user inside.
 - Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits`.
 - **Network `bridge` by default** (Docker's default bridged network); `host` networking forbidden at policy level.
-- tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, **writable and executable** so the sandbox can compile/run binaries); `AutoRemove=true`.
+- tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, writable; some daemons like Docker Desktop force `noexec` on tmpfs, so runtime compilation uses the writable bind-mounted `cwd`); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
   symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); the session
   `cwd` is the one sanctioned bind-mount (read-only default).

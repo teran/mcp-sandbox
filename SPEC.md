@@ -154,7 +154,9 @@ text without an `outputSchema`.
 > **Files come from the image, the host, or the runtime — never via MCP file-write
 > tools.** The session `cwd` is mounted 1:1, so the model-host writes files on the
 > **host** and the container reads/executes them at the same path; runtime
-> artifacts live in the writable, executable tmpfs `/tmp`. Therefore the MVP exposes **no**
+> artifacts live in the writable tmpfs `/tmp` (executable where the daemon
+> honours `exec` on tmpfs; on daemons that force `noexec` — e.g. Docker Desktop —
+> compilation goes into the writable bind-mounted `cwd`). Therefore the MVP exposes **no**
 > `write_file`/`copy_in`/`copy_out`/`read_file`/`install_package` tools — **mount +
 > exec is the core mechanism** (see §7.2). cgroup/namespace knobs and
 > Docker-in-Docker are deferred (see TODO "Deferred").
@@ -444,7 +446,7 @@ create, regardless of the input spec:
 | `NanoCPUs` | Bounded. |
 | `Ulimits` | Set. |
 | `NetworkMode` | **`bridge` by default** (Docker's default bridged network); **`host` is forbidden at policy level**. |
-| `tmpfs` mounts | **`/run`** tmpfs `rw,noexec,nosuid,nodev` (owned by the sandbox user; holds the `/run/sandbox` secret dir) and **`/tmp`** tmpfs `rw,nosuid,nodev` — **writable and executable** (no `noexec`) so the sandbox can compile/run binaries against the read-only rootfs. |
+| `tmpfs` mounts | **`/run`** tmpfs `rw,noexec,nosuid,nodev` (owned by the sandbox user; holds the `/run/sandbox` secret dir) and **`/tmp`** tmpfs `rw,nosuid,nodev` (writable, no `noexec` requested). **Platform note:** some daemons (Docker Desktop on macOS) force `noexec` on tmpfs, so `/tmp` may not be executable; runtime compilation (Go builds) then needs the writable bind-mounted `cwd` (`SANDBOX_CWD_MODE=rw`). |
 | `AutoRemove` | `true` — container auto-removed on stop. |
 
 Because the block is immutable and applied by the server, a caller cannot pass

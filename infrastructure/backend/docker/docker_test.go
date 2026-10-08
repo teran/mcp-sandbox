@@ -186,6 +186,11 @@ func TestCreate_TmpfsLayout(t *testing.T) {
 	if strings.Contains(tmp, "noexec") {
 		t.Errorf("/tmp tmpfs must NOT be noexec (must be executable): %q", tmp)
 	}
+	// Explicit "exec" guards against Docker Desktop / some daemons forcing
+	// noexec on tmpfs, which would prevent running compiled Go binaries.
+	if !strings.Contains(tmp, "exec") {
+		t.Errorf("/tmp tmpfs must explicitly enable exec: %q", tmp)
+	}
 	if !strings.Contains(tmp, "nosuid") || !strings.Contains(tmp, "nodev") {
 		t.Errorf("/tmp tmpfs must keep nosuid,nodev: %q", tmp)
 	}

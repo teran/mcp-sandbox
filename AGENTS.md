@@ -73,8 +73,13 @@ See `SPEC.md` §7.
   roadmap), **non-root** user, bounded `PidsLimit`/`Memory`/`NanoCPUs`/
   `Ulimits`, **Network `bridge`** (host forbidden), tmpfs mounts — `/run`
   (`rw,noexec,nosuid,nodev`, sandbox-user-owned) and `/tmp` (`rw,nosuid,nodev`,
-  writable + executable) — `AutoRemove=true`. A caller must **never** be able
-  to weaken these.
+  writable) — `AutoRemove=true`. A caller must **never** be able to weaken these.
+
+  > **Platform note (`exec` on tmpfs):** some Docker daemons (notably Docker
+  > Desktop on macOS) **force `noexec` on tmpfs** regardless of the requested
+  > `exec` flag, so `/tmp` may not be executable even though it is writable.
+  > Runtime code compilation (e.g. Go builds) therefore needs a writable
+  > **bind-mount** (the session `cwd` with `SANDBOX_CWD_MODE=rw`) — not tmpfs.
 - **TLS is never implemented in-server (S01).** This is a Local/stdio server —
   no HTTP listener at all.
 - **No secret leakage (S02/N02).** All API requests/responses/config are

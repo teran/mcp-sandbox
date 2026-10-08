@@ -382,7 +382,9 @@ func (b *Backend) buildTmpfs(s spec.SandboxSpec) (map[string]string, error) {
 	gid := fmt.Sprintf("%d", s.Isolation.User.GID)
 	return map[string]string{
 		tmpfsRunDir: "rw,noexec,nosuid,nodev,mode=0755,uid=" + uid + ",gid=" + gid,
-		tmpfsTmpDir: "rw,nosuid,nodev,mode=1777",
+		// Explicit "exec" so Docker Desktop / some daemons that force noexec on
+		// tmpfs do not prevent the sandbox from running compiled Go binaries.
+		tmpfsTmpDir: "rw,exec,nosuid,nodev,mode=1777",
 	}, nil
 }
 

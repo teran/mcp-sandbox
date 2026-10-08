@@ -55,6 +55,21 @@
 - [x] 5.4 Server privileges / rootless docker decision — `§7.6`
 - [x] 5.5 Final conformance check (@qa per checklist) — all
 
+## Phase 6 — Streaming output via MCP progress notifications (planned)
+
+Goal: emit `notifications/progress` from `sandbox_exec` (and any long-running tool) so the model-host sees live command output and the call parameters while the command runs. Additive — without a progress token behavior is byte-for-byte unchanged. See the architect design (session note); summary:
+
+- [ ] 6.1 `domain/progress` (new pure-domain package): `Event{Message, Progress, Total}`, `Sink func(ctx, Event)`, `WithSink`/`SinkFromContext` — threaded via `context` (repo idiom like `WithSessionID`) — `A01`
+- [ ] 6.2 `LineBatcher` (in `domain/progress`): line-buffered chunking, flush-on-complete-line + partial-line size threshold + `Flush()` on EOF, per-message cap, monotonic `Progress` byte counter; **no goroutine/ticker** (zero lifecycle risk) — `A01 T01`
+- [ ] 6.3 `application/tools/handler`: add `Dependencies.ProgressSink func(*mcp.CallToolRequest) progress.Sink`; stash sink into ctx in `Call` before dispatch (generic, every tool inherits) — `M04`
+- [ ] 6.4 `infrastructure/mcp/server.go`: wire default `ProgressSink` = closure over `req.Session.NotifyProgress` + `req.Params.GetProgressToken()` (nil-safe) — `M01`
+- [ ] 6.5 `application/tools/sandbox/write.go`: `sandboxExecDef` wraps ctx sink with `redactSecrets` + `sanitizeANSI` (S02, secrets known at tool layer), pass to `Exec` — `S02 S09`
+- [ ] 6.6 `infrastructure/backend/docker/docker.go`: `Exec` reads sink from ctx; emit `start` (redacted argv) → chunks (stdout/stderr from `stdcopy` demux fed to batchers) → `done` (exit code); terminal `cancelled` event on ctx cancel before returning the existing error — `L02GO X03`
+- [ ] 6.7 Unit tests: `domain/progress` (batcher, roundtrip), handler (sink injection), sandbox (redaction wrap), docker fake (streaming, cancel, nil-sink unchanged) — `C01 C04GO T01`
+- [ ] 6.8 e2e (`e2e/contract` + `e2e/docker`): progress scenario asserts ≥1 chunk arrives before completion; cancel/timeout scenario asserts terminal notification; final `Result` still byte-for-byte — `T02 C09GO`
+- [ ] 6.9 Docs: SPEC/README/AGENTS — document progress notifications and the `sandbox_exec` streaming behavior (English) — `D01 D02`
+- [ ] 6.10 (follow-up) Honor `req.Timeout` via `context.WithTimeout` in `Exec` so timeouts become cancellations (terminal-notification path already covers it) — `X03`
+
 ## Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).
