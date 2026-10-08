@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -59,6 +60,18 @@ const (
 	// tmpfsWorkdir is the writable tmpfs working directory for the sandbox.
 	tmpfsWorkdir = "/workspace"
 )
+
+// trustedRegistries is the allowlist of image registries the sandbox may pull
+// images from (§7.9, C05/T7). Any image reference whose registry is not listed
+// here is rejected at container-create time. Docker Hub resolves to
+// "docker.io" via ParseNormalizedNamed, so unqualified references such as
+// "alpine:3.20" are treated as docker.io/library/alpine and accepted.
+var trustedRegistries = map[string]struct{}{
+	"docker.io":            {},
+	"index.docker.io":      {},
+	"registry-1.docker.io": {},
+	"ghcr.io":              {},
+}
 
 // ErrNotFound is returned when no container is owned by the given session id.
 var ErrNotFound = errors.New("docker: sandbox not found")
@@ -163,6 +176,11 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 		s.Image = b.cfg.defaultImage
 	}
 	if err := s.Validate(); err != nil {
+		return "", err
+	}
+	// Enforce the trusted-registry / digest policy (§7.9) before any Docker
+	// side-effect happens (C05/T7).
+	if err := validateImageRef(s.Image); err != nil {
 		return "", err
 	}
 
@@ -471,6 +489,31 @@ func (b *Backend) withinAllowDirs(p string) bool {
 		}
 	}
 	return false
+}
+
+// validateImageRef enforces the sandbox image policy (§7.9): the reference
+// must parse as a valid image reference and its registry must be in the
+// trusted allowlist. This prevents the server from pulling sandbox images from
+// arbitrary/untrusted registries (C05/T7). Digest-pinning is the recommended
+// deployment posture (documented in SPEC §7.9); a trusted registry is the
+// hard enforcement boundary here.
+func validateImageRef(ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return errors.New("sandbox: image is required")
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return fmt.Errorf("sandbox: invalid image reference %q: %w", ref, err)
+	}
+	domain := reference.Domain(named)
+	if domain == "" {
+		domain = "docker.io"
+	}
+	if _, ok := trustedRegistries[domain]; !ok {
+		return fmt.Errorf("sandbox: image registry %q is not in the trusted allowlist", domain)
+	}
+	return nil
 }
 
 // toEnvSlice converts the spec env map to a KEY=VALUE slice.

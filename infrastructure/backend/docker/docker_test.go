@@ -593,3 +593,62 @@ func TestNew_NonexistentAllowDir(t *testing.T) {
 		t.Fatalf("allowDirs = %v", b.cfg.allowDirs)
 	}
 }
+
+func TestValidateImageRef_AcceptsTrustedRegistries(t *testing.T) {
+	accepted := []string{
+		"alpine:3.20", // unqualified → docker.io/library/alpine
+		"docker.io/library/alpine:3.20",
+		"img:latest", // unqualified test image → docker.io
+		"default-image:latest",
+		"ghcr.io/org/app:v1",
+		"ghcr.io/org/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"index.docker.io/library/alpine:3.20",
+	}
+	for _, ref := range accepted {
+		if err := validateImageRef(ref); err != nil {
+			t.Errorf("validateImageRef(%q) = %v, want nil", ref, err)
+		}
+	}
+}
+
+func TestValidateImageRef_RejectsUntrustedOrInvalid(t *testing.T) {
+	rejected := []string{
+		"",
+		"   ",
+		"evil.com/foo/bar:latest",     // untrusted registry
+		"registry.example.org/app:v1", // untrusted registry
+		"localhost:5000/app:v1",       // untrusted local registry
+		"::::invalid",                 // malformed reference
+	}
+	for _, ref := range rejected {
+		if err := validateImageRef(ref); err == nil {
+			t.Errorf("validateImageRef(%q) = nil, want error", ref)
+		}
+	}
+}
+
+func TestCreate_RejectsUntrustedImage(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "evil.com/foo/bar:latest"
+	if _, err := b.Create(context.Background(), s); err == nil {
+		t.Fatal("expected untrusted image rejection")
+	}
+	if len(api.createdConfigs) != 0 {
+		t.Fatal("no container create should have happened")
+	}
+}
+
+func TestCreate_AcceptsTrustedImage(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "alpine:3.20"
+	if _, err := b.Create(context.Background(), s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(api.createdConfigs) != 1 {
+		t.Fatalf("created = %d, want 1", len(api.createdConfigs))
+	}
+}
