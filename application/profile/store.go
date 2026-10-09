@@ -56,15 +56,15 @@ type yamlUlimit struct {
 // yamlCgroups is the cgroups block of an operator-authored profile. Either the
 // raw values (nano_cpus / memory / memory_swap) or the friendly units
 // (cpu_cores / memory_gb) may be used; the raw values take precedence when both
-// are present. CPU_cores is expressed in whole/virtual cores (1.0 = one core),
-// Memory_GB in whole gibibytes.
+// are present. cpu_cores is expressed in whole/virtual cores (1.0 = one core),
+// memory_gb in whole gibibytes.
 type yamlCgroups struct {
 	NanoCPUs   int64        `yaml:"nano_cpus"`
 	Memory     int64        `yaml:"memory"`
 	MemorySwap int64        `yaml:"memory_swap"`
 	PidsLimit  int64        `yaml:"pids_limit"`
-	CPU_cores  float64      `yaml:"cpu_cores"`
-	Memory_GB  int64        `yaml:"memory_gb"`
+	CPUCores   float64      `yaml:"cpu_cores"`
+	MemoryGB   int64        `yaml:"memory_gb"`
 	Ulimits    []yamlUlimit `yaml:"ulimits"`
 }
 
@@ -89,11 +89,11 @@ func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
 		MemorySwap: yc.MemorySwap,
 		PidsLimit:  yc.PidsLimit,
 	}
-	if cg.NanoCPUs == 0 && yc.CPU_cores > 0 {
-		cg.NanoCPUs = int64(yc.CPU_cores * 1_000_000_000)
+	if cg.NanoCPUs == 0 && yc.CPUCores > 0 {
+		cg.NanoCPUs = int64(yc.CPUCores * 1_000_000_000)
 	}
-	if cg.Memory == 0 && yc.Memory_GB > 0 {
-		cg.Memory = yc.Memory_GB * 1024 * 1024 * 1024
+	if cg.Memory == 0 && yc.MemoryGB > 0 {
+		cg.Memory = yc.MemoryGB * 1024 * 1024 * 1024
 	}
 	if cg.Memory > 0 && cg.MemorySwap == 0 {
 		cg.MemorySwap = cg.Memory
