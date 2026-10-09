@@ -165,3 +165,106 @@ func TestPullImage_DockerConfigEnvHonoured(t *testing.T) {
 		t.Fatalf("RegistryAuth = %q, want empty for registry absent from $DOCKER_CONFIG", opts[1].RegistryAuth)
 	}
 }
+
+// TestRegistryAuth_InvalidRef_EmptyAuth verifies the registryAuth early-return:
+// an image reference that cannot be parsed yields no registry domain, so the
+// helper degrades to an empty (unauthenticated) auth. It exercises the
+// registryHost parse-failure branch.
+func TestRegistryAuth_InvalidRef_EmptyAuth(t *testing.T) {
+	// A reference with illegal characters cannot be normalized → no domain.
+	if got := registryAuth("!!!not-a-valid-ref!!!"); got != "" {
+		t.Fatalf("registryAuth(invalid ref) = %q, want empty", got)
+	}
+}
+
+// TestRegistryAuth_ConfigLoadError_EmptyAuth verifies that a client config that
+// cannot be loaded (invalid JSON) degrades to an unauthenticated pull instead of
+// failing: RegistryAuth stays empty and pullImage still reaches ImagePull. It
+// exercises the dockerconfig.Load error branch.
+func TestRegistryAuth_ConfigLoadError_EmptyAuth(t *testing.T) {
+	dir := t.TempDir()
+	// An unparsable config.json forces dockerconfig.Load to return an error.
+	if err := os.WriteFile(filepath.Join(dir, dockerconfig.ConfigFileName), []byte("{ this is not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(dockerconfig.EnvOverrideConfigDir, dir)
+
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
+		t.Fatalf("pullImage: %v", err)
+	}
+	opts := api.pullOpts()
+	if len(opts) != 1 {
+		t.Fatalf("pulls = %d, want 1", len(opts))
+	}
+	if opts[0].RegistryAuth != "" {
+		t.Fatalf("RegistryAuth = %q, want empty when the client config fails to load", opts[0].RegistryAuth)
+	}
+}
+
+// TestRegistryAuth_ConfigEntryWithEmptyAuth verifies the "empty credentials"
+// branch: a config that lists the registry but holds no username/password/token
+// yields an empty RegistryAuth, and the pull still proceeds (public-image
+// behaviour). It exercises the auth-all-empty early return independently of a
+// missing registry entry.
+func TestRegistryAuth_ConfigEntryWithEmptyAuth(t *testing.T) {
+	dir := t.TempDir()
+	data, err := json.Marshal(map[string]any{
+		"auths": map[string]any{"ghcr.io": map[string]string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, dockerconfig.ConfigFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(dockerconfig.EnvOverrideConfigDir, dir)
+
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
+		t.Fatalf("pullImage: %v", err)
+	}
+	opts := api.pullOpts()
+	if len(opts) != 1 {
+		t.Fatalf("pulls = %d, want 1", len(opts))
+	}
+	if opts[0].RegistryAuth != "" {
+		t.Fatalf("RegistryAuth = %q, want empty for an empty credentials entry", opts[0].RegistryAuth)
+	}
+}
+
+// TestDockerConfigDir_DefaultHomeDir verifies the default branch of
+// dockerConfigDir: when $DOCKER_CONFIG is unset it falls back to the user's
+// home directory + ".docker". It exercises the UserHomeDir/Join path.
+func TestDockerConfigDir_DefaultHomeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Ensure the default branch is reached regardless of the ambient env.
+	old, had := os.LookupEnv(dockerconfig.EnvOverrideConfigDir)
+	os.Unsetenv(dockerconfig.EnvOverrideConfigDir)
+	t.Cleanup(func() {
+		if had {
+			os.Setenv(dockerconfig.EnvOverrideConfigDir, old)
+		}
+	})
+	got := dockerConfigDir()
+	want := filepath.Join(home, ".docker")
+	if got != want {
+		t.Fatalf("dockerConfigDir() = %q, want %q", got, want)
+	}
+}
+
+// TestRegistryHost_DerivesDomain verifies the registry domain derivation for a
+// private registry (Phase 7 private-registry pull): a fully-qualified reference
+// yields its registry host, and a success is returned for a parseable reference.
+func TestRegistryHost_DerivesDomain(t *testing.T) {
+	dom, err := registryHost("registry.example.com/team/app:v1")
+	if err != nil {
+		t.Fatalf("registryHost: %v", err)
+	}
+	if dom != "registry.example.com" {
+		t.Fatalf("domain = %q, want registry.example.com", dom)
+	}
+}

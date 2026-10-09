@@ -13,6 +13,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/session"
 	sandboxtool "github.com/teran/mcp-sandbox/application/tools/sandbox"
@@ -21,6 +23,7 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	domainsession "github.com/teran/mcp-sandbox/domain/session"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
+	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
 // needAll is the capability set required to create and drive a sandbox.
@@ -29,6 +32,19 @@ var needAll = role.CapabilitySet{
 	Executable:     true,
 	Introspectable: true,
 }
+
+// serviceLog is the base logrus entry for trace diagnostics. The session_id
+// and request_id from the context are attached per call (L09).
+var serviceLog = logrus.WithField("component", "sandbox-service")
+
+// Option configures a Service at construction.
+type Option func(*Service)
+
+// WithLogger sets the base logrus entry used for trace diagnostics. It
+// defaults to the package-level sandbox-service logger. It is primarily for
+// tests; production wires no logger and derives request/session id from the
+// context.
+func WithLogger(e *logrus.Entry) Option { return func(s *Service) { s.log = e } }
 
 // Service implements the application-layer sandbox.Service port. It lazily
 // selects and constructs a backend on the first call that needs one (A02/N35 —
@@ -41,14 +57,33 @@ type Service struct {
 	mgr *session.Manager
 	be  role.Backend
 
+	// log is the base logrus entry for trace diagnostics (L09).
+	log *logrus.Entry
+
 	// profiles is the read-only operator profile store (Phase 7). It serves as
 	// both the sandbox-create ProfileResolver and the profile_list Lister.
 	profiles *profile.Store
 }
 
 // NewService returns a sandbox Service backed by the given backend registry.
-func NewService(reg *backend.Registry, cfg backend.Config) *Service {
-	return &Service{reg: reg, cfg: cfg}
+func NewService(reg *backend.Registry, cfg backend.Config, opts ...Option) *Service {
+	s := &Service{reg: reg, cfg: cfg, log: serviceLog}
+	for _, o := range opts {
+		if o != nil {
+			o(s)
+		}
+	}
+	return s
+}
+
+// entryFor returns a logrus entry derived from the service's base logger with
+// the session_id and request_id from ctx attached when available (L09).
+func (s *Service) entryFor(ctx context.Context, sessionID string) *logrus.Entry {
+	e := s.log
+	if sessionID != "" {
+		e = e.WithField("session_id", sessionID)
+	}
+	return logging.RequestEntry(ctx, e)
 }
 
 // SetProfileStore attaches the read-only operator profile store (Phase 7).
@@ -152,6 +187,7 @@ func (s *Service) DestroyAll(ctx context.Context) error {
 
 // Exec runs a command as an argument array (S11) through the Executable role.
 func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, error) {
+	s.entryFor(ctx, req.SandboxID).WithField("operation", "exec").Trace("sandbox: exec")
 	_, be, err := s.ensure(ctx)
 	if err != nil {
 		return nil, err
@@ -165,6 +201,7 @@ func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, err
 
 // Info returns detailed state through the Introspectable role.
 func (s *Service) Info(ctx context.Context, id string) (any, error) {
+	s.entryFor(ctx, id).WithField("operation", "info").Trace("sandbox: info")
 	_, be, err := s.ensure(ctx)
 	if err != nil {
 		return nil, err
@@ -178,6 +215,7 @@ func (s *Service) Info(ctx context.Context, id string) (any, error) {
 
 // Stats returns live resource usage through the Introspectable role.
 func (s *Service) Stats(ctx context.Context, id string) (any, error) {
+	s.entryFor(ctx, id).WithField("operation", "stats").Trace("sandbox: stats")
 	_, be, err := s.ensure(ctx)
 	if err != nil {
 		return nil, err

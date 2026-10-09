@@ -175,3 +175,18 @@ func TestValidate_ProfilesDirNoTildeUnchanged(t *testing.T) {
 		t.Fatalf("SandboxProfilesDir = %q", c.SandboxProfilesDir)
 	}
 }
+
+// TestValidate_ProfilesDirBareTilde verifies that a bare "~" SandboxProfilesDir
+// expands to the user's home directory itself (expandHome's p == "~" branch).
+func TestValidate_ProfilesDirBareTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	c := &Config{SandboxProfilesDir: "~"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if c.SandboxProfilesDir != home {
+		t.Fatalf("SandboxProfilesDir = %q, want expanded home %q", c.SandboxProfilesDir, home)
+	}
+}

@@ -1,10 +1,13 @@
 package logging
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sirupsen/logrus"
 )
 
 func TestNew_DisabledWhenLevelEmpty(t *testing.T) {
@@ -148,6 +151,30 @@ func TestNewRequestID_Unique(t *testing.T) {
 	}
 	if a == b {
 		t.Fatal("request ids must be unique")
+	}
+}
+
+func TestRequestEntry_AttachesRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	l := logrus.New()
+	l.SetOutput(&buf)
+	l.SetLevel(logrus.TraceLevel)
+	l.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true, DisableColors: true})
+	base := logrus.NewEntry(l)
+
+	// With a request id in the context, RequestEntry attaches it.
+	ctx := WithRequestID(t.Context(), "req-456")
+	e := RequestEntry(ctx, base)
+	e.Trace("hello")
+	if !strings.Contains(buf.String(), "req-456") {
+		t.Fatalf("request_id not attached:\n%s", buf.String())
+	}
+
+	// Without a request id, RequestEntry returns the base entry unchanged.
+	buf.Reset()
+	RequestEntry(t.Context(), base).Trace("plain")
+	if strings.Contains(buf.String(), "request_id") {
+		t.Fatalf("unexpected request_id on plain context:\n%s", buf.String())
 	}
 }
 

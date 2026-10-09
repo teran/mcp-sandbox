@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+
+	"github.com/teran/mcp-sandbox/domain/requestid"
 )
 
 // DefaultLogFilename is used when stdio logging is enabled but no LOG_FILENAME
@@ -140,22 +142,33 @@ func (l *Logger) Close() error {
 	return nil
 }
 
-type requestIDKey struct{}
-
-// WithRequestID returns a context carrying the given request id (L09).
+// WithRequestID returns a context carrying the given request id (L09). The
+// key and accessors live in the domain (domain/requestid) so both the
+// application and infrastructure layers can read it without an infrastructure
+// dependency.
 func WithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey{}, id)
+	return requestid.WithID(ctx, id)
 }
 
 // RequestIDFromContext returns the request id stored in the context, if any.
 func RequestIDFromContext(ctx context.Context) (string, bool) {
-	id, ok := ctx.Value(requestIDKey{}).(string)
-	return id, ok
+	return requestid.IDFromContext(ctx)
 }
 
 // NewRequestID generates a new opaque request id.
 func NewRequestID() string {
 	return uuid.NewString()
+}
+
+// RequestEntry returns a logrus entry derived from base with the request_id
+// from ctx attached when present (L09). It lets application/infrastructure
+// layers thread request_id onto every trace/debug line from the request
+// context without duplicating the lookup.
+func RequestEntry(ctx context.Context, base *logrus.Entry) *logrus.Entry {
+	if id, ok := RequestIDFromContext(ctx); ok {
+		return base.WithField("request_id", id)
+	}
+	return base
 }
 
 // Redact returns a redacted copy of v: every field annotated `secret:"true"`

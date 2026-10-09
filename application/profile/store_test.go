@@ -286,3 +286,85 @@ func TestEmpty_IsFunctional(t *testing.T) {
 		t.Fatalf("List() = %v, want empty", list)
 	}
 }
+
+// TestCgroupsToDomain_MemorySwapPreserved pins that an explicitly-set
+// memory_swap is never overwritten by the memory==swap defaulting (SPEC §7.11).
+func TestCgroupsToDomain_MemorySwapPreserved(t *testing.T) {
+	cg := (yamlCgroups{
+		NanoCPUs:   0,
+		Memory:     0,
+		MemorySwap: 0,
+		CPUCores:   2,
+		MemoryGB:   4,
+	}).toDomain()
+	// Swap defaulted to Memory because no raw memory_swap was provided.
+	if cg.MemorySwap != cg.Memory {
+		t.Fatalf("MemorySwap = %d, want defaulted to Memory %d", cg.MemorySwap, cg.Memory)
+	}
+
+	cg2 := (yamlCgroups{
+		NanoCPUs:   0,
+		Memory:     0,
+		MemorySwap: 8 * 1024 * 1024 * 1024, // operator set a swap larger than memory
+		CPUCores:   2,
+		MemoryGB:   4,
+	}).toDomain()
+	// Explicit memory_swap must survive the defaulting.
+	if cg2.MemorySwap == cg2.Memory {
+		t.Fatalf("explicit MemorySwap = %d was overwritten to equal Memory %d", cg2.MemorySwap, cg2.Memory)
+	}
+	if want := int64(8 * 1024 * 1024 * 1024); cg2.MemorySwap != want {
+		t.Fatalf("MemorySwap = %d, want preserved %d", cg2.MemorySwap, want)
+	}
+	if cg2.Memory != int64(4*1024*1024*1024) {
+		t.Fatalf("Memory = %d, want 4 GiB", cg2.Memory)
+	}
+}
+
+// TestCgroupsToDomain_OnlyCPUCores pins the partial-friendly-unit case where
+// only cpu_cores is set (no memory): NanoCPUs is translated, Memory stays 0 and
+// MemorySwap is not defaulted.
+func TestCgroupsToDomain_OnlyCPUCores(t *testing.T) {
+	cg := (yamlCgroups{CPUCores: 3}).toDomain()
+	if got := cg.NanoCPUs; got != int64(3*1_000_000_000) {
+		t.Fatalf("NanoCPUs = %d, want %d", got, int64(3*1_000_000_000))
+	}
+	if cg.Memory != 0 {
+		t.Fatalf("Memory = %d, want 0 when memory_gb unset", cg.Memory)
+	}
+	if cg.MemorySwap != 0 {
+		t.Fatalf("MemorySwap = %d, want 0 when Memory is 0", cg.MemorySwap)
+	}
+}
+
+// TestCgroupsToDomain_RawAndFriendlyMixed pins that friendly units fill only the
+// gaps: cpu_cores fills NanoCPUs while a raw memory wins, and the swap default
+// keys off the resolved memory.
+func TestCgroupsToDomain_RawAndFriendlyMixed(t *testing.T) {
+	cg := (yamlCgroups{
+		NanoCPUs: 0,
+		Memory:   2 * 1024 * 1024 * 1024,
+		CPUCores: 2,
+		MemoryGB: 8, // ignored: raw Memory is already set
+	}).toDomain()
+	if cg.NanoCPUs != int64(2*1_000_000_000) {
+		t.Fatalf("NanoCPUs = %d, want filled from cpu_cores", cg.NanoCPUs)
+	}
+	if cg.Memory != int64(2*1024*1024*1024) {
+		t.Fatalf("Memory = %d, want raw memory", cg.Memory)
+	}
+	if cg.MemorySwap != cg.Memory {
+		t.Fatalf("MemorySwap = %d, want defaulted to raw Memory %d", cg.MemorySwap, cg.Memory)
+	}
+}
+
+// TestLoad_ReadDirOnFile_Error pins the non-NotExist ReadDir failure branch:
+// when the profile path is a regular file (not a directory), os.ReadDir returns
+// an error that is not IsNotExist, so Load must surface it rather than treat it
+// as an empty store.
+func TestLoad_ReadDirOnFile_Error(t *testing.T) {
+	file := writeProfile(t, t.TempDir(), "x.txt", "hello")
+	if _, err := Load(file); err == nil {
+		t.Fatal("Load on a regular file should return an error (not an empty store)")
+	}
+}

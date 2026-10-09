@@ -204,3 +204,33 @@ func TestMain_CallsExit(t *testing.T) { // Capture the exit code instead of term
 		t.Fatalf("exit code = %d, want 2 (flag parse error)", code)
 	}
 }
+
+// TestBuildServer_ProfileLoadError_SubstitutesEmptyStore pins Phase 7: when the
+// operator profiles dir cannot be loaded (e.g. an unparsable profile), buildServer
+// must NOT fail the server — it substitutes an empty store and still composes a
+// working server, so profile_list stays available and sandbox_create reports
+// "unknown profile" instead of "profile resolver is not configured".
+func TestBuildServer_ProfileLoadError_SubstitutesEmptyStore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bad.yml"), []byte("name: [unclosed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{SandboxProfilesDir: dir}
+	if server := buildServer(cfg, newTestLogger(t)); server == nil {
+		t.Fatal("buildServer returned nil server on profile load error")
+	}
+}
+
+// TestBuildServer_LoadsProfiles pins the happy-path profile wiring: a valid
+// operator profiles dir is loaded and buildServer composes a server.
+func TestBuildServer_LoadsProfiles(t *testing.T) {
+	dir := t.TempDir()
+	prof := "name: default\nimage: docker.io/library/alpine:3.20\nnetwork:\n  mode: bridge\ncgroups:\n  pids_limit: 256\nsudo: never\n"
+	if err := os.WriteFile(filepath.Join(dir, "default.yml"), []byte(prof), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{SandboxProfilesDir: dir}
+	if server := buildServer(cfg, newTestLogger(t)); server == nil {
+		t.Fatal("buildServer returned nil server")
+	}
+}

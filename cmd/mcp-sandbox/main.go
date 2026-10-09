@@ -70,6 +70,12 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 
 	if logger.Enabled() {
 		logger.Banner(appName, appVersion, appCommitHash, appTimestamp)
+		// Resolved-config summary at debug (gated behind LOG_LEVEL=debug/trace).
+		// Never logs secrets or the full argv; only non-sensitive settings.
+		logger.WithField("sandbox_profiles_dir", cfg.SandboxProfilesDir).
+			WithField("allow_dirs_count", len(cfg.AllowDirs)).
+			WithField("docker_host", cfg.DockerHost).
+			Debug("config resolved")
 	}
 
 	switch *mode {

@@ -39,6 +39,7 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	domainsession "github.com/teran/mcp-sandbox/domain/session"
+	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
 const (
@@ -119,6 +120,10 @@ type Backend struct {
 type config struct {
 	allowDirs     []string
 	allowSymlinks bool
+	// logEntry is the base logrus entry for trace diagnostics. It is derived
+	// from the context at each call site to attach session_id/request_id, and
+	// never carries secrets or argv (S02/L05).
+	logEntry *logrus.Entry
 }
 
 // Option configures a docker backend at construction.
@@ -128,6 +133,14 @@ type Option func(*config)
 // path verification (S04). It defaults to false.
 func WithAllowSymlinks(v bool) Option {
 	return func(c *config) { c.allowSymlinks = v }
+}
+
+// WithLogger sets the base logrus entry used for trace diagnostics. It
+// defaults to the package-level docker-backend logger. It is primarily for
+// tests; production wires no logger and derives request/session id from the
+// context.
+func WithLogger(e *logrus.Entry) Option {
+	return func(c *config) { c.logEntry = e }
 }
 
 // New returns a docker backend for the given server configuration. Allow dirs
@@ -148,11 +161,27 @@ func New(api dockerAPI, allowDirs []string, opts ...Option) *Backend {
 	cfg := config{
 		allowDirs:     canon,
 		allowSymlinks: false,
+		logEntry:      log,
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
 	return &Backend{api: api, cfg: cfg}
+}
+
+// entryFor returns a logrus entry derived from the backend's base logger with
+// the session_id and request_id from ctx attached when available (L09). It
+// never carries secrets or argv (S02/L05). sessionID is a fallback for call
+// sites (e.g. Exec/Destroy) that receive the session id as an explicit
+// argument rather than via context.
+func (b *Backend) entryFor(ctx context.Context, sessionID string) *logrus.Entry {
+	e := b.cfg.logEntry
+	if sid, ok := domainsession.IDFromContext(ctx); ok && sid != "" {
+		e = e.WithField("session_id", sid)
+	} else if sessionID != "" {
+		e = e.WithField("session_id", sessionID)
+	}
+	return logging.RequestEntry(ctx, e)
 }
 
 // Name returns the backend name.
@@ -223,6 +252,15 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 		return "", err
 	}
 
+	entry := b.entryFor(ctx, "")
+	entry.WithFields(logrus.Fields{
+		"image":   s.Image,
+		"mounts":  len(mounts),
+		"network": string(s.Isolation.NetworkMode),
+		"memory":  s.Isolation.Memory,
+		"pids":    s.Isolation.PidsLimit,
+	}).Trace("docker: ContainerCreate spec")
+
 	cfg := b.buildConfig(s, s.Image, labels)
 	hostCfg := b.buildHostConfig(s, mounts, tmpfs)
 	resp, err := b.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
@@ -240,13 +278,16 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	} else if err != nil {
 		return "", fmt.Errorf("docker: create container: %w", err)
 	}
+	b.entryFor(ctx, "").WithField("container_id", resp.ID).Trace("docker: ContainerCreate done")
 	if err := b.api.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return "", fmt.Errorf("docker: start container: %w", err)
 	}
+	b.entryFor(ctx, "").WithField("container_id", resp.ID).Trace("docker: ContainerStart")
 
 	if err := b.writeSecrets(ctx, resp.ID, s.Secrets); err != nil {
 		return "", fmt.Errorf("docker: write secrets: %w", err)
 	}
+	b.entryFor(ctx, "").WithField("count", len(s.Secrets)).Trace("docker: writeSecrets")
 
 	return resp.ID, nil
 }
@@ -254,6 +295,7 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 // Destroy removes the container owned by the given session id. It is
 // idempotent: destroying a session with no backing container is a no-op (X02).
 func (b *Backend) Destroy(ctx context.Context, id string) error {
+	b.entryFor(ctx, id).Trace("docker: destroy")
 	cid, err := b.containerIDBySession(ctx, id)
 	if errors.Is(err, ErrNotFound) {
 		return nil
@@ -461,6 +503,8 @@ func (b *Backend) writeSecret(ctx context.Context, cid, name, value string) erro
 // (S11). The user is taken from the request (resolved by the session manager
 // from the sandbox UIDGID and SudoPolicy, §7.10). --privileged is never used.
 func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.Result, error) {
+	entry := b.entryFor(ctx, id)
+	entry.Trace("docker: exec create")
 	cid, err := b.containerIDBySession(ctx, id)
 	if err != nil {
 		return nil, err
@@ -480,6 +524,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		return nil, fmt.Errorf("docker: exec create: %w", err)
 	}
 
+	entry.Trace("docker: exec attach")
 	hijacked, err := b.api.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec attach: %w", err)
@@ -550,6 +595,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 			emit("cancelled", 0)
 		}
 	}
+	b.entryFor(ctx, id).WithField("exit_code", inspect.ExitCode).Trace("docker: exec done")
 	return res, nil
 }
 
@@ -698,6 +744,12 @@ func (b *Backend) pullImage(ctx context.Context, ref string) error {
 	if auth := registryAuth(ref); auth != "" {
 		opts.RegistryAuth = auth
 	}
+	// Log the reference and whether registry auth was supplied — never the
+	// token itself (S02/L05).
+	b.entryFor(ctx, "").WithFields(logrus.Fields{
+		"ref":           ref,
+		"registry_auth": opts.RegistryAuth != "",
+	}).Trace("docker: pull")
 	reader, err := b.api.ImagePull(ctx, ref, opts)
 	if err != nil {
 		return fmt.Errorf("docker: pull image %q: %w", ref, err)

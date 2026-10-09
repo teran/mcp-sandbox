@@ -52,12 +52,33 @@ type AccessLogger interface {
 	AccessLog(entry AccessLogEntry)
 }
 
+// TraceLogger emits trace-level diagnostics (gated behind LOG_LEVEL=trace). It
+// is implemented by an infrastructure adapter over the server logger;
+// application code never logs directly (L05). Fields are carried forward by
+// WithFields so request_id and tool stay on every subsequent line (L09).
+type TraceLogger interface {
+	WithFields(fields map[string]any) TraceLogger
+	Tracef(format string, args ...any)
+	Debugf(format string, args ...any)
+}
+
+// noopTraceLogger discards every trace line. It is the nil-safe default so a
+// wrapper without an injected logger still runs unchanged.
+type noopTraceLogger struct{}
+
+func (noopTraceLogger) WithFields(map[string]any) TraceLogger { return noopTraceLogger{} }
+func (noopTraceLogger) Tracef(string, ...any)                 {}
+func (noopTraceLogger) Debugf(string, ...any)                 {}
+
 // Dependencies are the injected services the wrapper needs. They are provided
 // by the composition root so the application layer stays free of
 // infrastructure dependencies.
 type Dependencies struct {
 	// AccessLogger emits the access-log line (L08).
 	AccessLogger AccessLogger
+	// TraceLogger emits trace-level diagnostics (L09). Nil-safe: when unset a
+	// no-op logger is used.
+	TraceLogger TraceLogger
 	// Redact redacts sensitive values (S02) at the output boundary.
 	Redact func(any) any
 	// NewRequestID generates an opaque request id (L09).
@@ -82,6 +103,15 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 	start := time.Now()
 	requestID := deps.NewRequestID()
 	ctx = deps.WithRequestID(ctx, requestID)
+
+	// Trace diagnostics are gated at LOG_LEVEL=trace and carry request_id and
+	// tool on every line (L09). Nil-safe: an unset TraceLogger is a no-op.
+	trace := deps.TraceLogger
+	if trace == nil {
+		trace = noopTraceLogger{}
+	}
+	trace = trace.WithFields(map[string]any{"request_id": requestID, "tool": tool.Name})
+	trace.Tracef("handler: call start")
 
 	// Stash the progress sink into the context before dispatch (Phase 6,
 	// SPEC §5.1). This is generic: every tool inherits it and can emit live
@@ -108,33 +138,40 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 			Outcome:   outcome,
 			RequestID: requestID,
 		})
+		trace.Tracef("handler: call done")
 	}()
 
 	// 1. Validate arguments against the strict input schema (S08). A failed
 	// validation rejects the call as an invalid-params tool error before any
 	// execution happens.
+	trace.Tracef("handler: validating args")
 	if err := validateArgs(tool.InputSchema, req.Params.Arguments); err != nil {
 		outcome = "error"
 		verr := &invalidArgumentsError{err: fmt.Errorf("%s: invalid arguments: %w", tool.Name, err)}
 		result.SetError(verr)
 		return result, nil
 	}
+	trace.Tracef("handler: args valid")
 
 	// 2. Dispatch to the application-layer handler.
+	trace.Tracef("handler: dispatch start")
 	output, err := tool.Handler(ctx, req.Params.Arguments)
 	if err != nil {
 		outcome = "error"
 		result.SetError(err)
 		return result, nil
 	}
+	trace.Tracef("handler: dispatch done")
 
 	// 3. Redact the structured output (S02/S09): first through the injected
 	// struct-tag redactor (deps.Redact), then through the contract's secret
 	// field names for defense-in-depth.
+	trace.Tracef("handler: redacting output")
 	output = deps.Redact(output)
 	output = argRedact(output)
 
 	// 4. Return structured output (S09).
+	trace.Tracef("handler: marshaling output")
 	raw, err := json.Marshal(output)
 	if err != nil {
 		outcome = "error"

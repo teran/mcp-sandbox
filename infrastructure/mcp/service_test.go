@@ -1,15 +1,21 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/sirupsen/logrus"
+
+	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/session"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
+	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
 // fakeBackend implements every role so the Service can exercise all paths.
@@ -261,6 +267,29 @@ func TestService_PolicyAndBackendName(t *testing.T) {
 	}
 }
 
+// TestService_PolicyWithProfileStore pins Phase 7: once SetProfileStore is wired,
+// Policy exposes the store as the ProfileResolver so sandbox_create can resolve
+// operator-authored profiles by name.
+func TestService_PolicyWithProfileStore(t *testing.T) {
+	fb := &fakeBackend{}
+	svc := newTestService(t, fb)
+	// Before wiring: Profiles resolver is nil.
+	if pol := svc.Policy(); pol.Profiles != nil {
+		t.Fatalf("Profiles = %v, want nil before SetProfileStore", pol.Profiles)
+	}
+	// After wiring a store, Policy must expose it as the resolver.
+	st := profile.Empty()
+	svc.SetProfileStore(st)
+	pol := svc.Policy()
+	if pol.Profiles == nil {
+		t.Fatal("Profiles = nil, want non-nil store after SetProfileStore")
+	}
+	// The wired store is actually used for resolution.
+	if _, ok := pol.Profiles.Get("anything"); ok {
+		t.Fatal("Get on empty store should report not-found")
+	}
+}
+
 func TestService_DefaultIsolationIsBridgeAndAppliedOnCreate(t *testing.T) {
 	// The server-enforced default isolation must use a bridged network.
 	defSvc := NewService(backend.NewRegistry(), backend.Config{})
@@ -355,5 +384,48 @@ func TestService_PolicyBoundedResourceDefaults(t *testing.T) {
 	s := spec.SandboxSpec{Image: "img", Isolation: iso}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("default isolation must validate: %v", err)
+	}
+}
+
+// TestService_TraceLogsCarryRequestID asserts the service threads request_id
+// from the context onto its trace lines for exec/info/stats (L09).
+func TestService_TraceLogsCarryRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	l := logrus.New()
+	l.SetOutput(&buf)
+	l.SetLevel(logrus.TraceLevel)
+	l.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true, DisableColors: true})
+
+	reg := backend.NewRegistry()
+	if err := reg.Register(backend.Factory{
+		Name:         "fake",
+		Priority:     0,
+		Capabilities: needAll,
+		Available:    func() bool { return true },
+		New:          func(backend.Config) (role.Backend, error) { return &fakeBackend{}, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(reg, backend.Config{}, WithLogger(logrus.NewEntry(l)))
+	ctx := logging.WithRequestID(context.Background(), "req-svc")
+
+	if _, err := svc.Exec(ctx, exec.Request{SandboxID: "s", Argv: []string{"echo", "hi"}, User: "1000:1000"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Info(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Stats(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "req-svc") {
+		t.Fatalf("trace output missing request_id:\n%s", out)
+	}
+	for _, op := range []string{"exec", "info", "stats"} {
+		if !strings.Contains(out, op+"=") && !strings.Contains(out, "operation="+op) {
+			t.Fatalf("trace output missing %q operation:\n%s", op, out)
+		}
 	}
 }

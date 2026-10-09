@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -8,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
+	"github.com/teran/mcp-sandbox/domain/requestid"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -392,5 +396,32 @@ func TestCreate_DuplicateIDSurfaced(t *testing.T) {
 func TestNewIDFrom_Error(t *testing.T) {
 	if _, err := newIDFrom(strings.NewReader("short")); err == nil {
 		t.Fatal("expected error from short reader")
+	}
+}
+
+// TestManager_TraceLogsCarryRequestIDAndSession asserts the manager threads
+// request_id (from the context) and session_id onto its trace lines (L09).
+func TestManager_TraceLogsCarryRequestIDAndSession(t *testing.T) {
+	var buf bytes.Buffer
+	l := logrus.New()
+	l.SetOutput(&buf)
+	l.SetLevel(logrus.TraceLevel)
+	l.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true, DisableColors: true})
+
+	m := NewManager(newFakeLife(), WithLogger(logrus.NewEntry(l)))
+	ctx := requestid.WithID(context.Background(), "req-abc")
+	if _, err := m.Create(ctx, validSpec()); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "req-abc") {
+		t.Fatalf("trace output missing request_id:\n%s", out)
+	}
+	if !strings.Contains(out, `operation=create`) {
+		t.Fatalf("trace output missing operation field:\n%s", out)
+	}
+	if !strings.Contains(out, "session: operation done") {
+		t.Fatalf("trace output missing duration log:\n%s", out)
 	}
 }

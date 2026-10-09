@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -50,6 +51,113 @@ func newDeps(al AccessLogger, redact func(any) any) Dependencies {
 }
 
 type k string
+
+// traceRecorder captures every field set and trace line emitted by a fake
+// TraceLogger.
+type traceRecorder struct {
+	mu        sync.Mutex
+	fieldSets []map[string]any
+	lines     []string
+}
+
+// fakeTraceLogger records WithFields/Tracef calls for assertions. WithFields
+// merges into the current field set so the final fields on each line are the
+// union across the chain.
+type fakeTraceLogger struct {
+	rec    *traceRecorder
+	fields map[string]any
+}
+
+func (t *fakeTraceLogger) WithFields(fields map[string]any) TraceLogger {
+	t.rec.mu.Lock()
+	defer t.rec.mu.Unlock()
+	merged := make(map[string]any, len(t.fields)+len(fields))
+	for k, v := range t.fields {
+		merged[k] = v
+	}
+	for k, v := range fields {
+		merged[k] = v
+	}
+	t.rec.fieldSets = append(t.rec.fieldSets, merged)
+	return &fakeTraceLogger{rec: t.rec, fields: merged}
+}
+
+func (t *fakeTraceLogger) Tracef(format string, args ...any) {
+	t.rec.mu.Lock()
+	defer t.rec.mu.Unlock()
+	t.rec.lines = append(t.rec.lines, fmt.Sprintf(format, args...))
+}
+
+func (t *fakeTraceLogger) Debugf(format string, args ...any) {
+	t.rec.mu.Lock()
+	defer t.rec.mu.Unlock()
+	t.rec.lines = append(t.rec.lines, fmt.Sprintf(format, args...))
+}
+
+func (t *fakeTraceLogger) sawRequestID(id string) bool {
+	t.rec.mu.Lock()
+	defer t.rec.mu.Unlock()
+	for _, fs := range t.rec.fieldSets {
+		if fs["request_id"] == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *fakeTraceLogger) sawTool(tool string) bool {
+	t.rec.mu.Lock()
+	defer t.rec.mu.Unlock()
+	for _, fs := range t.rec.fieldSets {
+		if fs["tool"] == tool {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCall_TraceLoggerCarriesRequestIDAndTool asserts the handler threads the
+// generated request_id and the tool name into every trace line via WithFields
+// (L09), and that trace diagnostics are actually emitted.
+func TestCall_TraceLoggerCarriesRequestIDAndTool(t *testing.T) {
+	rec := &traceRecorder{}
+	tl := &fakeTraceLogger{rec: rec}
+	deps := newDeps(&fakeAccessLogger{}, nil)
+	deps.TraceLogger = tl
+
+	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) {
+		return map[string]any{"result": "ok"}, nil
+	})
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{"path": "/x"})}}
+	if _, err := Call(context.Background(), deps, d, req); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	if !tl.sawRequestID("req-123") {
+		t.Fatalf("trace lines did not carry request_id: %+v", rec.fieldSets)
+	}
+	if !tl.sawTool("sandbox_test") {
+		t.Fatalf("trace lines did not carry tool: %+v", rec.fieldSets)
+	}
+	rec.mu.Lock()
+	lines := len(rec.lines)
+	rec.mu.Unlock()
+	if lines == 0 {
+		t.Fatal("no trace lines emitted")
+	}
+}
+
+// TestCall_NilTraceLoggerIsNoop asserts an unset TraceLogger does not panic.
+func TestCall_NilTraceLoggerIsNoop(t *testing.T) {
+	deps := newDeps(&fakeAccessLogger{}, nil) // TraceLogger left nil
+	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) {
+		return map[string]any{"result": "ok"}, nil
+	})
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{"path": "/x"})}}
+	if _, err := Call(context.Background(), deps, d, req); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+}
 
 func stringSchema(props map[string]*jsonschema.Schema, required []string) *jsonschema.Schema {
 	return &jsonschema.Schema{
