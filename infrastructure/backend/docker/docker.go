@@ -31,7 +31,6 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
-	appconfig "github.com/teran/mcp-sandbox/application/config"
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
@@ -110,28 +109,24 @@ type Backend struct {
 type config struct {
 	allowDirs     []string
 	allowSymlinks bool
-	cwdMode       string
-	defaultImage  string
-	// allowedNetworkModes is the operator-configured allowlist of sandbox
-	// network modes (SPEC §7.1). When empty it defaults to the safe bridge mode
-	// only. A spec whose network mode is not in this set is rejected.
-	allowedNetworkModes []spec.NetworkMode
-	// trustedRegistries is the allowlist of image registries the sandbox may
-	// pull images from (SPEC §7.9, C05/T7). Any image reference whose registry
-	// is not listed here is rejected at container-create time. It is built from
-	// New's trustedRegistries argument, defaulting to
-	// appconfig.DefaultTrustedRegistries when empty.
-	trustedRegistries map[string]struct{}
+}
+
+// Option configures a docker backend at construction.
+type Option func(*config)
+
+// WithAllowSymlinks controls whether host path symlinks are followed during
+// path verification (S04). It defaults to false.
+func WithAllowSymlinks(v bool) Option {
+	return func(c *config) { c.allowSymlinks = v }
 }
 
 // New returns a docker backend for the given server configuration. Allow dirs
 // are canonicalized with EvalSymlinks so path checks compare like-for-like
 // (config.Validate already does this; canonicalizing again is idempotent).
-// trustedRegistries is the image-registry allowlist; when empty or nil it
-// defaults to appconfig.DefaultTrustedRegistries (SPEC §7.9). allowedNetworkModes
-// is optional; when omitted or empty the backend permits only
-// spec.DefaultNetworkModes() (the safe bridge default).
-func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, api dockerAPI, trustedRegistries []string, allowedNetworkModes ...[]spec.NetworkMode) *Backend {
+// Optional Options (e.g. WithAllowSymlinks) tune path verification. The image
+// source, network and resources come from the operator profile (Phase 7), so
+// there is no registry allowlist or network-mode gate here.
+func New(api dockerAPI, allowDirs []string, opts ...Option) *Backend {
 	canon := make([]string, 0, len(allowDirs))
 	for _, d := range allowDirs {
 		if r, err := filepath.EvalSymlinks(d); err == nil {
@@ -140,38 +135,14 @@ func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, a
 			canon = append(canon, d)
 		}
 	}
-	var allowed []spec.NetworkMode
-	if len(allowedNetworkModes) > 0 {
-		allowed = allowedNetworkModes[0]
+	cfg := config{
+		allowDirs:     canon,
+		allowSymlinks: false,
 	}
-	regs := trustedRegistries
-	if len(regs) == 0 {
-		regs = appconfig.DefaultTrustedRegistries
+	for _, o := range opts {
+		o(&cfg)
 	}
-	trusted := make(map[string]struct{}, len(regs))
-	for _, r := range regs {
-		trusted[r] = struct{}{}
-	}
-	return &Backend{
-		api: api,
-		cfg: config{
-			allowDirs:           canon,
-			allowSymlinks:       allowSymlinks,
-			cwdMode:             cwdMode,
-			defaultImage:        defaultImage,
-			allowedNetworkModes: allowed,
-			trustedRegistries:   trusted,
-		},
-	}
-}
-
-// allowedModes returns the effective network-mode allowlist, defaulting to the
-// safe bridge mode only when none was configured.
-func (b *Backend) allowedModes() []spec.NetworkMode {
-	if len(b.cfg.allowedNetworkModes) == 0 {
-		return spec.DefaultNetworkModes()
-	}
-	return b.cfg.allowedNetworkModes
+	return &Backend{api: api, cfg: cfg}
 }
 
 // Name returns the backend name.
@@ -215,14 +186,11 @@ func newClient(host string) (*client.Client, error) {
 // and delivering secrets as tmpfs 0600 files (§7.3). It returns the container
 // id.
 func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error) {
-	if s.Image == "" {
-		s.Image = b.cfg.defaultImage
-	}
-	if err := s.ValidateWithNetworkModes(b.allowedModes()); err != nil {
+	if err := s.Validate(); err != nil {
 		return "", err
 	}
-	// Enforce the trusted-registry / digest policy (§7.9) before any Docker
-	// side-effect happens (C05/T7).
+	// Parse-only image validation (Phase 7): any valid reference from any
+	// registry is accepted; only empty or malformed references are rejected.
 	if err := b.validateImageRef(s.Image); err != nil {
 		return "", err
 	}
@@ -249,9 +217,9 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	hostCfg := b.buildHostConfig(s, mounts, tmpfs)
 	resp, err := b.api.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
 	if isNoSuchImage(err) {
-		// The image is not present locally. Pull the (already validated)
-		// trusted image (§7.9, C05/T7), then retry the create. validateImageRef
-		// ran above, so only a trusted-registry image can ever reach a pull.
+		// The image is not present locally. Pull the (already parse-only
+		// validated) image, then retry the create. validateImageRef ran above,
+		// so only a valid image reference can ever reach a pull.
 		if perr := b.pullImage(ctx, s.Image); perr != nil {
 			return "", perr
 		}
@@ -305,17 +273,14 @@ func (b *Backend) buildConfig(s spec.SandboxSpec, image string, labels map[strin
 
 // buildHostConfig applies the immutable Isolation hardening (§7.1). Every
 // security-relevant value is forced server-side; a caller cannot weaken it.
+// The network mode comes straight from the spec (operator profile), host
+// included — there is no server-side allowlist to coerce it (Phase 7).
 func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpfs map[string]string) *container.HostConfig {
 	iso := s.Isolation
 	pids := iso.PidsLimit
 
 	networkMode := string(iso.NetworkMode)
 	if networkMode == "" {
-		networkMode = string(spec.NetworkNone)
-	} else if networkMode == string(spec.NetworkHost) && !hasNetworkMode(b.allowedModes(), spec.NetworkHost) {
-		// Defense-in-depth (SPEC §7.1): never apply host networking unless the
-		// operator has explicitly allowed it via ALLOW_NETWORK_MODES. When host
-		// is not allowed it is coerced to none.
 		networkMode = string(spec.NetworkNone)
 	}
 
@@ -343,9 +308,10 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 }
 
 // resolveMounts validates and converts the spec's cwd and mounts into docker
-// mount specs. The session cwd is mounted 1:1 at the same absolute path
-// (§7.2), **read-only by default** and writable only when the global CWD_MODE
-// is "rw" (opt-in). Every host path must stay within ALLOW_DIRS (S04).
+// mount specs (Phase 7). The session cwd is mounted 1:1 at the same absolute
+// path (§7.2) as the first mount, read-only by default (the profile's cwd.mode
+// is baked into the spec's first mount). Every host path — the cwd and each
+// profile mount source — must stay within ALLOW_DIRS (S04).
 func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 	var out []mount.Mount
 
@@ -356,12 +322,17 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 		out = append(out, mount.Mount{
 			Type:     mount.TypeBind,
 			Source:   s.WorkingDir,
-			Target:   s.WorkingDir,          // 1:1, same absolute path, no rewriting
-			ReadOnly: b.cfg.cwdMode != "rw", // read-only unless rw opt-in
+			Target:   s.WorkingDir, // 1:1, same absolute path, no rewriting
+			ReadOnly: true,         // cwd is read-only by default
 		})
 	}
 
 	for i, m := range s.Mounts {
+		// Skip the profile's cwd entry when it is already mounted 1:1 from
+		// WorkingDir above, so the cwd is not double-mounted.
+		if s.WorkingDir != "" && m.Source == s.WorkingDir && m.Target == s.WorkingDir {
+			continue
+		}
 		if err := b.verifyHostPath(m.Source); err != nil {
 			return nil, fmt.Errorf("docker: mount %d: %w", i, err)
 		}
@@ -675,27 +646,18 @@ func (b *Backend) withinAllowDirs(p string) bool {
 	return false
 }
 
-// validateImageRef enforces the sandbox image policy (§7.9): the reference
-// must parse as a valid image reference and its registry must be in the
-// backend's trusted allowlist (b.cfg.trustedRegistries). This prevents the
-// server from pulling sandbox images from arbitrary/untrusted registries
-// (C05/T7). Digest-pinning is the recommended deployment posture (documented
-// in SPEC §7.9); a trusted registry is the hard enforcement boundary here.
+// validateImageRef enforces parse-only image validation (Phase 7): the
+// reference must parse as a valid image reference. Any registry is accepted —
+// the image source comes from the operator-authored profile and there is no
+// trusted-registry allowlist (TRUSTED_REGISTRIES was removed). Only empty or
+// malformed references are rejected.
 func (b *Backend) validateImageRef(ref string) error {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return errors.New("sandbox: image is required")
 	}
-	named, err := reference.ParseNormalizedNamed(ref)
-	if err != nil {
+	if _, err := reference.ParseNormalizedNamed(ref); err != nil {
 		return fmt.Errorf("sandbox: invalid image reference %q: %w", ref, err)
-	}
-	domain := reference.Domain(named)
-	if domain == "" {
-		domain = "docker.io"
-	}
-	if _, ok := b.cfg.trustedRegistries[domain]; !ok {
-		return fmt.Errorf("sandbox: image registry %q is not in the trusted allowlist", domain)
 	}
 	return nil
 }
@@ -768,14 +730,4 @@ func clampUint64(v uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(v)
-}
-
-// hasNetworkMode reports whether m is present in the given allowlist.
-func hasNetworkMode(allowed []spec.NetworkMode, m spec.NetworkMode) bool {
-	for _, n := range allowed {
-		if n == m {
-			return true
-		}
-	}
-	return false
 }

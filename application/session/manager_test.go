@@ -131,29 +131,18 @@ func TestCreate_BackendError(t *testing.T) {
 	}
 }
 
-func TestCreate_NetworkModeNotAllowedRejected(t *testing.T) {
+func TestCreate_NetworkHostAllowed(t *testing.T) {
+	// Phase 7: the network-allowlist is removed from the manager; Validate no
+	// longer rejects host networking. Host is a valid mode.
 	life := newFakeLife()
-	m := NewManager(life, spec.DefaultNetworkModes()) // bridge only
-	s := validSpec()
-	s.Isolation.NetworkMode = spec.NetworkHost
-	if _, err := m.Create(context.Background(), s); err == nil {
-		t.Fatal("expected host networking to be rejected")
-	}
-	if len(life.created) != 0 {
-		t.Fatal("backend should not be called for a disallowed network mode")
-	}
-}
-
-func TestCreate_NetworkModeAllowedWhenListed(t *testing.T) {
-	life := newFakeLife()
-	m := NewManager(life, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+	m := NewManager(life)
 	s := validSpec()
 	s.Isolation.NetworkMode = spec.NetworkHost
 	if _, err := m.Create(context.Background(), s); err != nil {
-		t.Fatalf("host should be allowed when listed: %v", err)
+		t.Fatalf("host networking must be allowed: %v", err)
 	}
 	if len(life.created) != 1 {
-		t.Fatal("backend should be called for an allowed network mode")
+		t.Fatal("backend should be called")
 	}
 }
 

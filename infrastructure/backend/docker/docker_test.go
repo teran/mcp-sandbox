@@ -36,10 +36,11 @@ func baseSpec() spec.SandboxSpec {
 	}
 }
 
-// newBackendForDirs builds a backend whose ALLOW_DIRS are the given dirs. The
-// cwd mount defaults to read-only (SPEC §7.2) unless an explicit mode is given.
+// newBackendForDirs builds a backend with New(api, dirs): the second argument
+// is the ALLOW_DIRS host-path gate (Phase 7), which resolveMounts enforces for
+// the cwd mount and every mount source. Pass the allowed roots a scenario needs.
 func newBackendForDirs(api dockerAPI, dirs ...string) *Backend {
-	return New(dirs, false, "ro", "default-image:latest", api, nil)
+	return New(api, dirs)
 }
 
 func TestNamePriorityCapabilities(t *testing.T) {
@@ -56,26 +57,17 @@ func TestNamePriorityCapabilities(t *testing.T) {
 	}
 }
 
-func TestCreate_RejectsHostNetwork(t *testing.T) {
+// TestCreate_AllowsHostNetwork pins Phase 7: with the network-allowlist
+// removed and NetworkHost a valid mode, host networking is accepted and applied
+// (the operator opt-in for host is enforced at the config/profile layer, not
+// here).
+func TestCreate_AllowsHostNetwork(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Isolation.NetworkMode = spec.NetworkHost
-	if _, err := b.Create(context.Background(), s); err == nil {
-		t.Fatal("expected host networking to be rejected")
-	}
-	if len(api.createdConfigs) != 0 {
-		t.Fatal("no container create should have happened for host networking")
-	}
-}
-
-func TestCreate_AllowsHostNetworkWhenAllowed(t *testing.T) {
-	api := newFakeClient()
-	b := New(nil, false, "readonly", "img", api, nil, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
-	s := baseSpec()
-	s.Isolation.NetworkMode = spec.NetworkHost
 	if _, err := b.Create(context.Background(), s); err != nil {
-		t.Fatalf("host should be allowed when listed: %v", err)
+		t.Fatalf("host should be allowed: %v", err)
 	}
 	hc := api.lastHostConfig()
 	if string(hc.NetworkMode) != "host" {
@@ -246,25 +238,11 @@ func TestCreate_NoOpenCodeSessionLabelWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestCreate_DefaultImage(t *testing.T) {
-	api := newFakeClient()
-	b := newBackendForDirs(api)
-	s := baseSpec()
-	s.Image = ""
-	if _, err := b.Create(context.Background(), s); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if cfg := api.lastConfig(); cfg.Image != "default-image:latest" {
-		t.Errorf("Image = %q, want default", cfg.Image)
-	}
-}
-
 func TestCreate_InvalidSpec(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
 	s := baseSpec()
-	s.Image = "" // invalid: Image required, and no default lookup because Validation runs first
-	// give isolation an invalid value too to guarantee failure before image default
+	s.Image = "" // invalid: Image required
 	s.Isolation.Memory = 0
 	if _, err := b.Create(context.Background(), s); err == nil {
 		t.Fatal("expected validation error")
@@ -274,66 +252,88 @@ func TestCreate_InvalidSpec(t *testing.T) {
 	}
 }
 
-func TestCreate_CwdMounted11ReadOnlyByDefault(t *testing.T) {
-	dir := t.TempDir()
+// TestCreate_MountsWithinAllowDirsPassThrough pins Phase 7: resolveMounts keeps
+// the ALLOW_DIRS host-path gate. The cwd and every mount source within an
+// allowed root pass through 1:1 with their ReadOnly flag honoured.
+func TestCreate_MountsWithinAllowDirsPassThrough(t *testing.T) {
 	api := newFakeClient()
-	b := New([]string{dir}, false, "ro", "img", api, nil)
+	allowDir := t.TempDir()
+	proj := filepath.Join(allowDir, "proj")
+	other := filepath.Join(allowDir, "other")
+	for _, d := range []string{proj, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := newBackendForDirs(api, allowDir)
 	s := baseSpec()
-	s.WorkingDir = dir
+	s.WorkingDir = proj
+	s.Mounts = []spec.Mount{
+		{Source: proj, Target: proj, ReadOnly: true}, // cwd entry
+		{Source: other, Target: "/mnt", ReadOnly: false},
+	}
 	if _, err := b.Create(context.Background(), s); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	hc := api.lastHostConfig()
-	if len(hc.Mounts) != 1 {
-		t.Fatalf("mounts = %d, want 1 (cwd)", len(hc.Mounts))
+	if len(hc.Mounts) != 2 {
+		t.Fatalf("mounts = %d, want 2", len(hc.Mounts))
 	}
-	m := hc.Mounts[0]
-	if m.Source != dir || m.Target != dir {
-		t.Errorf("cwd mount not 1:1: %+v", m)
+	if hc.Mounts[0].Source != proj || hc.Mounts[0].Target != proj || !hc.Mounts[0].ReadOnly {
+		t.Fatalf("cwd mount not passed through: %+v", hc.Mounts[0])
 	}
-	if !m.ReadOnly {
-		t.Error("cwd should be read-only by default (opt-in rw)")
+	if hc.Mounts[1].Source != other || hc.Mounts[1].Target != "/mnt" || hc.Mounts[1].ReadOnly {
+		t.Fatalf("mount not passed through: %+v", hc.Mounts[1])
 	}
-	if cfg := api.lastConfig(); cfg.WorkingDir != dir {
-		t.Errorf("WorkingDir = %q, want %q", cfg.WorkingDir, dir)
-	}
-}
-
-func TestCreate_CwdWritableWhenModeRW(t *testing.T) {
-	dir := t.TempDir()
-	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api, nil)
-	s := baseSpec()
-	s.WorkingDir = dir
-	if _, err := b.Create(context.Background(), s); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if hc := api.lastHostConfig(); hc.Mounts[0].ReadOnly {
-		t.Error("cwd should be writable when SANDBOX_CWD_MODE=rw")
+	if cfg := api.lastConfig(); cfg.WorkingDir != proj {
+		t.Errorf("WorkingDir = %q", cfg.WorkingDir)
 	}
 }
 
+// TestCreate_CwdOutsideAllowDirsRejected verifies a cwd whose host path is not
+// within ANY allowed root is rejected before a container is created.
 func TestCreate_CwdOutsideAllowDirsRejected(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
 	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	allowDir := t.TempDir()
+	outside := t.TempDir() // exists, but is not under allowDir
+	b := newBackendForDirs(api, allowDir)
 	s := baseSpec()
 	s.WorkingDir = outside
 	if _, err := b.Create(context.Background(), s); err == nil {
-		t.Fatal("expected cwd escape error")
+		t.Fatal("expected cwd outside ALLOW_DIRS to be rejected")
 	}
 	if len(api.createdConfigs) != 0 {
-		t.Fatal("no create should have happened")
+		t.Fatal("no container create should have happened")
+	}
+}
+
+// TestCreate_MountOutsideAllowDirsRejected verifies a profile mount source
+// outside ALLOW_DIRS is rejected (the same gate guards the cwd and every mount).
+func TestCreate_MountOutsideAllowDirsRejected(t *testing.T) {
+	api := newFakeClient()
+	allowDir := t.TempDir()
+	outside := t.TempDir() // exists, but is not under allowDir
+	b := newBackendForDirs(api, allowDir)
+	s := baseSpec()
+	s.Mounts = []spec.Mount{{Source: outside, Target: "/mnt", ReadOnly: true}}
+	if _, err := b.Create(context.Background(), s); err == nil {
+		t.Fatal("expected mount source outside ALLOW_DIRS to be rejected")
+	}
+	if len(api.createdConfigs) != 0 {
+		t.Fatal("no container create should have happened")
 	}
 }
 
 func TestCreate_AdditionalMountReadOnlyFlag(t *testing.T) {
-	dir := t.TempDir()
 	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	allowDir := t.TempDir()
+	src := filepath.Join(allowDir, "host")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackendForDirs(api, allowDir)
 	s := baseSpec()
-	s.Mounts = []spec.Mount{{Source: dir, Target: "/mnt", ReadOnly: true}}
+	s.Mounts = []spec.Mount{{Source: src, Target: "/mnt", ReadOnly: true}}
 	if _, err := b.Create(context.Background(), s); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -343,9 +343,8 @@ func TestCreate_AdditionalMountReadOnlyFlag(t *testing.T) {
 }
 
 func TestCreate_SecretsDeliveredViaExecOnTmpfs(t *testing.T) {
-	dir := t.TempDir()
 	api := newFakeClient()
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "supersecret"}}
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -586,55 +585,6 @@ func TestDestroy_RemoveError(t *testing.T) {
 	}
 }
 
-func TestVerifyHostPath_EmptyAndSymlinkAllowed(t *testing.T) {
-	dir := t.TempDir()
-	b := New([]string{dir}, true, "rw", "img", newFakeClient(), nil)
-	if err := b.verifyHostPath(""); err == nil {
-		t.Fatal("empty path should error")
-	}
-	if err := b.verifyHostPath(filepath.Join(dir, "sub")); err == nil {
-		t.Fatal("missing path should error")
-	}
-}
-
-func TestVerifyHostPath_NonexistentRejected(t *testing.T) {
-	dir := t.TempDir()
-	b := New([]string{dir}, false, "rw", "img", newFakeClient(), nil)
-	if err := b.verifyHostPath(filepath.Join(dir, "nope")); err == nil {
-		t.Fatal("nonexistent path should error")
-	}
-}
-
-func TestVerifyHostPath_SymlinkDisallowed(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	target := filepath.Join(outside, "target")
-	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	// Symlink resolves outside ALLOW_DIRS -> rejected.
-	b := New([]string{dir}, false, "rw", "img", newFakeClient(), nil)
-	if err := b.verifyHostPath(link); err == nil {
-		t.Fatal("symlink escaping ALLOW_DIRS should be rejected")
-	}
-}
-
-func TestVerifyHostPath_OpenThenVerify(t *testing.T) {
-	dir := t.TempDir()
-	sub := filepath.Join(dir, "sub")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	b := New([]string{dir}, false, "rw", "img", newFakeClient(), nil)
-	if err := b.verifyHostPath(sub); err != nil {
-		t.Fatalf("verifyHostPath: %v", err)
-	}
-}
-
 func TestInfo_InspectError(t *testing.T) {
 	api := newFakeClient()
 	api.inspectErr = errors.New("inspect fail")
@@ -657,10 +607,9 @@ func TestNewFromConfig_Error(t *testing.T) {
 }
 
 func TestCreate_SecretsExecCreateError(t *testing.T) {
-	dir := t.TempDir()
 	api := newFakeClient()
 	api.execErr = errors.New("exec create fail")
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -669,10 +618,9 @@ func TestCreate_SecretsExecCreateError(t *testing.T) {
 }
 
 func TestCreate_SecretsExecNonZeroExit(t *testing.T) {
-	dir := t.TempDir()
 	api := newFakeClient()
 	api.execExitCode = 1
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -681,10 +629,9 @@ func TestCreate_SecretsExecNonZeroExit(t *testing.T) {
 }
 
 func TestCreate_SecretsExecAttachError(t *testing.T) {
-	dir := t.TempDir()
 	api := newFakeClient()
 	api.execAttachErr = errors.New("attach fail")
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -693,26 +640,13 @@ func TestCreate_SecretsExecAttachError(t *testing.T) {
 }
 
 func TestCreate_SecretsExecInspectError(t *testing.T) {
-	dir := t.TempDir()
 	api := newFakeClient()
 	api.execInspectErr = errors.New("inspect fail")
-	b := New([]string{dir}, false, "rw", "img", api, nil)
+	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
 		t.Fatal("expected secret exec inspect error")
-	}
-}
-
-func TestVerifyHostPath_AllowSymlinksValid(t *testing.T) {
-	dir := t.TempDir()
-	sub := filepath.Join(dir, "sub")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	b := New([]string{dir}, true, "rw", "img", newFakeClient(), nil)
-	if err := b.verifyHostPath(sub); err != nil {
-		t.Fatalf("verifyHostPath with allowSymlinks: %v", err)
 	}
 }
 
@@ -750,24 +684,21 @@ func TestContainerIDBySession_EmptyID(t *testing.T) {
 	}
 }
 
-func TestNew_NonexistentAllowDir(t *testing.T) {
-	// EvalSymlinks fails, so the raw path is kept (New must not error).
-	b := New([]string{"/definitely/not/a/real/dir"}, false, "rw", "img", newFakeClient(), nil)
-	if len(b.cfg.allowDirs) != 1 || b.cfg.allowDirs[0] != "/definitely/not/a/real/dir" {
-		t.Fatalf("allowDirs = %v", b.cfg.allowDirs)
-	}
-}
-
-func TestValidateImageRef_AcceptsTrustedRegistries(t *testing.T) {
-	b := newBackendForDirs(newFakeClient()) // default trusted allowlist (docker.io / ghcr.io)
+// TestValidateImageRef_ParseOnly pins Phase 7: image validation is parse-only.
+// Any valid image reference — including one from an arbitrary/untrusted registry
+// — is accepted, because TRUSTED_REGISTRIES was removed and the image source now
+// comes from the operator-authored profile. Only empty or unparsable references
+// are rejected.
+func TestValidateImageRef_ParseOnly(t *testing.T) {
+	b := newBackendForDirs(newFakeClient())
 	accepted := []string{
 		"alpine:3.20", // unqualified → docker.io/library/alpine
+		"img:latest",
 		"docker.io/library/alpine:3.20",
-		"img:latest", // unqualified test image → docker.io
-		"default-image:latest",
 		"ghcr.io/org/app:v1",
 		"ghcr.io/org/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		"index.docker.io/library/alpine:3.20",
+		"evil.com/foo/bar:latest", // arbitrary registry accepted (parse-only)
+		"localhost:5000/app:v1",   // arbitrary registry accepted (parse-only)
 	}
 	for _, ref := range accepted {
 		if err := b.validateImageRef(ref); err != nil {
@@ -776,15 +707,15 @@ func TestValidateImageRef_AcceptsTrustedRegistries(t *testing.T) {
 	}
 }
 
-func TestValidateImageRef_RejectsUntrustedOrInvalid(t *testing.T) {
-	b := newBackendForDirs(newFakeClient()) // default trusted allowlist
+// TestValidateImageRef_RejectsEmptyOrInvalid pins the parse-only rejection side:
+// empty or malformed references are rejected, regardless of registry.
+func TestValidateImageRef_RejectsEmptyOrInvalid(t *testing.T) {
+	b := newBackendForDirs(newFakeClient())
 	rejected := []string{
 		"",
 		"   ",
-		"evil.com/foo/bar:latest",     // untrusted registry
-		"registry.example.org/app:v1", // untrusted registry
-		"localhost:5000/app:v1",       // untrusted local registry
-		"::::invalid",                 // malformed reference
+		"::::invalid", // malformed reference
+		"a b",         // internal whitespace is not a valid reference
 	}
 	for _, ref := range rejected {
 		if err := b.validateImageRef(ref); err == nil {
@@ -793,56 +724,41 @@ func TestValidateImageRef_RejectsUntrustedOrInvalid(t *testing.T) {
 	}
 }
 
-// TestValidateImageRef_UsesConfiguredAllowlist verifies that the allowlist is
-// the per-backend operator-configured set (TRUSTED_REGISTRIES), not the
-// hardcoded default: a registry the backend was configured with is accepted,
-// while a default-trusted registry not in the configured set is rejected.
-func TestValidateImageRef_UsesConfiguredAllowlist(t *testing.T) {
-	b := New(nil, false, "ro", "img", newFakeClient(), []string{"registry.homelab.teran.dev"})
-
-	if err := b.validateImageRef("registry.homelab.teran.dev/team/app:v1"); err != nil {
-		t.Errorf("configured registry rejected: %v", err)
-	}
-	for _, ref := range []string{"docker.io/library/alpine:3.20", "ghcr.io/org/app:v1"} {
-		if err := b.validateImageRef(ref); err == nil {
-			t.Errorf("validateImageRef(%q) = nil, want error (not in configured allowlist)", ref)
-		}
-	}
-}
-
-// TestNew_CopiesTrustedRegistries verifies the backend does not alias the
-// caller's TrustedRegistries slice: mutating the input slice after construction
-// must not change the backend's allowlist (immutability, SPEC §7.9).
-func TestNew_CopiesTrustedRegistries(t *testing.T) {
-	regs := []string{"registry.homelab.teran.dev"}
-	b := New(nil, false, "ro", "img", newFakeClient(), regs)
-	// Mutate the caller's slice after construction.
-	regs[0] = "evil.example.com"
-	if err := b.validateImageRef("registry.homelab.teran.dev/team/app:v1"); err != nil {
-		t.Errorf("original configured registry must remain trusted after caller mutation: %v", err)
-	}
-	if err := b.validateImageRef("evil.example.com/team/app:v1"); err == nil {
-		t.Error("mutated registry must NOT become trusted")
-	}
-}
-
-func TestCreate_RejectsUntrustedImage(t *testing.T) {
+// TestCreate_AcceptsImageFromAnyRegistry verifies a valid image reference from an
+// arbitrary registry is accepted and created (parse-only policy; no registry
+// allowlist at create time).
+func TestCreate_AcceptsImageFromAnyRegistry(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
 	s := baseSpec()
 	s.Image = "evil.com/foo/bar:latest"
+	if _, err := b.Create(context.Background(), s); err != nil {
+		t.Fatalf("create with arbitrary-registry image should succeed (parse-only): %v", err)
+	}
+	if len(api.createdConfigs) != 1 {
+		t.Fatalf("created = %d, want 1", len(api.createdConfigs))
+	}
+}
+
+// TestCreate_RejectsInvalidImage verifies a malformed image reference is rejected
+// before any Docker side-effect (parse-only validation).
+func TestCreate_RejectsInvalidImage(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	s := baseSpec()
+	s.Image = "::::invalid"
 	if _, err := b.Create(context.Background(), s); err == nil {
-		t.Fatal("expected untrusted image rejection")
+		t.Fatal("expected invalid image rejection")
 	}
 	if len(api.createdConfigs) != 0 {
 		t.Fatal("no container create should have happened")
 	}
 	if pulls := api.pulledRefs(); len(pulls) != 0 {
-		t.Fatalf("no image pull should happen for an untrusted registry: %v", pulls)
+		t.Fatalf("no image pull should happen for an invalid image: %v", pulls)
 	}
 }
 
-func TestCreate_AcceptsTrustedImage(t *testing.T) {
+func TestCreate_AcceptsValidImage(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
 	s := baseSpec()
@@ -856,8 +772,9 @@ func TestCreate_AcceptsTrustedImage(t *testing.T) {
 }
 
 // TestCreate_ImageAlreadyPresent_NoPull verifies that when the image is already
-// in the local cache the create succeeds without issuing an image pull (SPEC
-// §7.9) — pulls are only a fallback for a missing-but-trusted image.
+// in the local cache the create succeeds without issuing an image pull — pulls
+// are only a fallback for a missing image (parse-only validation; no registry
+// allowlist).
 func TestCreate_ImageAlreadyPresent_NoPull(t *testing.T) {
 	api := newFakeClient()
 	api.requirePull = false // image is already local
@@ -877,8 +794,8 @@ func TestCreate_ImageAlreadyPresent_NoPull(t *testing.T) {
 
 // TestCreate_MissingImage_PullsThenCreates verifies the auto-pull path: when the
 // image is not present locally the first ContainerCreate fails with "No such
-// image", the backend pulls the (validated, trusted) image and retries the
-// create, which then succeeds.
+// image", the backend pulls the (validated) image and retries the create, which
+// then succeeds.
 func TestCreate_MissingImage_PullsThenCreates(t *testing.T) {
 	api := newFakeClient()
 	api.requirePull = true // image is not in the local cache

@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teran/mcp-sandbox/application/config"
+	applicationprofile "github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
 	// Blank-import the concrete docker backend so its init() registers it into
 	// backend.Default (SPEC §6.3). Without this the registry has zero backends
@@ -97,15 +98,19 @@ var newStdioTransport = func() mcp.Transport { return &mcp.StdioTransport{} }
 // happen here (A02/N35); the backend is selected lazily on the first tool call.
 func buildServer(cfg *config.Config, logger *logging.Logger) *mcp.Server {
 	svc := mcpserver.NewService(backend.Default, backend.Config{
-		DockerHost:          cfg.DockerHost,
-		AllowDirs:           cfg.AllowDirs,
-		AllowSymlinks:       cfg.AllowSymlinks,
-		CwdMode:             cfg.SandboxCwdMode,
-		AllowNetworkModes:   cfg.AllowNetworkModes,
-		TrustedRegistries:   cfg.TrustedRegistries,
-		CgroupCPULimitCores: cfg.SandboxCgroupCPULimitCores,
-		CgroupMemoryLimitGB: cfg.SandboxCgroupMemoryLimitGB,
+		DockerHost:    cfg.DockerHost,
+		AllowDirs:     cfg.AllowDirs,
+		AllowSymlinks: cfg.AllowSymlinks,
 	})
+	// Load the operator-authored, read-only profiles (Phase 7). A missing or
+	// empty directory yields an empty store; a load error (invalid profile)
+	// is surfaced so an operator mistake is not silently ignored.
+	st, err := applicationprofile.Load(cfg.SandboxProfilesDir)
+	if err != nil {
+		logger.WithField("error", err).Warn("failed to load sandbox profiles; starting with an empty profile set")
+	} else {
+		svc.SetProfileStore(st)
+	}
 	deps := mcpserver.HandlerDependencies(logger)
 	return mcpserver.NewServer(
 		&mcp.Implementation{Name: appName, Version: appVersion},

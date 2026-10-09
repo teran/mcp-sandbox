@@ -61,7 +61,6 @@ func TestSandboxSpecValidate_Errors(t *testing.T) {
 		{"readonly false", func(s *SandboxSpec) { s.Isolation.ReadOnlyRootfs = false }, "ReadOnlyRootfs"},
 		{"no new priv false", func(s *SandboxSpec) { s.Isolation.NoNewPrivileges = false }, "NoNewPrivileges"},
 		{"capdrop missing all", func(s *SandboxSpec) { s.Isolation.CapDrop = []string{"NET_ADMIN"} }, "CapDrop"},
-		{"host network", func(s *SandboxSpec) { s.Isolation.NetworkMode = NetworkHost }, "not in the allowed set"},
 		{"network unset", func(s *SandboxSpec) { s.Isolation.NetworkMode = "" }, "NetworkMode"},
 		{"root user", func(s *SandboxSpec) { s.Isolation.User = UIDGID{UID: 0} }, "non-root"},
 		{"tmpfs workdir false", func(s *SandboxSpec) { s.Isolation.TmpfsWorkdir = false }, "TmpfsWorkdir"},
@@ -87,6 +86,24 @@ func TestSandboxSpecValidate_Errors(t *testing.T) {
 	}
 }
 
+// TestValidate_ImageParseOnly pins Phase 7: any valid image reference (from ANY
+// registry) is acceptable — there is no registry allowlist (TRUSTED_REGISTRIES
+// was removed); image validation is parse-only.
+func TestValidate_ImageParseOnly(t *testing.T) {
+	for _, img := range []string{
+		"docker.io/library/alpine@sha256:abc",
+		"ghcr.io/org/app:v1",
+		"evil.example.com/team/app:v1", // arbitrary registry accepted
+		"localhost:5000/app:v1",        // arbitrary registry accepted
+	} {
+		s := validSpec()
+		s.Image = img
+		if err := s.Validate(); err != nil {
+			t.Errorf("image %q should validate (parse-only): %v", img, err)
+		}
+	}
+}
+
 func TestNetworkBridgeIsAllowedDefault(t *testing.T) {
 	s := validSpec()
 	if s.Isolation.NetworkMode != NetworkBridge {
@@ -103,46 +120,13 @@ func TestHasCapDropAll_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestValidateWithNetworkModes_Allowlist(t *testing.T) {
-	// bridge is allowed when it is in the allowlist (default).
-	s := validSpec()
-	s.Isolation.NetworkMode = NetworkBridge
-	if err := s.ValidateWithNetworkModes(DefaultNetworkModes()); err != nil {
-		t.Fatalf("bridge must be allowed: %v", err)
-	}
-
-	// host is rejected when it is not in the allowlist.
-	h := validSpec()
-	h.Isolation.NetworkMode = NetworkHost
-	if err := h.ValidateWithNetworkModes(DefaultNetworkModes()); err == nil {
-		t.Fatal("host must be rejected when not in the allowlist")
-	}
-
-	// host is allowed only when explicitly listed.
-	h2 := validSpec()
-	h2.Isolation.NetworkMode = NetworkHost
-	if err := h2.ValidateWithNetworkModes(AllNetworkModes()); err != nil {
-		t.Fatalf("host must be allowed when listed: %v", err)
-	}
-
-	// none is allowed when listed.
-	n := validSpec()
-	n.Isolation.NetworkMode = NetworkNone
-	if err := n.ValidateWithNetworkModes(AllNetworkModes()); err != nil {
-		t.Fatalf("none must be allowed when listed: %v", err)
-	}
-
-	// an empty allowlist rejects every spec (nothing is allowed).
-	b := validSpec()
-	if err := b.ValidateWithNetworkModes(nil); err == nil {
-		t.Fatal("empty allowlist must reject all specs")
-	}
-}
-
-func TestDefaultNetworkModes(t *testing.T) {
-	m := DefaultNetworkModes()
-	if len(m) != 1 || m[0] != NetworkBridge {
-		t.Fatalf("DefaultNetworkModes = %v, want [bridge]", m)
+// TestNetworkHostIsValidMode pins Phase 7: with the network-allowlist removed,
+// host is a valid known network mode and a spec requesting it validates. The
+// fail-closed host default is enforced at the config/tool layer (operator
+// opt-in), not by spec.Validate.
+func TestNetworkHostIsValidMode(t *testing.T) {
+	if !IsValidNetworkMode(NetworkHost) {
+		t.Fatal("NetworkHost must be a valid known network mode")
 	}
 	for _, mode := range AllNetworkModes() {
 		if !IsValidNetworkMode(mode) {
@@ -151,5 +135,42 @@ func TestDefaultNetworkModes(t *testing.T) {
 	}
 	if IsValidNetworkMode(NetworkMode("vlan")) {
 		t.Fatal("unknown mode should be invalid")
+	}
+
+	// A spec with host networking validates (no allowlist to reject it).
+	s := validSpec()
+	s.Isolation.NetworkMode = NetworkHost
+	if err := s.Validate(); err != nil {
+		t.Fatalf("host network spec must validate with no allowlist: %v", err)
+	}
+}
+
+// TestValidate_KeepsHardeningAndBoundedResourceChecks confirms that even with
+// the network-allowlist gone, Validate still fail-closes on every hardening and
+// resource-bounding invariant.
+func TestValidate_KeepsHardeningAndBoundedResourceChecks(t *testing.T) {
+	mut := map[string]func(*SandboxSpec) string{
+		"readonly false":   func(s *SandboxSpec) string { s.Isolation.ReadOnlyRootfs = false; return "ReadOnlyRootfs" },
+		"no new priv":      func(s *SandboxSpec) string { s.Isolation.NoNewPrivileges = false; return "NoNewPrivileges" },
+		"capdrop":          func(s *SandboxSpec) string { s.Isolation.CapDrop = []string{"NET_ADMIN"}; return "CapDrop" },
+		"root user":        func(s *SandboxSpec) string { s.Isolation.User = UIDGID{UID: 0}; return "non-root" },
+		"tmpfs workdir":    func(s *SandboxSpec) string { s.Isolation.TmpfsWorkdir = false; return "TmpfsWorkdir" },
+		"autoremove":       func(s *SandboxSpec) string { s.Isolation.AutoRemove = false; return "AutoRemove" },
+		"pids unbounded":   func(s *SandboxSpec) string { s.Isolation.PidsLimit = 0; return "PidsLimit" },
+		"memory unbounded": func(s *SandboxSpec) string { s.Isolation.Memory = 0; return "Memory" },
+		"nacpus unbounded": func(s *SandboxSpec) string { s.Isolation.NanoCPUs = 0; return "NanoCPUs" },
+	}
+	for name, m := range mut {
+		t.Run(name, func(t *testing.T) {
+			s := validSpec()
+			want := m(s)
+			err := s.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("expected error containing %q, got: %v", want, err)
+			}
+		})
 	}
 }

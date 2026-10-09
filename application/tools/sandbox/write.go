@@ -12,6 +12,7 @@ import (
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
@@ -25,13 +26,6 @@ func writeTool(b builder, name, title, desc, instructions string, in *jsonschema
 	return b.tool(name, title, desc, instructions, def.Annotations{ReadOnlyHint: false, DestructiveHint: false, OpenWorldHint: false}, in, out, redact, h)
 }
 
-// mountInput is the JSON shape of a mount in sandbox_create.
-type mountInput struct {
-	Source   string `json:"source"`
-	Target   string `json:"target"`
-	ReadOnly bool   `json:"read_only"`
-}
-
 // secretInput is the JSON shape of a secret in sandbox_create. The value is
 // secret:true and redacted from output and logs (S02).
 type secretInput struct {
@@ -39,42 +33,28 @@ type secretInput struct {
 	Value string `json:"value" secret:"true"`
 }
 
-// createInput is the typed sandbox_create arguments. Isolation is intentionally
-// NOT accepted: it is server-enforced and immutable (§7.1).
+// createInput is the typed sandbox_create arguments (Phase 7). Only profile,
+// cwd, session_id and secrets are accepted; image/env/mounts/resources/uid/gid/
+// sudo are REMOVED and come from the selected profile. Isolation is never
+// accepted: it is server-enforced and immutable (§7.1).
 type createInput struct {
-	Image     string            `json:"image"`
-	Cwd       string            `json:"cwd"`
-	SessionID string            `json:"session_id"`
-	Env       map[string]string `json:"env"`
-	Mounts    []mountInput      `json:"mounts"`
-	NanoCPUs  int64             `json:"nano_cpus"`
-	Memory    int64             `json:"memory"`
-	PidsLimit int64             `json:"pids_limit"`
-	UID       uint32            `json:"uid"`
-	GID       uint32            `json:"gid"`
-	Sudo      string            `json:"sudo"`
-	Secrets   []secretInput     `json:"secrets"`
+	Profile   string        `json:"profile"`
+	Cwd       string        `json:"cwd"`
+	SessionID string        `json:"session_id"`
+	Secrets   []secretInput `json:"secrets"`
 }
 
-// sandboxCreateDef declares sandbox_create: create a sandbox from a typed spec.
+// sandboxCreateDef declares sandbox_create: create a sandbox from a profile.
 func sandboxCreateDef(b builder) *def.ToolDef {
 	return writeTool(b, "sandbox_create", "Create a sandbox",
-		"Create a sandbox from a typed spec. The session cwd is mounted 1:1 at the same absolute path (read-only by default; opt-in rw via SANDBOX_CWD_MODE=rw). Mounts are immutable. Isolation is server-enforced and cannot be weakened.",
-		"Pass the image and session cwd. Secrets are delivered as tmpfs 0600 files, never in argv or image. Creating a duplicate is surfaced as an error.",
+		"Create a sandbox from an operator-authored profile. The profile fully determines image, env, mounts, network, resources, user and sudo; the session cwd is mounted 1:1 at the same absolute path (read-only unless the profile sets cwd.mode=rw). Isolation is server-enforced and cannot be weakened.",
+		"Pass the profile name and session cwd. Secrets are delivered as tmpfs 0600 files, never in argv or image. Creating a duplicate is surfaced as an error.",
 		obj(map[string]*jsonschema.Schema{
-			"image":      strP("Container image (defaults to the server policy image)"),
+			"profile":    strP("Operator-authored profile name (see profile_list); determines image, env, mounts, network, resources, user and sudo"),
 			"cwd":        strP("Session working directory, mounted 1:1 at the same absolute path"),
 			"session_id": strP("OpenCode client session id that created this sandbox; recorded as a container label for traceability. Distinct from the sandbox session id returned as `id`."),
-			"env":        objP("Environment variables"),
-			"mounts":     arrP("Additional immutable mounts", obj(map[string]*jsonschema.Schema{"source": strP("Host source within ALLOW_DIRS"), "target": strP("Container target"), "read_only": boolP("Mount read-only")})),
-			"nano_cpus":  intP("CPU limit in nano-CPUs"),
-			"memory":     intP("Memory limit in bytes"),
-			"pids_limit": intP("PID limit"),
-			"uid":        intP("Container uid (non-root enforced)"),
-			"gid":        intP("Container gid"),
-			"sudo":       strEnumP("Sudo policy", "never", "require"),
 			"secrets":    arrP("Secrets delivered as tmpfs 0600 files", obj(map[string]*jsonschema.Schema{"name": strP("Secret name"), "value": strP("Secret value")})),
-		}, "session_id"),
+		}, "profile", "cwd", "session_id"),
 		objectOutput(),
 		[]def.RedactionField{{Name: "secrets", Secret: true}},
 		func(ctx context.Context, args json.RawMessage) (any, error) {
@@ -82,10 +62,20 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 			if err := json.Unmarshal(args, &in); err != nil {
 				return nil, fmt.Errorf("sandbox_create: %w", err)
 			}
+			if strings.TrimSpace(in.Profile) == "" {
+				return nil, errors.New("sandbox_create: profile is required")
+			}
+			if strings.TrimSpace(in.Cwd) == "" {
+				return nil, errors.New("sandbox_create: cwd is required")
+			}
 			if strings.TrimSpace(in.SessionID) == "" {
 				return nil, errors.New("sandbox_create: session_id is required")
 			}
-			s, err := b.svc.Create(ctx, buildSpec(b, in))
+			sp, err := buildSpec(b, in)
+			if err != nil {
+				return nil, err
+			}
+			s, err := b.svc.Create(ctx, sp)
 			if err != nil {
 				return nil, err
 			}
@@ -93,34 +83,20 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 		})
 }
 
-// buildSpec assembles a typed SandboxSpec from the create input, applying the
-// server-enforced immutable Isolation (§7.1). A caller cannot weaken any
-// hardening value; only bounded resources are honoured.
-func buildSpec(b builder, in createInput) spec.SandboxSpec {
+// buildSpec assembles a typed SandboxSpec from the create input by resolving
+// the selected operator profile and merging it with the server-enforced
+// immutable Isolation (§7.1/§7.11). The image, env, mounts, network, resources,
+// user and sudo all come from the profile; a caller cannot weaken any hardening
+// value.
+func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 	pol := b.svc.Policy()
-	iso := pol.Isolation
 
-	if in.NanoCPUs > 0 {
-		iso.NanoCPUs = in.NanoCPUs
+	if pol.Profiles == nil {
+		return spec.SandboxSpec{}, errors.New("sandbox_create: profile resolver is not configured")
 	}
-	if in.Memory > 0 {
-		iso.Memory = in.Memory
-	}
-	if in.PidsLimit > 0 {
-		iso.PidsLimit = in.PidsLimit
-	}
-
-	uid, gid := in.UID, in.GID
-	if uid == 0 {
-		uid = iso.User.UID
-	}
-	if gid == 0 {
-		gid = iso.User.GID
-	}
-
-	mounts := make([]spec.Mount, 0, len(in.Mounts))
-	for _, m := range in.Mounts {
-		mounts = append(mounts, spec.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+	p, ok := pol.Profiles.Get(in.Profile)
+	if !ok {
+		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: unknown profile %q", in.Profile)
 	}
 
 	secrets := make([]spec.SecretRef, 0, len(in.Secrets))
@@ -128,30 +104,11 @@ func buildSpec(b builder, in createInput) spec.SandboxSpec {
 		secrets = append(secrets, spec.SecretRef{Name: sec.Name, Value: sec.Value})
 	}
 
-	sudo := spec.SudoPolicy(in.Sudo)
-	if sudo == "" {
-		sudo = spec.SudoNever
-	}
-
-	image := in.Image
-	if image == "" {
-		image = pol.DefaultImage
-	}
-
-	return spec.SandboxSpec{
-		Image:           image,
-		WorkingDir:      in.Cwd,
-		Env:             in.Env,
-		Mounts:          mounts,
-		Resources:       spec.Resources{NanoCPUs: iso.NanoCPUs, Memory: iso.Memory, MemorySwap: iso.MemorySwap, PidsLimit: iso.PidsLimit, Ulimits: iso.Ulimits},
-		Network:         spec.Network{Mode: iso.NetworkMode},
-		UIDGID:          spec.UIDGID{UID: uid, GID: gid},
-		Sudo:            sudo,
+	return p.BuildSpec(pol.Isolation, domainprofile.Params{
+		Cwd:             in.Cwd,
 		Secrets:         secrets,
-		ReadOnlyRoot:    true,
-		Isolation:       iso,
 		ClientSessionID: in.SessionID,
-	}
+	}), nil
 }
 
 // execInput is the typed sandbox_exec arguments. argv is a strict array — never

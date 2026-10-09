@@ -29,30 +29,6 @@ type Config struct {
 	AllowDirs []string
 	// AllowSymlinks controls whether host path symlinks are followed (S04).
 	AllowSymlinks bool
-	// CwdMode is the session working-directory mount mode: "rw" (writable)
-	// or "ro" (read-only, default; global feature flag, SPEC §7.2).
-	CwdMode string
-	// DefaultImage is the base image used when a sandbox spec does not
-	// pin one (pre-provisioned, non-root user, SPEC §7.10).
-	DefaultImage string
-	// AllowNetworkModes are the sandbox network modes the operator permits
-	// (SPEC §7.1), as validated strings ("none", "bridge", "host"). A sandbox
-	// may use a network mode only if it is listed here; host networking is
-	// allowed only when explicitly listed. Empty means the server defaults to
-	// the safe bridge mode only.
-	AllowNetworkModes []string
-	// TrustedRegistries is the allowlist of image registries the sandbox may
-	// pull images from (SPEC §7.9, C05/T7). Empty defaults to the built-in
-	// allowlist (docker.io / ghcr.io). Any image reference whose registry is
-	// not listed here is rejected at container-create time.
-	TrustedRegistries []string
-	// CgroupCPULimitCores is the per-sandbox CPU limit in cores. 0 means
-	// unset — the built-in server default (1 CPU) applies.
-	CgroupCPULimitCores uint64
-	// CgroupMemoryLimitGB is the per-sandbox memory limit in gibibytes. 0
-	// means unset — the built-in server default (4 GiB) applies. Swap stays
-	// disabled.
-	CgroupMemoryLimitGB uint64
 }
 
 // Factory describes how to construct a backend. Backends are registered by

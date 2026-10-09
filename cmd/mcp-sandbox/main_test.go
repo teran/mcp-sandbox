@@ -24,7 +24,6 @@ import (
 // ErrNoAvailableBackend ("no available backend covers the required capabilities")
 // regardless of Docker availability.
 func TestDockerBackend_Registered(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	f, ok := backend.Default.Get("docker")
 	if !ok {
 		t.Fatal("docker backend is not registered in backend.Default; missing blank import in main.go")
@@ -59,7 +58,6 @@ func newBlockingStdioTransport() (mcp.Transport, func()) {
 }
 
 func TestRun_UnsupportedMode(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "")
 	code := run(context.Background(), []string{"-mode", "http"}, &bytes.Buffer{})
 	if code != 1 {
@@ -74,8 +72,10 @@ func TestRun_FlagParseError(t *testing.T) {
 	}
 }
 
-func TestRun_InvalidAllowDirs(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "/definitely/not/a/real/dir")
+func TestRun_InvalidAllowDir(t *testing.T) {
+	// ALLOW_DIRS is the KEPT host-path gate (Phase 7): a missing entry fails
+	// config.Validate and the server refuses to start.
+	t.Setenv("ALLOW_DIRS", "/definitely/not/a/real/allowdir")
 	t.Setenv("LOG_LEVEL", "")
 	code := run(context.Background(), []string{"-mode", "stdio"}, &bytes.Buffer{})
 	if code != 1 {
@@ -84,7 +84,6 @@ func TestRun_InvalidAllowDirs(t *testing.T) {
 }
 
 func TestRun_ConfigLoadError(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("SANDBOX_IDLE_TIMEOUT", "not-a-duration")
 	code := run(context.Background(), []string{"-mode", "stdio"}, &bytes.Buffer{})
@@ -94,7 +93,6 @@ func TestRun_ConfigLoadError(t *testing.T) {
 }
 
 func TestRun_InvalidLogLevel(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "banana")
 	code := run(context.Background(), []string{"-mode", "stdio"}, &bytes.Buffer{})
 	if code != 1 {
@@ -103,7 +101,6 @@ func TestRun_InvalidLogLevel(t *testing.T) {
 }
 
 func TestRun_StdioServesAndBanner(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "info")
 	t.Setenv("LOG_FORMAT", "text")
 	logFile := filepath.Join(t.TempDir(), "server.log")
@@ -133,7 +130,6 @@ func TestRun_StdioServesAndBanner(t *testing.T) {
 }
 
 func TestRun_StdioDisabledLogging(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "")
 	logFile := filepath.Join(t.TempDir(), "server.log")
 	t.Setenv("LOG_FILENAME", logFile)
@@ -156,7 +152,6 @@ func TestRun_StdioDisabledLogging(t *testing.T) {
 }
 
 func TestServe_ServerError(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "error")
 	t.Setenv("LOG_FILENAME", filepath.Join(t.TempDir(), "err.log"))
 	t.Setenv("LOG_FORMAT", "json")
@@ -177,7 +172,6 @@ func TestServe_ServerError(t *testing.T) {
 }
 
 func TestServe_CleanExit(t *testing.T) {
-	t.Setenv("ALLOW_DIRS", "")
 	t.Setenv("LOG_LEVEL", "")
 	logger := newTestLogger(t)
 	cfg := &config.Config{}

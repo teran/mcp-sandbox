@@ -41,16 +41,8 @@ func intP(desc string) *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "integer", Description: desc}
 }
 
-func boolP(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "boolean", Description: desc}
-}
-
 func arrP(desc string, items *jsonschema.Schema) *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "array", Description: desc, Items: items}
-}
-
-func objP(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "object", Description: desc}
 }
 
 // objectOutput builds an object-rooted output schema (S09). It is intentionally

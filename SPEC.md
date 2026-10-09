@@ -138,17 +138,20 @@ the sandbox domain).
 | `sandbox_list` | `true` | `false` | `true` | List sandbox sessions (id, backend, image, created, state). |
 | `sandbox_info` | `true` | `false` | `true` | Detailed spec + state of one sandbox (image, mounts, resources, isolation flags, secrets redacted). |
 | `sandbox_stats` | `true` | `false` | `true` | Live resource usage of one sandbox (CPU/mem/net/IO via Docker stats). |
+| `profile_list` | `true` | `false` | `true` | List operator-authored sandbox profiles (name, description). **Phase 7.** Read-only over the `SANDBOX_PROFILES_DIR` store (§7.11). Output carries **only** `name`/`description` — no env values, mount sources, image, user or sudo policy is emitted (**S02**). |
 
 **Instructions (common to READ):** read-only; never mutate the sandbox; paths
 must resolve inside the sandbox scope; sensitive content is redacted per the
 redaction contract before returning; never returns raw untrusted free-form
-text without an `outputSchema`.
+text without an `outputSchema`. `profile_list` reads from the **read-only
+profile store** — it never writes, edits or deletes a profile (there are no
+profile create/update/delete tools, §7.11).
 
 ### 4.2 WRITE / UPDATE tools (`readOnlyHint: false`, `destructiveHint: false`)
 
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
-| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from a typed `SandboxSpec`. Takes a **required** `session_id` — the OpenCode client session id — which is recorded as a container label (`dev.teran.sandbox.opencode_session`) for traceability (§7.8). The model-host passes its **session `cwd`**, which is mounted **1:1 at the same absolute path** (read-only by default; opt-in `rw` via `SANDBOX_CWD_MODE=rw`). **Mounts are immutable** — changing a mount requires destroying and recreating the session. Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
+| `sandbox_create` | `false` | `false` | `false` | Create a sandbox from an **operator-authored profile** (**Phase 7**, §7.11). Takes **required** `profile` (the name of a profile in the read-only store), `session_id` (the OpenCode client session id, recorded as a container label for traceability, §7.8) and `cwd` (the model-host's session working directory, mounted per the profile's `cwd` config — 1:1 at the same absolute path by default). Optional `secrets` are delivered as tmpfs `0600` files. All per-request knobs that used to exist — `image`, `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`, `sudo` — are **removed**; they now come **from the profile** (§7.11). Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
 | `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
 
 > **Files come from the image, the host, or the runtime — never via MCP file-write
@@ -156,16 +159,28 @@ text without an `outputSchema`.
 > **host** and the container reads/executes them at the same path; runtime
 > artifacts live in the writable tmpfs `/tmp` (executable where the daemon
 > honours `exec` on tmpfs; on daemons that force `noexec` — e.g. Docker Desktop —
-> compilation goes into the writable bind-mounted `cwd`). Therefore the MVP exposes **no**
+> compilation goes into the writable bind-mounted `cwd`, per the profile's
+> `cwd.mode`). Therefore the MVP exposes **no**
 > `write_file`/`copy_in`/`copy_out`/`read_file`/`install_package` tools — **mount +
-> exec is the core mechanism** (see §7.2). cgroup/namespace knobs and
-> Docker-in-Docker are deferred (see TODO "Deferred").
+> exec is the core mechanism** (see §7.2). Per-request cgroup/namespace knobs are
+> gone — resource limits are owned by the operator profile (§7.11) — and
+> Docker-in-Docker is deferred (see TODO "Deferred").
 
 **Instructions — `sandbox_exec`:** pass command and args as an **array**, never
 a shell string; do **not** log the argv in full (redact paths/values); output
 is ANSI-sanitized; runs under the sandbox user with `no-new-privileges`; only
 allowed capabilities are available. A scoped `user: root` / sudo-classed exec
 runs as uid 0 per the sandbox's `SudoPolicy` (§7.10) — never `--privileged`.
+
+> **⚠ Phase 7 — breaking change to `sandbox_create`.** The request shape changed
+> incompatibly. Callers that passed `image`, `env`, `mounts`, `nano_cpus`,
+> `memory`, `pids_limit`, `uid`, `gid` or `sudo` on `sandbox_create` must
+> migrate to an **operator-authored profile** (§7.11): encode those values in a
+> `<name>.yml` under `SANDBOX_PROFILES_DIR`, then pass only `profile`,
+> `session_id`, `cwd` and (optionally) `secrets`. The old parameters are
+> **rejected** (they are removed from the input schema), so an un-migrated
+> caller fails fast with `InvalidParams`. `profile` and `cwd` are now both
+> **required**. See README "Migration" and TODO Phase 7.
 
 ### 4.3 DELETE tools (`destructiveHint: true`, HITL)
 
@@ -265,6 +280,10 @@ domain/                    pure domain model, no infra dependencies
     spec/                  typed SandboxSpec (Image, WorkingDir, Env, Mounts,
                            Resources, Network, UIDGID, Sudo, Secrets,
                            ReadOnlyRoot, Isolation), validation
+    profile/               operator-authored profile model (Phase 7): Profile,
+                           Mount, CwdConfig, Network, Cgroups, User, Sudo,
+                           Validate, BuildSpec (profile → SandboxSpec,
+                           §6.5/§7.11)
     exec/                  exec request/result types, result classification
     role/                  ISP role interfaces: Backend, Lifecycle, Executable,
                            Introspectable (+ ErrCapabilityNotSupported)
@@ -274,7 +293,11 @@ domain/                    pure domain model, no infra dependencies
                            Sink, LineBatcher (line-buffered, no goroutine),
                            WithSink/SinkFromContext (context-threaded)
 application/               use-case orchestration
-  config/                  env-driven Config (ALLOW_DIRS, LOG_*), validation
+  config/                  env-driven Config (ALLOW_DIRS, SANDBOX_PROFILES_DIR,
+                           LOG_*), validation
+  profile/                 profile store (Phase 7): scans SANDBOX_PROFILES_DIR,
+                           parses + validates each <name>.yml, Get/List
+                           (read-only — no create/update/delete)
   sandbox/                 sandbox service: create/use/destroy, Backend select
   session/                 session manager: registry, lifecycle, reaper
   tools/                   declarative tool framework
@@ -284,6 +307,7 @@ application/               use-case orchestration
     registry/              tool registry
     handler/               shared handler-wrapper: validate → access-log →
                            dispatch → redact → structured output
+    profile/               read-only profile_list tool (ToolDef, Phase 7)
 infrastructure/            adapters
   backend/
     registry/              backend factory registry (constructor-register)
@@ -396,6 +420,26 @@ type SandboxSpec struct {
 }
 ```
 
+**SandboxSpec provenance (Phase 7).** In the profile model, `SandboxSpec` is
+**not** assembled from per-request client parameters. It is produced by
+`domain/sandbox/profile.BuildSpec(isolation, Params{Cwd, Secrets,
+ClientSessionID})` — the single seam where operator intent is merged with the
+server's immutable `Isolation` policy (§6.5 → §7.11):
+
+- **Profile-owned fields override the server policy baseline** (`pol`):
+  `NanoCPUs`, `Memory`/`MemorySwap`, `PidsLimit`, `Ulimits`, `NetworkMode` come
+  from the profile's `cgroups`/`network` (§7.11). The profile also supplies
+  `Image`, `Env`, `Mounts` (appended after the auto cwd mount), `UIDGID`
+  (non-root enforced), `Sudo`, and the `cwd` target/mode.
+- **Hardening fields ALWAYS come from `pol` and are NEVER overridden by a
+  profile**: `ReadOnlyRootfs`, `CapDrop`, `NoNewPrivileges`, `Seccomp`, the
+  enforced non-root `User`, `TmpfsWorkdir`, `AutoRemove`. A hostile profile
+  cannot weaken the sandbox (§7.11).
+- The **session `cwd` mount is always present** (mounted 1:1 at the same
+  absolute path, read-only by default) even when the profile declares no
+  `cwd` block; the profile may remap the container `target` and set
+  `mode: ro|rw`.
+
 ### 6.6 Session lifecycle
 
 A **session** (`domain/session`) owns one sandbox and its state:
@@ -450,17 +494,26 @@ startup (local wiring only):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `-mode` (flag) | `stdio` | Launch mode (**M06/A01**). Local server is fixed to stdio. |
-| `ALLOW_DIRS` | `[]` (none — deny by default) | Permitted host directories that may be mounted into sandboxes (e.g. the session `cwd`) (**S04**). Empty ⇒ no host dirs mountable. |
+| `ALLOW_DIRS` | `[]` (none — deny by default) | Permitted host directories that may be mounted into sandboxes — gates the client-supplied `cwd` **and** every mount `source`, including those declared in profiles (**S04**). Empty ⇒ no host dirs mountable. **Still required in Phase 7** (§7.11). |
 | `ALLOW_SYMLINKS` | `false` | Symlink policy for host path resolution (**S04**). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level; stdio logging is on **only when set** (**L02**). |
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600` (**L01/L03**). |
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Reaper idle window. |
-| `SANDBOX_CWD_MODE` | `ro` | Session `cwd` mount mode: `ro` (default) or `rw` (opt-in, global feature flag, §7.2). |
-| `SANDBOX_CGROUP_CPU_LIMIT_CORES` | unset (`0`) | Operator-configurable Docker cgroup CPU limit, in **CPU cores** (unit suffix `_CORES`). Translated server-side to `NanoCPUs = cores * 1_000_000_000` (**§7.1**). Unset/`0` ⇒ built-in server default applies. |
-| `SANDBOX_CGROUP_MEMORY_LIMIT_GB` | unset (`0`) | Operator-configurable Docker cgroup memory limit, in **gibibytes** (unit suffix `_GB`). Translated server-side to `Memory = gb * 1024^3` bytes; `MemorySwap` is set equal to `Memory` so swap stays disabled (**§7.1**). Unset/`0` ⇒ built-in server default applies. |
-| `TRUSTED_REGISTRIES` | built-in safe default | Comma-separated allowlist of registry domains the sandbox may pull images from (**REPLACE semantics**, §7.9). Unset/empty/whitespace-only ⇒ falls back to the built-in default (`docker.io`, `index.docker.io`, `registry-1.docker.io`, `ghcr.io`). |
+| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, READ-ONLY** YAML sandbox profiles — one `<name>.yml` per profile (**Phase 7**, §7.11). The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. There is **no** profile create/update/delete mechanism. |
+
+> **Removed configuration (Phase 7).** The following env vars were **removed**;
+> their responsibility moved into the operator profile (§7.11) or the profile
+> image reference:
+> - `SANDBOX_CWD_MODE` — the `cwd` mount mode (`ro`/`rw`) now comes from the
+>   profile's `cwd.mode` (default `ro`).
+> - `SANDBOX_CGROUP_CPU_LIMIT_CORES` / `SANDBOX_CGROUP_MEMORY_LIMIT_GB` —
+>   resource limits (`cgroups.nano_cpus`, `cgroups.memory`, `cgroups.memory_swap`,
+>   `cgroups.pids_limit`, `cgroups.ulimits`) now come from the profile.
+> - `TRUSTED_REGISTRIES` — the registry allowlist is **gone**; the image comes
+>   from the operator-authored profile and **digest-pinning is the recommended
+>   operator convention** (§7.9/§7.11).
 
 ---
 
@@ -488,35 +541,31 @@ create, regardless of the input spec:
 | `Memory` / `MemorySwap` | Set and bounded. |
 | `NanoCPUs` | Bounded. |
 | `Ulimits` | Set. |
-| `NetworkMode` | **`bridge` by default** (Docker's default bridged network); **`host` is forbidden at policy level**. |
-| `tmpfs` mounts | **`/run`** tmpfs `rw,noexec,nosuid,nodev` (owned by the sandbox user; holds the `/run/sandbox` secret dir) and **`/tmp`** tmpfs `rw,nosuid,nodev` (writable, no `noexec` requested). **Platform note:** some daemons (Docker Desktop on macOS) force `noexec` on tmpfs, so `/tmp` may not be executable; runtime compilation (Go builds) then needs the writable bind-mounted `cwd` (`SANDBOX_CWD_MODE=rw`). |
+| `NetworkMode` | **From the operator profile** (§7.11): `bridge` (safe default) or `none`; **`host` is valid only when the operator authors it into a profile** — it is never allowed implicitly. The immutable block still bounds which modes are legal (`bridge`/`none`/`host`). |
+| `tmpfs` mounts | **`/run`** tmpfs `rw,noexec,nosuid,nodev` (owned by the sandbox user; holds the `/run/sandbox` secret dir) and **`/tmp`** tmpfs `rw,nosuid,nodev` (writable, no `noexec` requested). **Platform note:** some daemons (Docker Desktop on macOS) force `noexec` on tmpfs, so `/tmp` may not be executable; runtime compilation (Go builds) then needs the writable bind-mounted `cwd` (per the profile's `cwd.mode`). |
 | `AutoRemove` | `true` — container auto-removed on stop. |
 
 Because the block is immutable and applied by the server, a caller cannot pass
 a spec that disables these protections.
 
-**Operator-configurable resource limits.** The `Memory`/`MemorySwap`/`NanoCPUs`
-values (rows above) are seeded from operator environment variables — see §6.8:
-`SANDBOX_CGROUP_CPU_LIMIT_CORES` and `SANDBOX_CGROUP_MEMORY_LIMIT_GB`. Both
-default to **unset (`0`)**, in which case the built-in server defaults apply
-(currently 1 CPU, 4 GiB, swap off, `PidsLimit` 512). The unit suffixes (`_CORES`,
-`_GB`) are intentional so the configuration form is self-documenting:
-
-- **CPU:** `SANDBOX_CGROUP_CPU_LIMIT_CORES` (uint, cores) → `NanoCPUs =
-  cores * 1_000_000_000`.
-- **Memory:** `SANDBOX_CGROUP_MEMORY_LIMIT_GB` (uint, gibibytes) →
-  `Memory = gb * 1024^3` bytes; `MemorySwap` is set **equal** to `Memory` so
-  swap remains disabled.
-
-These set the operator-level baseline only. A caller can still **tighten or
-override per-request** via `memory`/`nano_cpus` on `sandbox_create` on top of
-this base, but can **never weaken** the immutable block itself.
+**Resource limits come from the operator profile (Phase 7).** The
+`Memory`/`MemorySwap`/`NanoCPUs`/`PidsLimit`/`Ulimits` values (rows above) are
+no longer seeded from environment variables — they are owned by the operator
+profile's `cgroups` block (§7.11). A profile that omits a limit falls back to
+the built-in server defaults (currently 1 CPU, 4 GiB, swap off, `PidsLimit`
+512). Where a profile sets a value, the profile **overrides** the policy
+baseline; a caller has **no** per-request override — `sandbox_create` no longer
+accepts `nano_cpus`/`memory`/`pids_limit`. The immutable hardening of the block
+itself can **never** be weakened (by profile or caller).
 
 ### 7.2 Filesystem scope & mounts (S04)
 
 - **`ALLOW_DIRS []string`** — the **only** host directories permitted to be
-  mounted into a sandbox (e.g. the session `cwd`). Anything outside is
-  forbidden (**N03**). Empty by default (deny).
+  mounted into a sandbox. In Phase 7 it gates **both** the client-supplied
+  session `cwd` **and every mount `source` declared in a profile** (§7.11) —
+  a profile cannot reach a host path outside `ALLOW_DIRS`. Anything outside is
+  forbidden (**N03**). Empty by default (deny). **`ALLOW_DIRS` is retained and
+  still required.**
 - **`ALLOW_SYMLINKS bool`** — default `false`.
   - `false` (safe default): every host path is canonicalized with
     `filepath.EvalSymlinks`, then **open-then-verify** (open the fd, `fstat`,
@@ -528,24 +577,26 @@ this base, but can **never weaken** the immutable block itself.
     `fs.protected_hardlinks`, separate bind-mount for the allowed dir, immutable
     dirs) and is documented as an OS-level concern, not something the path check
     enforces.
-- **Mount policy:** only **explicit `ALLOW_DIRS`** may be mounted; **read-only
+- **Mount policy:** only **explicit `ALLOW_DIRS`** may be mounted — whether the
+  source comes from the client `cwd` or a profile `mounts.source`; **read-only
   by default**; **minimize the number of paths**; **`/` and secret directories
   are forbidden**.
-- **Minimize bind-mounts:** only the session `cwd` (and explicit `ALLOW_DIRS`)
-  are mounted; file transfer is **host-side** (the model-host writes into the
-  mounted cwd), and runtime writes happen **only into tmpfs** (not into
+- **Minimize bind-mounts:** the session `cwd` and profile-declared mounts are
+  the only bind-mounts; file transfer is **host-side** (the model-host writes
+  into the mounted cwd), and runtime writes happen **only into tmpfs** (not into
   bind-mounted host paths). This reduces the host surface a compromised sandbox
   could reach.
 - **Session working-directory mount (1:1):** `sandbox_create` accepts the
   model-host's **current working directory** and mounts it at the **same
   absolute path** inside the container — host `/Users/myuser/Downloads/blah` →
-  container `/Users/myuser/Downloads/blah` — with **no path rewriting**. The
-  mounted cwd must be **within `ALLOW_DIRS`** (or explicitly authorized). It is
-  **read-only by default** (the model-host writes into the mounted cwd on the
-  host; the container reads/executes), with an **opt-in `rw`** per-sandbox flag
-  (`SANDBOX_CWD_MODE=rw`) for cases where the container must write artifacts
-  into the cwd during command execution. This is the one sanctioned bind-mount
-  for the model-host use case so the model operates on the session's files with
+  container `/Users/myuser/Downloads/blah` — with **no path rewriting** by
+  default. The mounted cwd must be **within `ALLOW_DIRS`** (or explicitly
+  authorized). It is **read-only by default** (the model-host writes into the
+  mounted cwd on the host; the container reads/executes). The profile's
+  `cwd` block can remap the container **target** and set **`mode: rw`**
+  (§7.11) for cases where the container must write artifacts into the cwd
+  during command execution. This is the one sanctioned bind-mount for the
+  model-host use case so the model operates on the session's files with
   **identical paths**; cross-referenced with the `UIDGID` mapping (§7.10) so the
   container's unprivileged user can access host files owned by the operator.
 
@@ -627,52 +678,35 @@ this base, but can **never weaken** the immutable block itself.
 
 ### 7.9 Supply-chain (T7 / C05 / S05)
 
-- **Trusted-registry allowlist is enforced in code** (`validateImageRef` in the
-  docker backend, applied on every `sandbox_create` before any Docker
-  side-effect): an image reference is accepted only if it parses as a valid
-  reference and its registry is in the allowlist. Images from
-  arbitrary/untrusted registries are **rejected**.
-- **Configurable allowlist (`TRUSTED_REGISTRIES`):** the allowlist is no longer
-  hardcoded — it is read from the `TRUSTED_REGISTRIES` environment variable
-  (see §6.8) as a comma-separated list of registry domains. It uses **REPLACE
-  semantics**: when set, the variable **entirely replaces** the allowlist; when
-  unset, empty, or whitespace-only, it **falls back** to the built-in safe
-  default — `DefaultTrustedRegistries` =
-  `docker.io, index.docker.io, registry-1.docker.io, ghcr.io`.
-- **Matching & validation:** each configured entry is matched **exactly** against
-  the normalized registry domain of the image reference, taken from
-  `reference.Domain(reference.ParseNormalizedNamed(...))`. Entries are
-  **lowercased** and **deduplicated**. Entries are rejected when they contain a
-  wildcard/glob (`* ? [`), a scheme (`://`/`//`), internal whitespace, or any
-  character outside `[a-z0-9._:-]`; a colon is permitted **only** as an explicit
-  port (e.g. `registry.example.com:5000`). Validation is **fail-closed** — a
-  malformed or ambiguous value errors at startup; there is **no allow-all**
-  escape hatch.
-- **`registry-1.docker.io` is not normalized** to `docker.io` by the parser, so
-  it must be listed as a **separate explicit entry** if it is to be trusted. The
-  built-in default includes it for this reason.
-- **Operator posture:** because the variable **replaces** the default, an
-  operator who sets `TRUSTED_REGISTRIES` to enable a private registry must list
-  any public registries they still want **explicitly** alongside it (e.g.
-  `TRUSTED_REGISTRIES=registry.homelab.teran.dev, docker.io, ghcr.io`). There is
-  no implicit union with the default.
-- **Auto-pull of a trusted-but-missing image**: on `sandbox_create`, if the
-  (already validated) image is not present in the local cache the backend pulls
-  it from its trusted registry before creating the container. The pull only
-  ever happens **after** `validateImageRef` has accepted the reference, so an
-  untrusted image is never pulled. A create for an already-local image issues
-  no pull. The pull stream is drained and discarded — image content is never
-  logged (L05) and carries no secrets.
-- **Digest-pinning is the recommended deployment posture**: images **should**
-  be referenced by digest (`image@sha256:…`) rather than a floating tag, and
-  this is the documented production guideline (C05/T7); the hard enforcement
-  boundary is the trusted-registry allowlist. Digest-pinning remains the
-  **strongest** posture even on a trusted registry — the allowlist scopes *where*
-  images may come from, while a digest pins *exactly which* image is used.
-- Dependencies are pinned to the **latest stable** versions (C05) and
+> **Phase 7 change:** the **trusted-registry allowlist (`TRUSTED_REGISTRIES`) and
+> the built-in registry filter are removed.** The image now comes from the
+> **operator-authored profile** (§7.11), so the operator — not an in-code
+> allowlist — is the trusted party that decides which registry an image may come
+> from. Image validation is **parse-only** (any valid reference from any registry
+> is accepted); the supply-chain guarantee moves to the **operator convention of
+> digest-pinning** plus the dependency/signing/scanner gates below.
+
+- **Image validation is parse-only (Phase 7).** On `sandbox_create` and in
+  profile validation, an image reference is accepted if it **parses** as a valid
+  reference (`name[:tag][@digest]`). Empty or unparsable references are
+  rejected. There is **no registry allowlist** — a profile may reference an image
+  from **any** registry (`ghcr.io`, a private `registry.example.com:5000`,
+  `localhost:5000`, …). The trust boundary is the operator who authors the
+  profile (§7.11).
+- **Auto-pull on create**: on `sandbox_create`, if the (validated) image is not
+  present in the local cache the backend pulls it before creating the container.
+  The pull stream is drained and discarded — image content is never logged (L05)
+  and carries no secrets.
+- **Digest-pinning is the recommended operator convention (Phase 7).** Because
+  there is no registry allowlist, the **strongest** and **recommended** posture
+  is to reference images **by digest** (`image@sha256:…`) in the profile rather
+  than a floating tag (C05/T7). A digest pins *exactly which* image is used and
+  cannot be silently retagged. Tag references are permitted but are a weaker,
+  operator-accepted choice.
+- **Dependencies are pinned to the latest stable versions (C05)** and
   **verified**; installed packages at build/install time are **signed** where
   available.
-- Security-scanner findings are **fixed, not suppressed** (S05/N02GO).
+- **Security-scanner findings are fixed, not suppressed (S05/N02GO).**
 
 **Accepted dependency risk (documented):** the pinned `github.com/docker/docker`
 SDK carries two advisories with **no known fixed version** on the used module
@@ -713,6 +747,118 @@ Commands inside the sandbox run **unprivileged by default**; a scoped set of
   runtime package-manager writes into a bounded writable area are **deferred**
   (roadmap). `SudoPolicy.PackageInstallAllowed` therefore refers to
   *provisioned* images for the MVP.
+
+### 7.11 Operator-authored sandbox profiles (Phase 7)
+
+A **sandbox profile** is a declarative, **operator-authored, READ-ONLY YAML
+file** that fully determines the runtime shape of a sandbox: image, env, mounts,
+network mode, cgroups/limits, user (non-root) and sudo. **Profiles replace the
+per-request `sandbox_create` knobs** (image, env, mounts, nano_cpus, memory,
+pids_limit, uid, gid, sudo — all removed) and the operator-configuration env
+vars that are now gone (§6.8). There is **no** profile create/update/delete
+mechanism and **no** profile tool that writes — profiles exist only as files.
+
+#### Trust model
+
+- **Operators author, models reference (read-only).** Profiles live under
+  `SANDBOX_PROFILES_DIR` (default `~/.config/sandbox/profiles`), one
+  `<name>.yml` per profile. The model-host never edits them — `sandbox_create`
+  takes a `profile` **name** and the server resolves it against the read-only
+  store; `profile_list` only enumerates `name`/`description`.
+- The profile is the **trusted party for image, env, mounts, network, limits,
+  user and sudo**. Because a profile is operator-authored, the image may come
+  from **any** registry (no allowlist, §7.9) and network may be `host` when the
+  operator authors it — these are deliberate operator decisions, not
+  model-supplied.
+- **`ALLOW_DIRS` is retained as the host-path gate.** It gates the
+  client-supplied `cwd` **and every mount `source` in a profile** — a profile
+  cannot mount a host path outside `ALLOW_DIRS`, and `ALLOW_SYMLINKS` still
+  governs symlink resolution (§7.2). The immutable `Isolation` hardening block
+  (read-only rootfs, cap-drop ALL, no-new-privileges, seccomp, non-root, tmpfs
+  `/run`+`/tmp`, `AutoRemove`) still applies on top of every profile (§7.1) and
+  a profile can **never** weaken it.
+- **No secrets in profile output.** `profile_list` emits only `name` and
+  `description`; env values, mount sources, image, user and sudo policy are
+  **never** returned (S02).
+
+#### Schema
+
+```yaml
+name: default            # required; store key; [a-zA-Z0-9._-], no path separators
+description: the default profile   # required
+image: alpine@sha256:…   # required; parse-only validation (any registry; digest recommended, §7.9)
+env:                     # optional
+  FOO: bar
+mounts:                  # optional; every source must be within ALLOW_DIRS (§7.2)
+  - source: /data
+    target: /data
+    read_only: true
+cwd:                     # optional; controls the auto session-cwd mount (§7.2)
+  target: ""             # empty ⇒ 1:1 at the same absolute path (default)
+  mode: ro               # ro (default) | rw
+network:
+  mode: bridge           # bridge (default) | none | host (host only if operator authors it)
+cgroups:                 # limits; a missing value falls back to the server default (§7.1)
+  nano_cpus: 1000000000
+  memory: 536870912
+  memory_swap: 536870912
+  pids_limit: 256
+  ulimits:
+    - name: nofile
+      soft: 1024
+      hard: 1024
+user:                    # non-root enforced; nil ⇒ server default non-root user
+  uid: 1000
+  gid: 1000
+sudo: never              # never (default) | require
+```
+
+Schema key reference (`domain/sandbox/profile.Profile`):
+
+| Key | Type | Meaning / validation |
+|-----|------|----------------------|
+| `name` | string | Required. Store key. Regex `[a-zA-Z0-9._-]+`; must not be a path separator / `..` (path-traversal rejected, §7.11 loader). |
+| `description` | string | Required. Human-readable summary shown by `profile_list`. |
+| `image` | string | Required. Parse-only reference validation (§7.9); digest-pinning recommended. |
+| `env` | map[string]string | Optional. Container environment. |
+| `mounts[]` | `{source,target,read_only}` | Optional. `source` must be absolute **and within `ALLOW_DIRS`** (§7.2). |
+| `cwd` | `{target,mode}` | Optional. `target` empty ⇒ mounted 1:1 at the client path; `mode` `ro`(default)/`rw`. |
+| `network` | `{mode}` | Optional. `bridge`(default)/`none`/`host` — `host` only when operator-authored. |
+| `cgroups` | `{nano_cpus,memory,memory_swap,pids_limit,ulimits}` | Optional. Bounded resource limits; profile overrides the server baseline; missing ⇒ server default (§7.1). `memory_swap` ≥ `memory`; values must be bounded (> 0). |
+| `user` | `{uid,gid}` | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user. |
+| `sudo` | string | Optional. `never`(default)/`require`. |
+
+#### Loader & store (read-only)
+
+- **`application/profile`** scans `SANDBOX_PROFILES_DIR`, parses each
+  `<name>.yml`, validates it and exposes `Get(name)` / `List()` (sorted by
+  name). It is **read-only by construction** — there are no create/update/delete
+  operations.
+- **Loading is fail-closed and traversal-safe:** a file that is unparsable YAML,
+  fails `Validate`, declares a duplicate `name`, or whose `name` attempts path
+  traversal (`..`, separators) makes `Load` **error** — the store does not
+  silently skip or serve a hostile profile. A missing directory yields an empty
+  store.
+- The profile's `name` (not the filename) is the authoritative store key; a
+  hostile name is rejected even when the filename itself is plain.
+
+#### `sandbox_create` in the profile model
+
+`sandbox_create` takes `profile` (required), `session_id` (required), `cwd`
+(required) and optional `secrets`. The server resolves `profile` to a
+`domain/sandbox/profile.Profile`, then `BuildSpec(isolation, Params{Cwd,
+Secrets, ClientSessionID})` produces the typed `SandboxSpec` (§6.5) with:
+
+- `image`, `env`, `mounts` (appended after the auto cwd mount), `network`,
+  `cgroups`, `user`, `sudo` from the profile;
+- the **session `cwd` always mounted 1:1** at the same absolute path (read-only
+  by default) unless the profile's `cwd` remaps `target`/`mode` (§7.2);
+- the **immutable `Isolation` hardening block always from server policy**,
+  never from the profile (§6.5/§7.1);
+- `secrets` delivered as tmpfs `0600` files under `/run/sandbox` (§7.3).
+
+If the requested `profile` is not in the store, `sandbox_create` returns a
+"not found" error.
 
 ---
 

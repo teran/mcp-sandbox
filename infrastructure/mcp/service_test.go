@@ -285,7 +285,10 @@ func TestService_DefaultIsolationIsBridgeAndAppliedOnCreate(t *testing.T) {
 	}
 }
 
-func TestService_CreateNetworkModeAllowlist(t *testing.T) {
+func TestService_NetworkHostAllowedAndApplied(t *testing.T) {
+	// Phase 7: the network-allowlist is removed from the service; host is a
+	// valid mode and passes straight through to the backend (fail-closed host
+	// opt-in is enforced at the profile/config layer, not here).
 	mkService := func(cfg backend.Config) (*Service, *fakeBackend) {
 		fb := &fakeBackend{}
 		reg := backend.NewRegistry()
@@ -304,18 +307,12 @@ func TestService_CreateNetworkModeAllowlist(t *testing.T) {
 	hostSpec := testSpec()
 	hostSpec.Isolation.NetworkMode = spec.NetworkHost
 
-	// Default config (no allowlist → bridge only) rejects host.
-	svc, _ := mkService(backend.Config{})
-	if _, err := svc.Create(context.Background(), hostSpec); err == nil {
-		t.Fatal("expected host to be rejected by default")
+	// Host is accepted by default and reaches the backend unchanged.
+	svc, fb := mkService(backend.Config{})
+	if _, err := svc.Create(context.Background(), hostSpec); err != nil {
+		t.Fatalf("host should be allowed: %v", err)
 	}
-
-	// Config listing host passes the host spec through to the backend.
-	svc2, fb2 := mkService(backend.Config{AllowNetworkModes: []string{"bridge", "host"}})
-	if _, err := svc2.Create(context.Background(), hostSpec); err != nil {
-		t.Fatalf("host should be allowed when listed: %v", err)
-	}
-	if !fb2.created || fb2.createdSpec.Isolation.NetworkMode != spec.NetworkHost {
+	if !fb.created || fb.createdSpec.Isolation.NetworkMode != spec.NetworkHost {
 		t.Fatal("host spec should reach the backend")
 	}
 }
@@ -338,47 +335,25 @@ func TestService_CreateThenDestroy(t *testing.T) {
 	}
 }
 
-func TestService_PolicyCgroupResourceOverrides(t *testing.T) {
-	reg := backend.NewRegistry()
-	svc := NewService(reg, backend.Config{CgroupCPULimitCores: 2, CgroupMemoryLimitGB: 8})
-	iso := svc.Policy().Isolation
-
-	if iso.NanoCPUs != 2_000_000_000 {
-		t.Fatalf("NanoCPUs = %d, want 2_000_000_000", iso.NanoCPUs)
-	}
-	wantMem := int64(8) * 1024 * 1024 * 1024
-	if iso.Memory != wantMem {
-		t.Fatalf("Memory = %d, want %d", iso.Memory, wantMem)
-	}
-	if iso.MemorySwap != wantMem {
-		t.Fatalf("MemorySwap = %d, want %d (swap disabled)", iso.MemorySwap, wantMem)
-	}
-}
-
-func TestService_PolicyCgroupResourceDefaults(t *testing.T) {
+func TestService_PolicyBoundedResourceDefaults(t *testing.T) {
+	// Phase 7: cgroup overrides via config are removed; resources come from
+	// profiles. The server-enforced default Isolation must still be bounded
+	// (fail-closed, spec.Validate requires > 0) as a profile-independent base.
 	reg := backend.NewRegistry()
 	svc := NewService(reg, backend.Config{})
 	iso := svc.Policy().Isolation
 
-	if iso.NanoCPUs != 1_000_000_000 {
-		t.Fatalf("NanoCPUs = %d, want 1_000_000_000 (default)", iso.NanoCPUs)
+	if iso.NanoCPUs <= 0 {
+		t.Fatalf("NanoCPUs = %d, want bounded (> 0)", iso.NanoCPUs)
 	}
-	defaultMem := int64(4) * 1024 * 1024 * 1024
-	if iso.Memory != defaultMem || iso.MemorySwap != defaultMem {
-		t.Fatalf("Memory/MemorySwap = %d/%d, want default %d (swap disabled)", iso.Memory, iso.MemorySwap, defaultMem)
+	if iso.Memory <= 0 || iso.MemorySwap < iso.Memory {
+		t.Fatalf("Memory/MemorySwap = %d/%d, want bounded with swap >= memory", iso.Memory, iso.MemorySwap)
 	}
-}
-
-func TestService_PolicyCgroupCPUOnlyOverrides(t *testing.T) {
-	reg := backend.NewRegistry()
-	svc := NewService(reg, backend.Config{CgroupCPULimitCores: 4})
-	iso := svc.Policy().Isolation
-
-	if iso.NanoCPUs != 4_000_000_000 {
-		t.Fatalf("NanoCPUs = %d, want 4_000_000_000", iso.NanoCPUs)
+	if iso.PidsLimit <= 0 {
+		t.Fatalf("PidsLimit = %d, want bounded (> 0)", iso.PidsLimit)
 	}
-	defaultMem := int64(4) * 1024 * 1024 * 1024
-	if iso.Memory != defaultMem || iso.MemorySwap != defaultMem {
-		t.Fatalf("memory should keep defaults, got %d/%d", iso.Memory, iso.MemorySwap)
+	s := spec.SandboxSpec{Image: "img", Isolation: iso}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("default isolation must validate: %v", err)
 	}
 }

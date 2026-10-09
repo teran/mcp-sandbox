@@ -50,10 +50,12 @@ func dockerAvailable() bool {
 }
 
 // newBackend builds the docker backend against the real daemon (official SDK,
-// unix socket per DOCKER_HOST) with an ALLOW_DIRS rooted at the given host dir.
-// It first pulls the e2e base image so ContainerCreate can start from it
-// (pre-provisioned images, SPEC §7.10).
-func newBackend(t *testing.T, allowDir string, allowedNetworkModes ...[]spec.NetworkMode) *docker.Backend {
+// unix socket per DOCKER_HOST). It first pulls the e2e base image so
+// ContainerCreate can start from it (pre-provisioned images, SPEC §7.10). The
+// optional allowDirs are the ALLOW_DIRS host-path gate (Phase 7) passed to
+// New(api, allowDirs) — the cwd and mount sources used by a scenario must lie
+// within them.
+func newBackend(t *testing.T, allowDirs ...string) *docker.Backend {
 	t.Helper()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -73,7 +75,7 @@ func newBackend(t *testing.T, allowDir string, allowedNetworkModes ...[]spec.Net
 	}
 	_ = rd.Close()
 
-	return docker.New([]string{allowDir}, false, "ro", e2eImage, cli, nil, allowedNetworkModes...)
+	return docker.New(cli, allowDirs)
 }
 
 // mkSpec returns a valid spec satisfying spec.Validate for the docker backend:
@@ -127,8 +129,7 @@ func TestSecretsDelivery(t *testing.T) {
 		t.Skip("docker daemon not available; skipping secrets delivery e2e")
 	}
 
-	allowDir := t.TempDir()
-	b := newBackend(t, allowDir)
+	b := newBackend(t)
 
 	const secretName = "token"
 	const secretValue = "s3cr3t-value-42"
@@ -175,8 +176,7 @@ func TestTmpIsExecutable(t *testing.T) {
 		t.Skip("docker daemon not available; skipping /tmp executability e2e")
 	}
 
-	allowDir := t.TempDir()
-	b := newBackend(t, allowDir)
+	b := newBackend(t)
 
 	s := mkSpec()
 	id := uuid.NewString()
@@ -214,8 +214,7 @@ func TestNetworkBridgeConnectivity(t *testing.T) {
 		t.Skip("docker daemon not available; skipping bridge connectivity e2e")
 	}
 
-	allowDir := t.TempDir()
-	b := newBackend(t, allowDir)
+	b := newBackend(t)
 
 	s := mkSpec()
 	s.Isolation.NetworkMode = spec.NetworkBridge
@@ -237,38 +236,15 @@ func TestNetworkBridgeConnectivity(t *testing.T) {
 	}
 }
 
-// TestNetworkHostRejected verifies that host networking remains forbidden at the
-// backend level (SPEC §7.1) and no container is created for it.
-func TestNetworkHostRejected(t *testing.T) {
+// TestNetworkHostAllowedAndApplied verifies Phase 7: with the network-allowlist
+// removed, host networking is a valid mode and the backend applies it (the
+// fail-closed host opt-in is enforced at the profile/config layer, not here).
+func TestNetworkHostAllowedAndApplied(t *testing.T) {
 	if !dockerAvailable() {
-		t.Skip("docker daemon not available; skipping host-rejection e2e")
+		t.Skip("docker daemon not available; skipping host e2e")
 	}
 
-	allowDir := t.TempDir()
-	b := newBackend(t, allowDir)
-
-	s := mkSpec()
-	s.Isolation.NetworkMode = spec.NetworkHost
-
-	id := uuid.NewString()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if _, err := b.Create(domainsession.WithSessionID(ctx, id), s); err == nil {
-		t.Fatal("expected host networking to be rejected")
-	}
-}
-
-// TestNetworkHostAllowedWhenConfigured verifies that host networking is applied
-// when the operator has explicitly allowed it via ALLOW_NETWORK_MODES
-// (SPEC §7.1): the backend accepts the host spec and the container is created
-// with host networking.
-func TestNetworkHostAllowedWhenConfigured(t *testing.T) {
-	if !dockerAvailable() {
-		t.Skip("docker daemon not available; skipping host-allowed e2e")
-	}
-
-	allowDir := t.TempDir()
-	b := newBackend(t, allowDir, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+	b := newBackend(t)
 
 	s := mkSpec()
 	s.Isolation.NetworkMode = spec.NetworkHost
@@ -277,7 +253,7 @@ func TestNetworkHostAllowedWhenConfigured(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := b.Create(domainsession.WithSessionID(ctx, id), s); err != nil {
-		t.Fatalf("host should be allowed when configured: %v", err)
+		t.Fatalf("host should be allowed: %v", err)
 	}
 	t.Cleanup(func() { _ = b.Destroy(context.Background(), id) })
 
@@ -321,8 +297,9 @@ func TestAutoPullMissingImage(t *testing.T) {
 		t.Skipf("image %s already present locally; cannot exercise auto-pull", pullImage)
 	}
 
-	allowDir := t.TempDir()
-	b := docker.New([]string{allowDir}, false, "ro", pullImage, cli, nil)
+	// New signature: New(api, allowDirs). nil allowDirs is fine here — this
+	// scenario declares no host mounts/cwd.
+	b := docker.New(cli, nil)
 
 	s := mkSpec()
 	s.Image = pullImage
@@ -345,8 +322,7 @@ func TestCreate_OpenCodeSessionLabel(t *testing.T) {
 		t.Skip("docker daemon not available; skipping opencode label e2e")
 	}
 
-	allowDir := t.TempDir()
-	b := newBackend(t, allowDir)
+	b := newBackend(t)
 
 	s := mkSpec()
 	s.ClientSessionID = "opencode-e2e-session"

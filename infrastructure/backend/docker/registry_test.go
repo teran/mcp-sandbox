@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/docker/docker/api/types"
@@ -46,13 +45,8 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestNewFromConfig(t *testing.T) {
-	dir := t.TempDir()
 	cfg := backend.Config{
-		DockerHost:    "unix:///tmp/does-not-exist.sock",
-		AllowDirs:     []string{dir},
-		AllowSymlinks: false,
-		CwdMode:       "rw",
-		DefaultImage:  "img:latest",
+		DockerHost: "unix:///tmp/does-not-exist.sock",
 	}
 	b, err := newFromConfig(cfg)
 	if err != nil {
@@ -63,19 +57,6 @@ func TestNewFromConfig(t *testing.T) {
 	}
 	if b.Name() != "docker" {
 		t.Fatalf("Name = %q", b.Name())
-	}
-}
-
-func TestNewCanonicalizesAllowDirs(t *testing.T) {
-	dir := t.TempDir()
-	// On macOS /var -> /private/var, so canonicalization matters.
-	canon, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := newBackendForDirs(newFakeClient(), dir)
-	if len(b.cfg.allowDirs) != 1 || b.cfg.allowDirs[0] != canon {
-		t.Fatalf("allowDirs not canonicalized: %v (want %v)", b.cfg.allowDirs, canon)
 	}
 }
 

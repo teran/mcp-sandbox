@@ -35,11 +35,15 @@ restrictive than the host, never less.
 - Execute arbitrary commands inside the sandbox (argument-array exec — **no
   shell**).
 - The session `cwd` is mounted **1:1 at the same absolute path** (read-only by
-  default; opt-in `rw` via `SANDBOX_CWD_MODE=rw`); files come from the image,
+  default; `rw` opt-in via the profile's `cwd.mode`); files come from the image,
   the host, or the runtime — **mount + exec is the core mechanism**.
+- **Operator-authored sandbox profiles** (Phase 7): the image, env, mounts,
+  network, cgroup limits, user and sudo are declared in **read-only YAML
+  profiles** under `SANDBOX_PROFILES_DIR`, referenced by name on
+  `sandbox_create` — no per-request knobs, no profile create/edit/delete tools.
 - **Hardened by default**: read-only rootfs, drop-all capabilities, no-new-
-  privileges, seccomp, non-root user, bounded resources, network `none`, tmpfs
-  working dir, auto-remove.
+  privileges, seccomp, non-root user, bounded resources, tmpfs working dir,
+  auto-remove.
 - **Immutable `Isolation` policy** the caller cannot weaken.
 - Secret-safe output: a single redaction layer hides `secret:true` fields from
   all output and logs.
@@ -57,8 +61,9 @@ shell capability inside the sandbox**:
 - The model-host gets **full permission to run shell commands** — but **inside
   an isolated, ephemeral Docker container**, never on the host.
 - **What is not explicitly allowed is, by default, not available.** Access is
-  granted explicitly: host directories only via `ALLOW_DIRS`, network is `none`
-  by default, root inside is a scoped opt-in per `SudoPolicy`, package install
+  granted explicitly: host directories only via `ALLOW_DIRS`, network comes from
+  the operator profile (`bridge`/`none` default, `host` only if the operator
+  authors it), root inside is a scoped opt-in per `SudoPolicy`, package install
   is opt-in via provisioned images.
 - The container is hardened (read-only rootfs, drop-all capabilities,
   no-new-privileges, seccomp, non-root user, resource limits) and **cannot be
@@ -115,17 +120,19 @@ auth via environment, no HTTP headers).
 | Env | Default | Description |
 |-----|---------|-------------|
 | `-mode` (CLI flag) | `stdio` | Launch mode. Local server is fixed to `stdio`. |
-| `ALLOW_DIRS` | `[]` (none) | Permitted host directories for mounts (incl. the session `cwd`). Empty ⇒ deny all. |
+| `ALLOW_DIRS` | `[]` (none) | Permitted host directories for mounts — gates the session `cwd` **and** every profile mount `source`. Empty ⇒ deny all. **Still required** (Phase 7). |
 | `ALLOW_SYMLINKS` | `false` | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level. stdio logging is **on only when set**. |
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
 | `LOG_FORMAT` | `text` | `text` or `json`. |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
-| `SANDBOX_CWD_MODE` | `ro` | Session `cwd` mount mode: `ro` (default) or `rw` (opt-in, global feature flag). |
-| `SANDBOX_CGROUP_CPU_LIMIT_CORES` | unset (`0`) | Docker cgroup CPU limit in **CPU cores** (unit suffix `_CORES`); translated server-side to `NanoCPUs = cores * 1_000_000_000`. Unset/`0` ⇒ built-in server default applies (1 CPU). See `SPEC.md` §7.1. |
-| `SANDBOX_CGROUP_MEMORY_LIMIT_GB` | unset (`0`) | Docker cgroup memory limit in **gibibytes** (unit suffix `_GB`); translated server-side to `Memory = gb * 1024^3` bytes, with `MemorySwap` set equal to `Memory` so swap stays disabled. Unset/`0` ⇒ built-in server default applies (4 GiB, swap off). See `SPEC.md` §7.1. |
-| `TRUSTED_REGISTRIES` | `docker.io, index.docker.io, registry-1.docker.io, ghcr.io` | Comma-separated allowlist of registry domains the sandbox may pull images from (**REPLACE semantics** — set ⇒ entirely replaces the default; unset/empty/whitespace-only ⇒ falls back to the default above). See `SPEC.md` §7.9. |
+| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
+
+> **Removed in Phase 7:** `SANDBOX_CWD_MODE` (→ profile `cwd.mode`),
+> `SANDBOX_CGROUP_CPU_LIMIT_CORES` / `SANDBOX_CGROUP_MEMORY_LIMIT_GB`
+> (→ profile `cgroups`), and `TRUSTED_REGISTRIES` (→ image comes from the
+> profile; **digest-pinning** is the recommended convention, `SPEC.md` §7.9).
 
 Example:
 
@@ -135,6 +142,67 @@ export LOG_LEVEL=info
 export LOG_FILENAME=/tmp/mcp-sandbox.log
 ./mcp-sandbox -mode stdio
 ```
+
+## Profiles (operator-authored)
+
+Sandboxes are created from **operator-authored, read-only YAML profiles** — one
+`<name>.yml` per profile under `SANDBOX_PROFILES_DIR` (default
+`~/.config/sandbox/profiles`). A profile fully determines the sandbox runtime:
+image, env, mounts, network, cgroup limits, user and sudo. There are **no**
+profile create/update/delete tools; the model references a profile **by name**
+on `sandbox_create`, and `profile_list` enumerates what's available.
+
+Example `~/.config/sandbox/profiles/default.yml`:
+
+```yaml
+name: default
+description: the default profile
+image: alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # digest-pinning recommended — replace with the real <repo>@sha256:<64 hex>
+env:
+  FOO: bar
+mounts:
+  - source: /data
+    target: /data
+    read_only: true
+cwd:
+  target: ""   # empty ⇒ mounted 1:1 at the same absolute path (default)
+  mode: ro     # ro (default) | rw
+network:
+  mode: bridge # bridge (default) | none | host
+cgroups:
+  nano_cpus: 1000000000
+  memory: 536870912
+  memory_swap: 536870912
+  pids_limit: 256
+  ulimits:
+    - name: nofile
+      soft: 1024
+      hard: 1024
+user:
+  uid: 1000
+  gid: 1000
+sudo: never
+```
+
+- `ALLOW_DIRS` still **gates every host path** — both the session `cwd` and
+  every profile `mounts.source` must be inside it (§7.2).
+- `profile_list` returns only `name`/`description` — env, mounts, image, user
+  and sudo are never exposed (S02).
+- Full schema and trust model: `SPEC.md` §7.11.
+
+### Migration from the old `sandbox_create`
+
+`sandbox_create` is **breaking** in Phase 7: the per-request parameters
+`image`, `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`,
+`sudo` are **removed** and now come from a profile. `profile` and `cwd` are now
+both **required** (with `session_id`). To migrate:
+
+1. Author a profile capturing the desired image/env/mounts/limits/user/sudo in
+   `SANDBOX_PROFILES_DIR` (see above).
+2. Call `sandbox_create` with `{ "profile": "default", "session_id": "...",
+   "cwd": "...", "secrets": [...] }` — no other runtime knobs.
+3. Any un-migrated caller that passes the old parameters is rejected with
+   `InvalidParams`.
 
 ### Transport, auth & TLS notes
 
@@ -191,13 +259,15 @@ server:
 
 - `command` launches the `mcp-sandbox` binary (put it on `PATH` or use an
   absolute path).
-- `ALLOW_DIRS` scopes which host directories the sandbox may reach; the session
-  working directory is mounted **1:1** at the same absolute path (see
-  `SPEC.md` §7.2).
+- `ALLOW_DIRS` scopes which host directories the sandbox may reach; it gates the
+  session working directory (mounted **1:1** at the same absolute path) and
+  every profile mount source (see `SPEC.md` §7.2).
 - opencode passes its session id as a **required** `session_id` parameter to
   `sandbox_create`; the server records it as a container label so each sandbox
-  is traceable to the OpenCode session that created it. The session `cwd` is
-  mounted 1:1 read-only by default (see `SPEC.md` §7.2).
+  is traceable to the OpenCode session that created it. `sandbox_create` also
+  takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
+  **required** `cwd`. The session `cwd` is mounted 1:1 read-only by default (see
+  `SPEC.md` §7.2, §7.11).
 - Use `opencode mcp list` / `/mcps` to check the server is connected.
 
 > **HITL note:** because mcp-sandbox is Local/stdio (no HTTP UI), destructive
@@ -209,11 +279,13 @@ server:
 Grouped **read → write → delete** (S03):
 
 - **Read** (`readOnlyHint: true`): `sandbox_list`, `sandbox_info`,
-  `sandbox_stats`.
+  `sandbox_stats`, `profile_list` (lists operator-authored profiles as
+  `name`/`description` — read-only, no leakage).
 - **Write/update** (`readOnlyHint: false`, `destructiveHint: false`):
-  `sandbox_create` (requires `session_id` — the OpenCode client session id,
-  recorded as a container label for traceability; session `cwd` mounted 1:1
-  read-only by default, opt-in `rw` via `SANDBOX_CWD_MODE=rw`),
+  `sandbox_create` (requires `profile` — the profile name from
+  `SANDBOX_PROFILES_DIR`, `session_id` — the OpenCode client session id recorded
+  as a container label for traceability, and `cwd`; optional `secrets`; session
+  `cwd` mounted 1:1 read-only by default per the profile's `cwd.mode`),
   `sandbox_exec` (write-classified; ANSI-sanitized; redacted argv; streams live
   output via `notifications/progress` when a progress token is passed, §5.1).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
@@ -223,7 +295,8 @@ Grouped **read → write → delete** (S03):
 > files on the **host** and the container reads/executes them at the same path;
 > runtime artifacts live in the writable tmpfs `/tmp` (executable where the
 > daemon honours `exec`; on daemons that force `noexec` — e.g. Docker Desktop —
-> compilation goes into the writable bind-mounted `cwd`). There are **no**
+> compilation goes into the writable bind-mounted `cwd` per the profile's
+> `cwd.mode`). There are **no**
 > `sandbox_read_file` / `sandbox_write_file` / `sandbox_copy_in` /
 > `sandbox_copy_out` / `sandbox_install_package` tools — **mount + exec is the
 > core mechanism** (`SPEC.md` §4.2, §7.2).
@@ -244,17 +317,26 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
 - Read-only rootfs; **drop-all capabilities** (minimal re-add); no-new-
   privileges; **seccomp** (default MVP profile; custom profile is mandatory
   roadmap); **non-root** user inside.
-- Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits`.
-- **Network `bridge` by default** (Docker's default bridged network); `host` networking forbidden at policy level.
+- Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits` (from the
+  profile's `cgroups`, §7.11).
+- **Network comes from the operator profile** — `bridge` (default) or `none`;
+  `host` is permitted **only when the operator authors it** into a profile, never
+  implicitly.
 - tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, writable; some daemons like Docker Desktop force `noexec` on tmpfs, so runtime compilation uses the writable bind-mounted `cwd`); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
-  symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); the session
-  `cwd` is the one sanctioned bind-mount (read-only default).
+  symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); this gates the
+  session `cwd` **and** every profile mount `source`; the session `cwd` is the
+  sanctioned bind-mount (read-only default).
 - Single **redaction layer** hides `secret:true` fields from all output and
   logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never argv/image.
 - Sessions use opaque `crypto/rand` ids with label-based Docker ownership.
-- Supply chain: sandbox images **pinned by digest**, **trusted registries**
-  (configurable via `TRUSTED_REGISTRIES`, §7.9), signed packages.
+- **Operator-authored profiles** (Phase 7): the image, env, mounts, network,
+  limits, user and sudo are declared in **read-only** YAML files the model
+  references by name; a profile can never weaken the immutable `Isolation`
+  block (§7.11).
+- Supply chain: sandbox images come from the operator profile with **parse-only
+  validation**; **digest-pinning is the recommended operator convention**
+  (§7.9), and dependencies are pinned to latest stable, signed packages.
 
 ### Docker socket access (known limitation)
 

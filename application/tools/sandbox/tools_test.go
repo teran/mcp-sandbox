@@ -7,9 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/application/tools/registry"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
@@ -33,6 +37,58 @@ func callHandler(t *testing.T, d *def.ToolDef, _ Service, args any) (any, error)
 	}
 	return d.Handler(context.Background(), b)
 }
+
+// validateToolArgs validates args against the tool's strict input schema,
+// mirroring the wrapper's validateArgs (S08).
+func validateToolArgs(d *def.ToolDef, args any) error {
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	resolved, err := d.InputSchema.Resolve(nil)
+	if err != nil {
+		return err
+	}
+	var instance map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &instance); err != nil {
+			return err
+		}
+	}
+	return resolved.Validate(instance)
+}
+
+// callWrapped invokes the tool through the shared handler-wrapper so schema
+// validation (InvalidParams) is exercised, not bypassed.
+func callWrapped(t *testing.T, d *def.ToolDef, args any) *mcp.CallToolResult {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: raw}}
+	deps := handler.Dependencies{
+		// noopAccessLogger satisfies the AccessLogger hook the wrapper defers
+		// (handler.go:103); without it the deferred call nil-panics.
+		AccessLogger: noopAccessLogger{},
+		// identityRedact is the wrapper's default redactor; the value is
+		// returned unchanged so tests observe unmodified output.
+		Redact:        func(v any) any { return v },
+		NewRequestID:  func() string { return "req-1" },
+		WithRequestID: func(ctx context.Context, id string) context.Context { return ctx },
+	}
+	res, err := handler.Call(context.Background(), deps, d, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// noopAccessLogger is a no-op handler.AccessLogger for tests that drive the
+// wrapper but do not inspect access-log output.
+type noopAccessLogger struct{}
+
+func (noopAccessLogger) AccessLog(handler.AccessLogEntry) {}
 
 func TestAll_ToolCountAndOrder(t *testing.T) {
 	defs := All(newFake())
@@ -218,12 +274,10 @@ func TestSandboxCreate_Handler(t *testing.T) {
 	svc := newFake()
 	d := toolByName(t, svc, "sandbox_create")
 	out, err := callHandler(t, d, svc, map[string]any{
-		"image":      "img",
+		"profile":    "default",
 		"cwd":        "/home/user/proj",
 		"session_id": "opencode-sess-1",
 		"secrets":    []map[string]any{{"name": "k", "value": "v"}},
-		"sudo":       "require",
-		"nano_cpus":  int64(2000000000),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -233,20 +287,22 @@ func TestSandboxCreate_Handler(t *testing.T) {
 		t.Fatal("empty id")
 	}
 	sp := svc.createdSpec
-	if sp.Image != "img" || sp.WorkingDir != "/home/user/proj" {
-		t.Fatalf("spec = %+v", sp)
+	// Image now comes from the selected profile, not the request.
+	if sp.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q, want profile image", sp.Image)
+	}
+	if sp.WorkingDir != "/home/user/proj" {
+		t.Fatalf("WorkingDir = %q", sp.WorkingDir)
 	}
 	if sp.ClientSessionID != "opencode-sess-1" {
 		t.Fatalf("client session id = %q, want opencode-sess-1", sp.ClientSessionID)
 	}
-	if sp.Sudo != spec.SudoRequire {
-		t.Fatalf("sudo = %q", sp.Sudo)
+	if sp.Sudo != spec.SudoNever {
+		t.Fatalf("sudo = %q, want never (from profile)", sp.Sudo)
 	}
-	if sp.Resources.NanoCPUs != 2000000000 {
-		t.Fatalf("nano cpus = %d", sp.Resources.NanoCPUs)
-	}
-	if sp.Isolation.NanoCPUs != 2000000000 {
-		t.Fatalf("isolation nano cpus = %d", sp.Isolation.NanoCPUs)
+	// The cwd mount is always present (profile.BuildSpec), read-only by default.
+	if len(sp.Mounts) != 1 || sp.Mounts[0].Target != "/home/user/proj" || !sp.Mounts[0].ReadOnly {
+		t.Fatalf("cwd mount = %+v, want single 1:1 read-only mount", sp.Mounts)
 	}
 	if len(sp.Secrets) != 1 || sp.Secrets[0].Value != "v" {
 		t.Fatalf("secrets = %+v", sp.Secrets)
@@ -256,30 +312,44 @@ func TestSandboxCreate_Handler(t *testing.T) {
 	}
 }
 
-func TestSandboxCreate_DefaultImageAndIsolation(t *testing.T) {
+func TestSandboxCreate_ProfileDrivenIsolation(t *testing.T) {
 	svc := newFake()
+	// The profile fully determines network + user; the request can no longer
+	// override them.
 	d := toolByName(t, svc, "sandbox_create")
-	if _, err := callHandler(t, d, svc, map[string]any{"session_id": "s1"}); err != nil {
+	if _, err := callHandler(t, d, svc, map[string]any{
+		"profile":    "default",
+		"cwd":        "/c",
+		"session_id": "s1",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	sp := svc.createdSpec
-	if sp.Image != defaultPolicy().DefaultImage {
-		t.Fatalf("image = %q", sp.Image)
-	}
-	if sp.Sudo != spec.SudoNever {
-		t.Fatalf("default sudo = %q", sp.Sudo)
-	}
 	if sp.UIDGID.UID != 1000 {
-		t.Fatalf("uid = %d", sp.UIDGID.UID)
+		t.Fatalf("uid = %d, want profile non-root 1000", sp.UIDGID.UID)
 	}
-	if sp.Isolation.NetworkMode != spec.NetworkBridge {
-		t.Fatalf("default isolation network = %q, want bridge", sp.Isolation.NetworkMode)
-	}
-	if sp.Network.Mode != spec.NetworkBridge {
-		t.Fatalf("default network mode = %q, want bridge", sp.Network.Mode)
+	if sp.Isolation.NetworkMode != spec.NetworkBridge || sp.Network.Mode != spec.NetworkBridge {
+		t.Fatalf("network = %q/%q, want bridge from profile", sp.Isolation.NetworkMode, sp.Network.Mode)
 	}
 	if err := sp.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestSandboxCreate_UnknownProfile(t *testing.T) {
+	svc := newFake()
+	d := toolByName(t, svc, "sandbox_create")
+	if _, err := callHandler(t, d, svc, map[string]any{
+		"profile":    "does-not-exist",
+		"cwd":        "/c",
+		"session_id": "s1",
+	}); err == nil {
+		t.Fatal("expected unknown-profile error")
+	} else if !strings.Contains(err.Error(), "profile") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.createdSpec.Image != "" || len(svc.createdSpec.Secrets) != 0 {
+		t.Fatal("no spec should be created for an unknown profile")
 	}
 }
 
@@ -287,48 +357,95 @@ func TestSandboxCreate_Error(t *testing.T) {
 	svc := newFake()
 	svc.createErr = errFake
 	d := toolByName(t, svc, "sandbox_create")
-	if _, err := callHandler(t, d, svc, map[string]any{"session_id": "s1"}); !errors.Is(err, errFake) {
+	if _, err := callHandler(t, d, svc, map[string]any{"profile": "default", "cwd": "/c", "session_id": "s1"}); !errors.Is(err, errFake) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-// TestSandboxCreate_RequiresSessionID verifies that sandbox_create rejects a
-// missing/empty OpenCode client session id before any creation happens: it is a
-// REQUIRED parameter used to label the container for traceability.
-func TestSandboxCreate_RequiresSessionID(t *testing.T) {
+// TestSandboxCreate_RequiresRequiredParams verifies that sandbox_create
+// rejects a missing/empty profile, cwd, or session_id before any creation
+// happens. The strict schema enforces required-ness at the wrapper boundary
+// (→ InvalidParams); the handler defends again for defense in depth.
+func TestSandboxCreate_RequiresRequiredParams(t *testing.T) {
 	svc := newFake()
 	d := toolByName(t, svc, "sandbox_create")
 	for _, args := range []map[string]any{
 		{},
 		{"session_id": ""},
 		{"session_id": "   "},
+		{"profile": "", "cwd": "/c", "session_id": "s"},
+		{"profile": "default", "cwd": "", "session_id": "s"},
+		{"profile": "default", "cwd": "/c", "session_id": ""},
 	} {
 		if _, err := callHandler(t, d, svc, args); err == nil {
-			t.Fatalf("args %v: expected missing/empty session_id rejection", args)
+			t.Fatalf("args %v: expected missing/empty required rejection", args)
 		}
 	}
 	if svc.createdSpec.Image != "" || len(svc.createdSpec.Secrets) != 0 {
-		t.Fatal("no spec should be created when session_id is missing")
+		t.Fatal("no spec should be created when required params are missing")
 	}
 }
 
-// TestSandboxCreate_SchemaRequiresSessionID pins the schema contract: session_id
-// must be declared as a property AND be in the required list of sandbox_create.
-func TestSandboxCreate_SchemaRequiresSessionID(t *testing.T) {
+// TestSandboxCreate_SchemaRequiresProfileCwdSessionID pins the schema contract:
+// profile, cwd and session_id must all be declared AND be in the required list
+// of sandbox_create.
+func TestSandboxCreate_SchemaRequiresProfileCwdSessionID(t *testing.T) {
 	d := toolByName(t, newFake(), "sandbox_create")
 	props := d.InputSchema.Properties
-	if props == nil || props["session_id"] == nil {
-		t.Fatal("sandbox_create schema must declare session_id property")
-	}
-	required := d.InputSchema.Required
-	found := false
-	for _, r := range required {
-		if r == "session_id" {
-			found = true
+	for _, k := range []string{"profile", "cwd", "session_id"} {
+		if props == nil || props[k] == nil {
+			t.Fatalf("sandbox_create schema must declare %q property", k)
 		}
 	}
-	if !found {
-		t.Fatalf("sandbox_create schema required list %v must include session_id", required)
+	required := d.InputSchema.Required
+	for _, k := range []string{"profile", "cwd", "session_id"} {
+		found := false
+		for _, r := range required {
+			if r == k {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("sandbox_create schema required list %v must include %q", required, k)
+		}
+	}
+}
+
+// TestSandboxCreate_SchemaRejectsRemovedParams pins Phase 7: image, env,
+// mounts, nano_cpus, memory, pids_limit, uid, gid and sudo are REMOVED from
+// sandbox_create. The strict schema (additionalProperties:false) must reject a
+// request carrying any of them as invalid-arguments.
+func TestSandboxCreate_SchemaRejectsRemovedParams(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_create")
+	base := map[string]any{"profile": "default", "cwd": "/c", "session_id": "s"}
+	removed := []map[string]any{
+		{"image": "x"}, {"env": map[string]string{"A": "1"}}, {"mounts": []any{}},
+		{"nano_cpus": int64(1)}, {"memory": int64(1)}, {"pids_limit": int64(1)},
+		{"uid": int64(1000)}, {"gid": int64(1000)}, {"sudo": "never"},
+	}
+	for _, extra := range removed {
+		args := map[string]any{}
+		for k, v := range base {
+			args[k] = v
+		}
+		for k, v := range extra {
+			args[k] = v
+		}
+		if err := validateToolArgs(d, args); err == nil {
+			t.Fatalf("removed param %v must be rejected by the strict schema", extra)
+		}
+	}
+}
+
+// TestSandboxCreate_MissingRequiredIsInvalidParams goes through the shared
+// wrapper (handler.Call) to confirm a missing required field surfaces as an
+// invalid-arguments (InvalidParams) result, not an execution error.
+func TestSandboxCreate_MissingRequiredIsInvalidParams(t *testing.T) {
+	svc := newFake()
+	d := toolByName(t, svc, "sandbox_create")
+	res := callWrapped(t, d, map[string]any{"cwd": "/c"}) // missing profile + session_id
+	if !handler.IsInvalidArgumentsResult(res) {
+		t.Fatalf("expected invalid-arguments result, got IsError=%v err=%v", res.IsError, res.GetError())
 	}
 }
 
@@ -522,37 +639,69 @@ func TestSandboxDestroyAll_CountsSessions(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_MountsAndEnv(t *testing.T) {
+func TestBuildSpec_ProfileCwdAndClientSessionID(t *testing.T) {
 	svc := newFake()
 	b := builder{svc: svc}
-	sp := buildSpec(b, createInput{
-		Env:     map[string]string{"A": "1"},
-		Mounts:  []mountInput{{Source: "/h", Target: "/s", ReadOnly: true}},
-		Secrets: []secretInput{{Name: "k", Value: "v"}},
-	})
-	if len(sp.Mounts) != 1 || sp.Mounts[0].ReadOnly != true {
-		t.Fatalf("mounts = %+v", sp.Mounts)
+	sp, err := buildSpec(b, createInput{Profile: "default", Cwd: "/home/user/proj", SessionID: "opencode-sess-9"})
+	if err != nil {
+		t.Fatalf("buildSpec: %v", err)
 	}
-	if sp.Env["A"] != "1" {
-		t.Fatalf("env = %+v", sp.Env)
-	}
-}
-
-func TestBuildSpec_UserOverride(t *testing.T) {
-	svc := newFake()
-	b := builder{svc: svc}
-	sp := buildSpec(b, createInput{UID: 2000, GID: 2000})
-	if sp.UIDGID.UID != 2000 || sp.UIDGID.GID != 2000 {
-		t.Fatalf("uidgid = %+v", sp.UIDGID)
-	}
-}
-
-func TestBuildSpec_ClientSessionID(t *testing.T) {
-	svc := newFake()
-	b := builder{svc: svc}
-	sp := buildSpec(b, createInput{SessionID: "opencode-sess-9"})
 	if sp.ClientSessionID != "opencode-sess-9" {
 		t.Fatalf("client session id = %q, want opencode-sess-9", sp.ClientSessionID)
+	}
+	if sp.WorkingDir != "/home/user/proj" {
+		t.Fatalf("WorkingDir = %q", sp.WorkingDir)
+	}
+	if len(sp.Mounts) != 1 || sp.Mounts[0].Source != "/home/user/proj" || sp.Mounts[0].Target != "/home/user/proj" {
+		t.Fatalf("cwd mount = %+v, want 1:1", sp.Mounts)
+	}
+}
+
+func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
+	svc := newFake()
+	p := defaultProfile()
+	p.Env = map[string]string{"A": "1"}
+	p.Mounts = []domainprofile.Mount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
+	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
+
+	b := builder{svc: svc}
+	sp, err := buildSpec(b, createInput{Profile: "default", Cwd: "/c", SessionID: "s"})
+	if err != nil {
+		t.Fatalf("buildSpec: %v", err)
+	}
+	if sp.Env["A"] != "1" {
+		t.Fatalf("env = %+v, want profile env", sp.Env)
+	}
+	if len(sp.Mounts) != 2 { // cwd + profile mount
+		t.Fatalf("mounts = %+v, want cwd + profile mount", sp.Mounts)
+	}
+	m := sp.Mounts[1]
+	if m.Source != "/host" || m.Target != "/mnt" || !m.ReadOnly {
+		t.Fatalf("profile mount = %+v", m)
+	}
+}
+
+func TestBuildSpec_ProfileUser(t *testing.T) {
+	svc := newFake()
+	p := defaultProfile()
+	p.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
+
+	b := builder{svc: svc}
+	sp, err := buildSpec(b, createInput{Profile: "default", Cwd: "/c", SessionID: "s"})
+	if err != nil {
+		t.Fatalf("buildSpec: %v", err)
+	}
+	if sp.UIDGID.UID != 2000 || sp.UIDGID.GID != 2000 {
+		t.Fatalf("uidgid = %+v, want profile 2000:2000", sp.UIDGID)
+	}
+}
+
+func TestBuildSpec_UnknownProfile(t *testing.T) {
+	svc := newFake()
+	b := builder{svc: svc}
+	if _, err := buildSpec(b, createInput{Profile: "nope", Cwd: "/c", SessionID: "s"}); err == nil {
+		t.Fatal("expected unknown-profile error")
 	}
 }
 
@@ -599,6 +748,10 @@ func TestPolicyAndBackendName(t *testing.T) {
 		t.Fatalf("backend = %q", svc.BackendName())
 	}
 	pol := svc.Policy()
+	// Policy.DefaultImage is retained on the policy struct but is NO LONGER
+	// applied to create: the image always comes from the selected profile (see
+	// TestSandboxCreate_Handler). This only asserts the field stays present with
+	// the fake's value.
 	if pol.DefaultImage != "sandbox:latest" || pol.Backend != "docker" {
 		t.Fatalf("policy = %+v", pol)
 	}

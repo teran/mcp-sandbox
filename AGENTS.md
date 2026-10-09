@@ -71,7 +71,8 @@ See `SPEC.md` §7.
 - **Immutable `Isolation` block:** `ReadOnlyRootfs=true`, `CapDrop:ALL` (minimal
   re-add), `no-new-privileges`, seccomp (default MVP; custom is mandatory
   roadmap), **non-root** user, bounded `PidsLimit`/`Memory`/`NanoCPUs`/
-  `Ulimits`, **Network `bridge`** (host forbidden), tmpfs mounts — `/run`
+  `Ulimits`, **network from the operator profile** (bridge/none default; host
+  only when operator-authored), tmpfs mounts — `/run`
   (`rw,noexec,nosuid,nodev`, sandbox-user-owned) and `/tmp` (`rw,nosuid,nodev`,
   writable) — `AutoRemove=true`. A caller must **never** be able to weaken these.
 
@@ -79,7 +80,17 @@ See `SPEC.md` §7.
   > Desktop on macOS) **force `noexec` on tmpfs** regardless of the requested
   > `exec` flag, so `/tmp` may not be executable even though it is writable.
   > Runtime code compilation (e.g. Go builds) therefore needs a writable
-  > **bind-mount** (the session `cwd` with `SANDBOX_CWD_MODE=rw`) — not tmpfs.
+  > **bind-mount** (the session `cwd` with the profile's `cwd.mode=rw`) — not tmpfs.
+- **Operator-authored profiles (Phase 7) — trust model:** sandboxes are created
+  from **read-only** YAML profiles in `SANDBOX_PROFILES_DIR`. **Operators author,
+  the model references read-only** (by `profile` name on `sandbox_create`); a
+  profile owns image/env/mounts/network/limits/user/sudo. The profile is the
+  trusted party for those fields, but it can **never** weaken the immutable
+  `Isolation` block (§6.5/§7.11). **`ALLOW_DIRS` is retained and still required**
+  — it gates the client-supplied `cwd` **and every profile mount `source`**
+  (plus `ALLOW_SYMLINKS` for path resolution, S04). There are **no** profile
+  create/update/delete tools; `profile_list` emits only `name`/`description`
+  (no env/mount/image/user/sudo leakage, S02).
 - **TLS is never implemented in-server (S01).** This is a Local/stdio server —
   no HTTP listener at all.
 - **No secret leakage (S02/N02).** All API requests/responses/config are
@@ -100,9 +111,11 @@ See `SPEC.md` §7.
 - **Docker socket (documented limitation):** the socket is effectively root on
   the host. Prefer **rootless Docker** or confine socket access to the server
   process. Never expose the socket to output/tools.
-- **Supply chain (T7/C05):** sandbox images **pinned by digest**, trusted
-  registries (allowlist configurable via `TRUSTED_REGISTRIES`, SPEC §7.9),
-  signed packages; dependencies pinned to latest stable.
+- **Supply chain (T7/C05):** sandbox images come from the **operator profile**
+  (SPEC §7.11) with **parse-only** validation — the trusted-registry allowlist
+  (`TRUSTED_REGISTRIES`) is **removed**; **digest-pinning is the recommended
+  operator convention** (SPEC §7.9), signed packages; dependencies pinned to
+  latest stable.
 - **Streaming output (`notifications/progress`, SPEC §5.1):** long-running tools
   (starting with `sandbox_exec`) may stream live output. Streamed chunks are
   **secrets-redacted (S02)** and **ANSI-sanitized (S09)** — the same contract as

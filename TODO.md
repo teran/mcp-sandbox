@@ -72,6 +72,66 @@ Goal: emit `notifications/progress` from `sandbox_exec` (and any long-running to
 - [x] 6.9 Docs: SPEC/README/AGENTS — document progress notifications and the `sandbox_exec` streaming behavior (English) — `D01 D02`
 - [ ] 6.10 (follow-up) Honor `req.Timeout` via `context.WithTimeout` in `Exec` so timeouts become cancellations (terminal-notification path already covers it) — `X03`
 
+## Phase 7 — Operator-authored sandbox profiles
+
+Goal: move the runtime shape of a sandbox (image, env, mounts, network, cgroup
+limits, user, sudo) out of the per-request `sandbox_create` knobs and operator
+env vars into **read-only, operator-authored YAML profiles** under
+`SANDBOX_PROFILES_DIR`. The model references a profile **by name**; there are
+**no** profile create/update/delete tools. `ALLOW_DIRS` is retained as the
+host-path gate for `cwd` + every profile mount source; the immutable
+`Isolation` block is never weakened. See `SPEC.md` §6.5/§7.9/§7.11.
+
+Status: **@qa has written the Phase 7 tests first** (TDD) for the domain
+profile model, the application store and the `profile_list` tool; the
+**implementation is pending @developer**.
+
+- [x] 7.1 `domain/sandbox/profile`: typed `Profile` (Name, Description, Image,
+      Env, Mounts, CwdConfig, Network, Cgroups, User, Sudo), `Validate`
+      (non-root enforced, bounded cgroups, name regex + path-traversal
+      rejection, **image parse-only** — any registry, no allowlist), and
+      `BuildSpec(isolation, Params{Cwd, Secrets, ClientSessionID})`
+      (profile → `SandboxSpec`; cwd always mounted 1:1 read-only default;
+      profile-owned fields override policy; hardening never overridden) —
+      **tests landed** — `A01 S04 §6.5 §7.11`
+- [ ] 7.2 `domain/sandbox/profile` implementation: `Profile`, `Mount`,
+      `CwdConfig`, `Network`, `Cgroups`, `User`, `Sudo`, `Validate`,
+      `BuildSpec` — `A01 S04`
+- [x] 7.3 `application/profile` store: scan `SANDBOX_PROFILES_DIR`, parse +
+      validate each `<name>.yml`, `Get`/`List` (sorted); **read-only** (no
+      create/update/delete); fail-closed on unparsable/invalid/duplicate/
+      traversal `name`; missing dir ⇒ empty store — **tests landed** — `S04`
+- [ ] 7.4 `application/profile` store implementation: `Load`, `Get`, `List`,
+      `SANDBOX_PROFILES_DIR` wiring in `application/config` — `S04`
+- [x] 7.5 `application/tools/profile`: read-only `profile_list` tool
+      (annotations: read-only/idempotent/non-destructive/open-world false;
+      output `{profiles:[{name,description}]}` with **no leakage** of
+      env/mounts/image/user/sudo — S02) — **tests landed** — `M05 M07 S02 S03`
+- [ ] 7.6 `application/tools/profile` implementation + register `profile_list`
+      in the shared registry — `M05 M07 S03`
+- [ ] 7.7 **`sandbox_create` rework**: input becomes `profile` (req),
+      `session_id` (req), `cwd` (req), `secrets` (opt); **remove** `image`,
+      `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`,
+      `sudo`; resolve profile → `BuildSpec`; error "not found" for unknown
+      profile — `M05 S08 X02`
+- [ ] 7.8 Backend/config/spec changes: drop `validateImageRef` registry
+      allowlist (parse-only); remove `TRUSTED_REGISTRIES`, `SANDBOX_CWD_MODE`,
+      `SANDBOX_CGROUP_CPU_LIMIT_CORES`, `SANDBOX_CGROUP_MEMORY_LIMIT_GB`,
+      `ALLOW_NETWORK_MODES`; network from profile (host valid when
+      operator-authored); limits from profile `cgroups`; defaults from server —
+      `§7.1 §7.9 §7.11`
+- [ ] 7.9 Allowlist removals cleanup: delete `DefaultTrustedRegistries`,
+      `DefaultNetworkModes` gating of host (host allowed via profile), and the
+      `TRUSTED_REGISTRIES`/`SANDBOX_CWD_MODE`/`SANDBOX_CGROUP_*` config paths —
+      `S04 §7.9`
+- [ ] 7.10 Tests: unit (domain build/validate, store, tool) + e2e
+      (`sandbox_create` with profile, unknown-profile error, profile_list,
+      profile-owned network/limits respected, ALLOW_DIRS gate on profile
+      mounts) — `C01 C04GO T01 T02 C09GO`
+- [ ] 7.11 Docs: SPEC/README/AGENTS — profiles schema + trust model,
+      `SANDBOX_PROFILES_DIR`, `profile_list`, removed envs, breaking
+      `sandbox_create` migration note, digest-pinning convention — `D01 D02`
+
 ## Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).

@@ -13,6 +13,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/session"
 	sandboxtool "github.com/teran/mcp-sandbox/application/tools/sandbox"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -39,12 +40,19 @@ type Service struct {
 	mu  sync.Mutex
 	mgr *session.Manager
 	be  role.Backend
+
+	// profiles is the read-only operator profile store (Phase 7). It serves as
+	// both the sandbox-create ProfileResolver and the profile_list Lister.
+	profiles *profile.Store
 }
 
 // NewService returns a sandbox Service backed by the given backend registry.
 func NewService(reg *backend.Registry, cfg backend.Config) *Service {
 	return &Service{reg: reg, cfg: cfg}
 }
+
+// SetProfileStore attaches the read-only operator profile store (Phase 7).
+func (s *Service) SetProfileStore(st *profile.Store) { s.profiles = st }
 
 // ensure lazily selects and constructs the backend and session manager exactly
 // once. Availability is evaluated here, on the first call (A02/N35).
@@ -67,16 +75,21 @@ func (s *Service) ensure(ctx context.Context) (*session.Manager, role.Backend, e
 		return nil, nil, role.ErrCapabilityNotSupported
 	}
 	s.be = be
-	s.mgr = session.NewManager(life, toNetworkModes(s.cfg.AllowNetworkModes))
+	s.mgr = session.NewManager(life)
 	return s.mgr, be, nil
 }
 
 // Policy returns the server-enforced sandbox policy.
 func (s *Service) Policy() sandboxtool.Policy {
+	var res sandboxtool.ProfileResolver
+	if s.profiles != nil {
+		res = s.profiles
+	}
 	return sandboxtool.Policy{
-		DefaultImage: s.cfg.DefaultImage,
+		DefaultImage: "", // retained on the struct but unused (image comes from the profile)
 		Isolation:    s.defaultIsolation(),
 		Backend:      "docker",
+		Profiles:     res,
 	}
 }
 
@@ -176,24 +189,12 @@ func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 	return ins.Stats(ctx, id)
 }
 
-// toNetworkModes converts the validated ALLOW_NETWORK_MODES strings into typed
-// spec.NetworkMode values for the session manager. config.Validate has already
-// guaranteed every entry is a known mode, so the cast is safe.
-func toNetworkModes(modes []string) []spec.NetworkMode {
-	out := make([]spec.NetworkMode, 0, len(modes))
-	for _, m := range modes {
-		out = append(out, spec.NetworkMode(m))
-	}
-	return out
-}
-
 // defaultIsolation is the immutable, server-enforced hardening block (SPEC
 // §7.1). sandbox_create applies it to every spec; a caller can never weaken it.
-// Operator-configured cgroup resource limits (SANDBOX_CGROUP_CPU_LIMIT_CORES /
-// SANDBOX_CGROUP_MEMORY_LIMIT_GB) override the built-in NanoCPUs and
-// Memory/MemorySwap when set (>0); unset keeps the built-in defaults.
+// Resources/network are overridden by the operator profile at BuildSpec time;
+// the built-in bounded values here are a fail-closed, profile-independent base.
 func (s *Service) defaultIsolation() spec.Isolation {
-	iso := spec.Isolation{
+	return spec.Isolation{
 		ReadOnlyRootfs:  true,
 		CapDrop:         []string{"ALL"},
 		NoNewPrivileges: true,
@@ -210,13 +211,4 @@ func (s *Service) defaultIsolation() spec.Isolation {
 		TmpfsWorkdir: true,
 		AutoRemove:   true,
 	}
-	if s.cfg.CgroupCPULimitCores > 0 {
-		iso.NanoCPUs = int64(s.cfg.CgroupCPULimitCores * 1_000_000_000)
-	}
-	if s.cfg.CgroupMemoryLimitGB > 0 {
-		mem := int64(s.cfg.CgroupMemoryLimitGB * 1024 * 1024 * 1024)
-		iso.Memory = mem
-		iso.MemorySwap = mem
-	}
-	return iso
 }

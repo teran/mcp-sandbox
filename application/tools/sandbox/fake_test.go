@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
@@ -107,6 +108,9 @@ func defaultPolicy() Policy {
 	return Policy{
 		DefaultImage: "sandbox:latest",
 		Backend:      "docker",
+		Profiles: fakeResolver{profiles: map[string]*domainprofile.Profile{
+			"default": defaultProfile(),
+		}},
 		Isolation: spec.Isolation{
 			ReadOnlyRootfs:  true,
 			CapDrop:         []string{"ALL"},
@@ -121,6 +125,37 @@ func defaultPolicy() Policy {
 			AutoRemove:      true,
 		},
 	}
+}
+
+// defaultProfile is the fake's built-in operator profile used by the sandbox
+// tools under test. It is a valid, complete profile.
+func defaultProfile() *domainprofile.Profile {
+	return &domainprofile.Profile{
+		Name:        "default",
+		Description: "the default test profile",
+		Image:       "docker.io/library/alpine:3.20",
+		Env:         map[string]string{},
+		Cwd:         domainprofile.CwdConfig{Mode: "ro"},
+		Network:     domainprofile.Network{Mode: spec.NetworkBridge},
+		Cgroups: domainprofile.Cgroups{
+			NanoCPUs:   1_000_000_000,
+			Memory:     512 * 1024 * 1024,
+			MemorySwap: 1024 * 1024 * 1024,
+			PidsLimit:  512,
+		},
+		User: &spec.UIDGID{UID: 1000, GID: 1000},
+		Sudo: spec.SudoNever,
+	}
+}
+
+// fakeResolver is a ProfileResolver double keyed by profile name.
+type fakeResolver struct {
+	profiles map[string]*domainprofile.Profile
+}
+
+func (f fakeResolver) Get(name string) (*domainprofile.Profile, bool) {
+	p, ok := f.profiles[name]
+	return p, ok
 }
 
 func newFake() *fakeService {

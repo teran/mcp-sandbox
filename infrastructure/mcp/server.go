@@ -7,6 +7,7 @@ import (
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
+	profiletool "github.com/teran/mcp-sandbox/application/tools/profile"
 	sandboxtool "github.com/teran/mcp-sandbox/application/tools/sandbox"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
@@ -36,14 +37,19 @@ func NewServer(impl *mcp.Implementation, logger *logging.Logger, tools []*def.To
 	return server
 }
 
-// BuildTools assembles the sandbox ToolDefs from a concrete Service. It lives
-// here (not in cmd) so the concrete infrastructure type never crosses the
-// adapter edge in the composition root. The injection is passed through the
-// application-layer interface so the deep-scan linter sees only the interface
-// dependency (SPEC §3/§5), not the concrete infrastructure type.
+// BuildTools assembles the sandbox ToolDefs plus the read-only profile_list
+// tool from a concrete Service. It lives here (not in cmd) so the concrete
+// infrastructure type never crosses the adapter edge in the composition root.
+// The injection is passed through the application-layer interface so the
+// deep-scan linter sees only the interface dependency (SPEC §3/§5), not the
+// concrete infrastructure type.
 func BuildTools(svc *Service) []*def.ToolDef {
 	var s sandboxtool.Service = svc
-	return sandboxtool.All(s)
+	tools := sandboxtool.All(s)
+	if svc.profiles != nil {
+		tools = append(tools, profiletool.All(svc.profiles)...)
+	}
+	return tools
 }
 
 // toSDKTool maps an application-layer ToolDef to the go-sdk mcp.Tool. Because

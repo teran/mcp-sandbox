@@ -10,20 +10,31 @@ import (
 	"context"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
+// ProfileResolver resolves an operator-authored profile by name. It is
+// satisfied by the application-layer profile store.
+type ProfileResolver interface {
+	Get(name string) (*domainprofile.Profile, bool)
+}
+
 // Policy is the server-enforced sandbox policy exposed to the tools (SPEC
-// §7.1/§7.2). It carries the base image and the immutable Isolation block that
-// sandbox_create applies; a caller can never weaken it.
+// §7.1/§7.2). It carries the immutable Isolation block that sandbox_create
+// applies and the read-only profile resolver; a caller can never weaken it.
 type Policy struct {
-	// DefaultImage is used when a create request does not pin an image.
+	// DefaultImage is retained on the policy struct for compatibility but is
+	// NO LONGER applied to create — the image always comes from the selected
+	// profile (Phase 7).
 	DefaultImage string
 	// Isolation is the immutable, server-enforced hardening block.
 	Isolation spec.Isolation
 	// Backend is the backend name reported by sandbox_list (e.g. "docker").
 	Backend string
+	// Profiles resolves operator-authored profiles by name (Phase 7).
+	Profiles ProfileResolver
 }
 
 // Service is the application-layer port the sandbox tools call. It is
