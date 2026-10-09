@@ -21,15 +21,18 @@ import (
 	"sync"
 
 	"github.com/distribution/reference"
+	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/sirupsen/logrus"
 
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -80,6 +83,13 @@ const (
 
 // ErrNotFound is returned when no container is owned by the given session id.
 var ErrNotFound = errors.New("docker: sandbox not found")
+
+// log is the package logger for non-fatal diagnostics (e.g. a missing or
+// unreadable Docker client config while pulling). It uses logrus directly — the
+// project's centralized logger is wired through infrastructure/logging, which
+// this backend has no handle on. It never carries secrets or config contents
+// (S02/L05).
+var log = logrus.WithField("component", "docker-backend")
 
 // dockerAPI is the narrow subset of the docker SDK client that the backend
 // depends on. It keeps the backend testable with a fake client while the real
@@ -672,13 +682,23 @@ func isNoSuchImage(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "No such image")
 }
 
-// pullImage pulls the given image reference from its trusted registry (§7.9,
-// C05/T7). The caller MUST have run validateImageRef on ref first — this helper
-// never re-validates, so it must never be reached with an untrusted reference.
-// The pull stream is drained and discarded: image content is never logged (L05)
-// and never carries secrets. The error is surfaced clearly to the model (X03).
+// pullImage pulls the given image reference from its registry (§7.9, C05/T7).
+// The caller MUST have run validateImageRef on ref first — this helper never
+// re-validates, so it must never be reached with an untrusted reference.
+//
+// When the operator's Docker client config has credentials for the image's
+// registry they are attached as RegistryAuth (the same source `docker pull`
+// uses, §7.11); a private registry is otherwise unreachable because the daemon
+// alone cannot authenticate. A missing config or a public image degrade
+// gracefully to an unauthenticated pull. The pull stream is drained and
+// discarded: image content is never logged (L05) and never carries secrets.
+// The error is surfaced clearly to the model (X03).
 func (b *Backend) pullImage(ctx context.Context, ref string) error {
-	reader, err := b.api.ImagePull(ctx, ref, image.PullOptions{})
+	opts := image.PullOptions{}
+	if auth := registryAuth(ref); auth != "" {
+		opts.RegistryAuth = auth
+	}
+	reader, err := b.api.ImagePull(ctx, ref, opts)
 	if err != nil {
 		return fmt.Errorf("docker: pull image %q: %w", ref, err)
 	}
@@ -687,6 +707,74 @@ func (b *Backend) pullImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("docker: pull image %q: read: %w", ref, err)
 	}
 	return nil
+}
+
+// registryAuth returns the base64url-encoded X-Registry-Auth value for the
+// image's registry, read from the operator's Docker client config
+// (~/.docker/config.json or $DOCKER_CONFIG — the same source `docker pull`
+// uses), or "" when no credentials are configured (a public image). It never
+// fails the pull: a missing/unreadable client config or a registry with no
+// entry degrades gracefully to an unauthenticated pull. The operator's token
+// and config contents are never logged (S02/L05).
+func registryAuth(ref string) string {
+	domain, err := registryHost(ref)
+	if err != nil || domain == "" {
+		log.Debugf("docker: could not derive registry from %q; pulling unauthenticated", ref)
+		return ""
+	}
+
+	cf, err := dockerconfig.Load(dockerConfigDir())
+	if err != nil {
+		log.Warnf("docker: failed to load client config for registry %q: %v; pulling unauthenticated", domain, err)
+		return ""
+	}
+
+	auth, err := cf.GetAuthConfig(domain)
+	if err != nil {
+		log.Debugf("docker: no credentials configured for registry %q; pulling unauthenticated", domain)
+		return ""
+	}
+	if auth.Username == "" && auth.Password == "" && auth.IdentityToken == "" && auth.Auth == "" {
+		log.Debugf("docker: empty credentials for registry %q; pulling unauthenticated", domain)
+		return ""
+	}
+
+	encoded, err := registry.EncodeAuthConfig(registry.AuthConfig{
+		Username:      auth.Username,
+		Password:      auth.Password,
+		Auth:          auth.Auth,
+		ServerAddress: auth.ServerAddress,
+		IdentityToken: auth.IdentityToken,
+		RegistryToken: auth.RegistryToken,
+	})
+	if err != nil {
+		log.Warnf("docker: failed to encode registry auth for %q: %v; pulling unauthenticated", domain, err)
+		return ""
+	}
+	return encoded
+}
+
+// registryHost returns the registry domain for an image reference, resolving
+// unqualified names to docker.io.
+func registryHost(ref string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return "", err
+	}
+	return reference.Domain(named), nil
+}
+
+// dockerConfigDir returns the Docker client config directory, honouring
+// $DOCKER_CONFIG and defaulting to ~/.docker.
+func dockerConfigDir() string {
+	if d := os.Getenv(dockerconfig.EnvOverrideConfigDir); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".docker")
 }
 
 // toEnvSlice converts the spec env map to a KEY=VALUE slice.

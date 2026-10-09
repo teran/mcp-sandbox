@@ -108,6 +108,9 @@ type fakeClient struct {
 	pullBodyErr error
 	// pulledImages records every ref passed to ImagePull in order.
 	pulledImages []string
+	// pullOptions records every PullOptions passed to ImagePull in order, so
+	// tests can assert the RegistryAuth attached for private registries.
+	pullOptions []image.PullOptions
 
 	createdHostConfigs []*container.HostConfig
 	createdConfigs     []*container.Config
@@ -159,13 +162,14 @@ func (f *fakeClient) ContainerCreate(_ context.Context, config *container.Config
 
 // ImagePull records the pull of a trusted image reference and returns a dummy
 // stream that the backend drains and discards (image content is never logged).
-func (f *fakeClient) ImagePull(_ context.Context, refStr string, _ image.PullOptions) (io.ReadCloser, error) {
+func (f *fakeClient) ImagePull(_ context.Context, refStr string, opts image.PullOptions) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.pullErr != nil {
 		return nil, f.pullErr
 	}
 	f.pulledImages = append(f.pulledImages, refStr)
+	f.pullOptions = append(f.pullOptions, opts)
 	if f.pullBodyErr != nil {
 		return io.NopCloser(errReader{f.pullBodyErr}), nil
 	}
@@ -189,6 +193,15 @@ func (f *fakeClient) pulledRefs() []string {
 	defer f.mu.Unlock()
 	out := make([]string, len(f.pulledImages))
 	copy(out, f.pulledImages)
+	return out
+}
+
+// pullOpts returns a copy of the recorded PullOptions for assertions.
+func (f *fakeClient) pullOpts() []image.PullOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]image.PullOptions, len(f.pullOptions))
+	copy(out, f.pullOptions)
 	return out
 }
 
