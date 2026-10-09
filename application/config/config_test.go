@@ -53,7 +53,7 @@ func TestLoad_DefaultsAndOverrides(t *testing.T) {
 }
 
 func TestLoad_Defaults(t *testing.T) {
-	for _, k := range []string{"ALLOW_DIRS", "ALLOW_SYMLINKS", "DOCKER_HOST", "LOG_LEVEL", "LOG_FORMAT", "SANDBOX_IDLE_TIMEOUT"} {
+	for _, k := range []string{"ALLOW_DIRS", "ALLOW_SYMLINKS", "DOCKER_HOST", "LOG_LEVEL", "LOG_FORMAT", "SANDBOX_IDLE_TIMEOUT", "SANDBOX_CGROUP_CPU_LIMIT_CORES", "SANDBOX_CGROUP_MEMORY_LIMIT_GB"} {
 		unsetEnv(t, k)
 	}
 
@@ -78,6 +78,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if c.SandboxCwdMode != "ro" {
 		t.Fatalf("SandboxCwdMode default = %q", c.SandboxCwdMode)
+	}
+	if c.SandboxCgroupCPULimitCores != 0 {
+		t.Fatalf("SandboxCgroupCPULimitCores default = %d, want 0 (unset)", c.SandboxCgroupCPULimitCores)
+	}
+	if c.SandboxCgroupMemoryLimitGB != 0 {
+		t.Fatalf("SandboxCgroupMemoryLimitGB default = %d, want 0 (unset)", c.SandboxCgroupMemoryLimitGB)
 	}
 }
 
@@ -259,5 +265,161 @@ func TestLoad_UnknownNetworkModeFailsValidation(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected validation error for unknown network mode")
+	}
+}
+
+func TestLoad_TrustedRegistries(t *testing.T) {
+	t.Setenv("TRUSTED_REGISTRIES", "docker.io, registry.homelab.teran.dev, ghcr.io")
+	t.Setenv("LOG_LEVEL", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	want := []string{"docker.io", "registry.homelab.teran.dev", "ghcr.io"}
+	if len(c.TrustedRegistries) != len(want) {
+		t.Fatalf("TrustedRegistries = %v, want %v", c.TrustedRegistries, want)
+	}
+	for i := range want {
+		if c.TrustedRegistries[i] != want[i] {
+			t.Fatalf("TrustedRegistries[%d] = %q, want %q (trimmed)", i, c.TrustedRegistries[i], want[i])
+		}
+	}
+}
+
+func TestValidate_TrustedRegistriesDefaults(t *testing.T) {
+	c := &Config{}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(c.TrustedRegistries) != len(DefaultTrustedRegistries) {
+		t.Fatalf("TrustedRegistries default = %v, want %v", c.TrustedRegistries, DefaultTrustedRegistries)
+	}
+	for i := range DefaultTrustedRegistries {
+		if c.TrustedRegistries[i] != DefaultTrustedRegistries[i] {
+			t.Fatalf("TrustedRegistries[%d] = %q, want %q", i, c.TrustedRegistries[i], DefaultTrustedRegistries[i])
+		}
+	}
+}
+
+func TestValidate_TrustedRegistriesRejectsEmptyEntry(t *testing.T) {
+	c := &Config{TrustedRegistries: []string{"docker.io", " ", "ghcr.io"}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty TRUSTED_REGISTRIES entry")
+	}
+	if !strings.Contains(err.Error(), "TRUSTED_REGISTRIES[1]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TrustedRegistriesWhitespaceOnlyDefaults(t *testing.T) {
+	c := &Config{TrustedRegistries: []string{" ", "  "}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(c.TrustedRegistries) != len(DefaultTrustedRegistries) {
+		t.Fatalf("TrustedRegistries = %v, want defaults %v", c.TrustedRegistries, DefaultTrustedRegistries)
+	}
+	for i := range DefaultTrustedRegistries {
+		if c.TrustedRegistries[i] != DefaultTrustedRegistries[i] {
+			t.Fatalf("TrustedRegistries[%d] = %q, want %q", i, c.TrustedRegistries[i], DefaultTrustedRegistries[i])
+		}
+	}
+}
+
+func TestValidate_TrustedRegistriesRejectsWildcards(t *testing.T) {
+	for _, bad := range []string{"*.example.com", "reg?istry.io", "reg[0]istry.io"} {
+		c := &Config{TrustedRegistries: []string{bad}}
+		err := c.Validate()
+		if err == nil {
+			t.Fatalf("expected error for wildcard entry %q", bad)
+		}
+		if !strings.Contains(err.Error(), "TRUSTED_REGISTRIES[0]") || !strings.Contains(err.Error(), "invalid registry") {
+			t.Fatalf("unexpected error for %q: %v", bad, err)
+		}
+	}
+}
+
+func TestValidate_TrustedRegistriesRejectsScheme(t *testing.T) {
+	for _, bad := range []string{"https://registry.example.com", "//registry.example.com", "registry.example.com:5000/evil"} {
+		c := &Config{TrustedRegistries: []string{bad}}
+		if err := c.Validate(); err == nil {
+			t.Fatalf("expected error for entry %q", bad)
+		}
+	}
+}
+
+func TestValidate_TrustedRegistriesLowercases(t *testing.T) {
+	c := &Config{TrustedRegistries: []string{"DOCKER.IO", "GHCR.IO"}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	want := []string{"docker.io", "ghcr.io"}
+	if len(c.TrustedRegistries) != len(want) {
+		t.Fatalf("TrustedRegistries = %v, want %v", c.TrustedRegistries, want)
+	}
+	for i := range want {
+		if c.TrustedRegistries[i] != want[i] {
+			t.Fatalf("TrustedRegistries[%d] = %q, want lowercased %q", i, c.TrustedRegistries[i], want[i])
+		}
+	}
+}
+
+func TestValidate_TrustedRegistriesDedupes(t *testing.T) {
+	c := &Config{TrustedRegistries: []string{"docker.io", "docker.io", "ghcr.io", "DOCKER.IO"}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(c.TrustedRegistries) != 2 {
+		t.Fatalf("TrustedRegistries = %v, want deduped 2 entries", c.TrustedRegistries)
+	}
+}
+
+func TestValidate_TrustedRegistriesAcceptsPort(t *testing.T) {
+	c := &Config{TrustedRegistries: []string{"registry.homelab.teran.dev:5000"}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(c.TrustedRegistries) != 1 || c.TrustedRegistries[0] != "registry.homelab.teran.dev:5000" {
+		t.Fatalf("TrustedRegistries = %v, want [registry.homelab.teran.dev:5000]", c.TrustedRegistries)
+	}
+}
+
+func TestValidate_TrustedRegistriesRejectsColonMisuse(t *testing.T) {
+	for _, bad := range []string{"registry:", "a:b:c"} {
+		c := &Config{TrustedRegistries: []string{bad}}
+		if err := c.Validate(); err == nil {
+			t.Fatalf("expected error for colon misuse %q", bad)
+		}
+	}
+}
+
+func TestLoad_CgroupResourceLimits(t *testing.T) {
+	unsetEnv(t, "SANDBOX_CGROUP_CPU_LIMIT_CORES")
+	unsetEnv(t, "SANDBOX_CGROUP_MEMORY_LIMIT_GB")
+	t.Setenv("SANDBOX_CGROUP_CPU_LIMIT_CORES", "2")
+	t.Setenv("SANDBOX_CGROUP_MEMORY_LIMIT_GB", "8")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.SandboxCgroupCPULimitCores != 2 {
+		t.Fatalf("SandboxCgroupCPULimitCores = %d, want 2", c.SandboxCgroupCPULimitCores)
+	}
+	if c.SandboxCgroupMemoryLimitGB != 8 {
+		t.Fatalf("SandboxCgroupMemoryLimitGB = %d, want 8", c.SandboxCgroupMemoryLimitGB)
+	}
+}
+
+func TestLoad_CgroupResourceLimitsInvalid(t *testing.T) {
+	unsetEnv(t, "SANDBOX_CGROUP_CPU_LIMIT_CORES")
+	unsetEnv(t, "SANDBOX_CGROUP_MEMORY_LIMIT_GB")
+	t.Setenv("SANDBOX_CGROUP_CPU_LIMIT_CORES", "not-a-number")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for invalid SANDBOX_CGROUP_CPU_LIMIT_CORES")
 	}
 }

@@ -101,7 +101,13 @@ See `SPEC.md` §7.
   the host. Prefer **rootless Docker** or confine socket access to the server
   process. Never expose the socket to output/tools.
 - **Supply chain (T7/C05):** sandbox images **pinned by digest**, trusted
-  registries, signed packages; dependencies pinned to latest stable.
+  registries (allowlist configurable via `TRUSTED_REGISTRIES`, SPEC §7.9),
+  signed packages; dependencies pinned to latest stable.
+- **Streaming output (`notifications/progress`, SPEC §5.1):** long-running tools
+  (starting with `sandbox_exec`) may stream live output. Streamed chunks are
+  **secrets-redacted (S02)** and **ANSI-sanitized (S09)** — the same contract as
+  any other output; a redacted `start` and a terminal `done`/`cancelled` frame
+  the stream. No secret or control sequence leaks through the progress channel.
 
 ### Outbound HTTP / Docker client
 
@@ -163,6 +169,11 @@ infrastructure.
 - Tools are declared as **`ToolDef`s** and must go through the shared
   handler-wrapper (validate → access-log → dispatch → redact → structured
   output). **Do not bypass the wrapper.**
+- **Streaming (`domain/progress`, SPEC §5.1):** the progress `Sink` is threaded
+  via `context` (`WithSink`/`SinkFromContext`), so it is **generic across every
+  tool** — the shared handler stashes it into the context before dispatch.
+  `LineBatcher` is **line-buffered with no goroutine/ticker** (zero lifecycle
+  risk). Nil-sink leaves behavior **byte-for-byte unchanged**.
 
 ## Definition of done
 

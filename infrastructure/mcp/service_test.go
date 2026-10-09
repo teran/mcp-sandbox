@@ -61,7 +61,8 @@ func (f *fakeBackend) Stats(_ context.Context, _ string) (any, error) {
 }
 
 func testSpec() spec.SandboxSpec {
-	iso := defaultIsolation()
+	svc := NewService(backend.NewRegistry(), backend.Config{})
+	iso := svc.defaultIsolation()
 	return spec.SandboxSpec{
 		Image:        "img",
 		UIDGID:       iso.User,
@@ -262,7 +263,8 @@ func TestService_PolicyAndBackendName(t *testing.T) {
 
 func TestService_DefaultIsolationIsBridgeAndAppliedOnCreate(t *testing.T) {
 	// The server-enforced default isolation must use a bridged network.
-	if got := defaultIsolation().NetworkMode; got != spec.NetworkBridge {
+	defSvc := NewService(backend.NewRegistry(), backend.Config{})
+	if got := defSvc.defaultIsolation().NetworkMode; got != spec.NetworkBridge {
 		t.Fatalf("defaultIsolation().NetworkMode = %q, want bridge", got)
 	}
 
@@ -333,5 +335,50 @@ func TestService_CreateThenDestroy(t *testing.T) {
 	}
 	if fb.destroyed != 1 {
 		t.Fatalf("destroyed = %d", fb.destroyed)
+	}
+}
+
+func TestService_PolicyCgroupResourceOverrides(t *testing.T) {
+	reg := backend.NewRegistry()
+	svc := NewService(reg, backend.Config{CgroupCPULimitCores: 2, CgroupMemoryLimitGB: 8})
+	iso := svc.Policy().Isolation
+
+	if iso.NanoCPUs != 2_000_000_000 {
+		t.Fatalf("NanoCPUs = %d, want 2_000_000_000", iso.NanoCPUs)
+	}
+	wantMem := int64(8) * 1024 * 1024 * 1024
+	if iso.Memory != wantMem {
+		t.Fatalf("Memory = %d, want %d", iso.Memory, wantMem)
+	}
+	if iso.MemorySwap != wantMem {
+		t.Fatalf("MemorySwap = %d, want %d (swap disabled)", iso.MemorySwap, wantMem)
+	}
+}
+
+func TestService_PolicyCgroupResourceDefaults(t *testing.T) {
+	reg := backend.NewRegistry()
+	svc := NewService(reg, backend.Config{})
+	iso := svc.Policy().Isolation
+
+	if iso.NanoCPUs != 1_000_000_000 {
+		t.Fatalf("NanoCPUs = %d, want 1_000_000_000 (default)", iso.NanoCPUs)
+	}
+	defaultMem := int64(4) * 1024 * 1024 * 1024
+	if iso.Memory != defaultMem || iso.MemorySwap != defaultMem {
+		t.Fatalf("Memory/MemorySwap = %d/%d, want default %d (swap disabled)", iso.Memory, iso.MemorySwap, defaultMem)
+	}
+}
+
+func TestService_PolicyCgroupCPUOnlyOverrides(t *testing.T) {
+	reg := backend.NewRegistry()
+	svc := NewService(reg, backend.Config{CgroupCPULimitCores: 4})
+	iso := svc.Policy().Isolation
+
+	if iso.NanoCPUs != 4_000_000_000 {
+		t.Fatalf("NanoCPUs = %d, want 4_000_000_000", iso.NanoCPUs)
+	}
+	defaultMem := int64(4) * 1024 * 1024 * 1024
+	if iso.Memory != defaultMem || iso.MemorySwap != defaultMem {
+		t.Fatalf("memory should keep defaults, got %d/%d", iso.Memory, iso.MemorySwap)
 	}
 }

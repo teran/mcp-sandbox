@@ -73,7 +73,7 @@ func newBackend(t *testing.T, allowDir string, allowedNetworkModes ...[]spec.Net
 	}
 	_ = rd.Close()
 
-	return docker.New([]string{allowDir}, false, "ro", e2eImage, cli, allowedNetworkModes...)
+	return docker.New([]string{allowDir}, false, "ro", e2eImage, cli, nil, allowedNetworkModes...)
 }
 
 // mkSpec returns a valid spec satisfying spec.Validate for the docker backend:
@@ -322,7 +322,7 @@ func TestAutoPullMissingImage(t *testing.T) {
 	}
 
 	allowDir := t.TempDir()
-	b := docker.New([]string{allowDir}, false, "ro", pullImage, cli)
+	b := docker.New([]string{allowDir}, false, "ro", pullImage, cli, nil)
 
 	s := mkSpec()
 	s.Image = pullImage

@@ -28,7 +28,7 @@ func TestBuildHostConfig_NetworkMode(t *testing.T) {
 	}
 
 	// host passes through only when the operator has explicitly allowed it.
-	bh := New(nil, false, "ro", "img", newFakeClient(), []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
+	bh := New(nil, false, "ro", "img", newFakeClient(), nil, []spec.NetworkMode{spec.NetworkBridge, spec.NetworkHost})
 	s5 := baseSpec()
 	s5.Isolation.NetworkMode = spec.NetworkHost
 	hc5 := bh.buildHostConfig(s5, nil, nil)
@@ -55,7 +55,7 @@ func TestBuildHostConfig_NetworkMode(t *testing.T) {
 
 func TestResolveMounts(t *testing.T) {
 	dir := t.TempDir()
-	b := New([]string{dir}, false, "ro", "img", newFakeClient())
+	b := New([]string{dir}, false, "ro", "img", newFakeClient(), nil)
 
 	// Cwd mounted 1:1, read-only by default.
 	s := baseSpec()
@@ -69,7 +69,7 @@ func TestResolveMounts(t *testing.T) {
 	}
 
 	// Writable cwd when mode=rw (opt-in).
-	wb := New([]string{dir}, false, "rw", "img", newFakeClient())
+	wb := New([]string{dir}, false, "rw", "img", newFakeClient(), nil)
 	mounts, err = wb.resolveMounts(s)
 	if err != nil {
 		t.Fatal(err)

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types"
@@ -30,6 +31,8 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	appconfig "github.com/teran/mcp-sandbox/application/config"
+	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -76,18 +79,6 @@ const (
 	defaultWorkdir = tmpfsTmpDir
 )
 
-// trustedRegistries is the allowlist of image registries the sandbox may pull
-// images from (§7.9, C05/T7). Any image reference whose registry is not listed
-// here is rejected at container-create time. Docker Hub resolves to
-// "docker.io" via ParseNormalizedNamed, so unqualified references such as
-// "alpine:3.20" are treated as docker.io/library/alpine and accepted.
-var trustedRegistries = map[string]struct{}{
-	"docker.io":            {},
-	"index.docker.io":      {},
-	"registry-1.docker.io": {},
-	"ghcr.io":              {},
-}
-
 // ErrNotFound is returned when no container is owned by the given session id.
 var ErrNotFound = errors.New("docker: sandbox not found")
 
@@ -125,14 +116,22 @@ type config struct {
 	// network modes (SPEC §7.1). When empty it defaults to the safe bridge mode
 	// only. A spec whose network mode is not in this set is rejected.
 	allowedNetworkModes []spec.NetworkMode
+	// trustedRegistries is the allowlist of image registries the sandbox may
+	// pull images from (SPEC §7.9, C05/T7). Any image reference whose registry
+	// is not listed here is rejected at container-create time. It is built from
+	// New's trustedRegistries argument, defaulting to
+	// appconfig.DefaultTrustedRegistries when empty.
+	trustedRegistries map[string]struct{}
 }
 
 // New returns a docker backend for the given server configuration. Allow dirs
 // are canonicalized with EvalSymlinks so path checks compare like-for-like
 // (config.Validate already does this; canonicalizing again is idempotent).
-// allowedNetworkModes is optional; when omitted or empty the backend permits
-// only spec.DefaultNetworkModes() (the safe bridge default).
-func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, api dockerAPI, allowedNetworkModes ...[]spec.NetworkMode) *Backend {
+// trustedRegistries is the image-registry allowlist; when empty or nil it
+// defaults to appconfig.DefaultTrustedRegistries (SPEC §7.9). allowedNetworkModes
+// is optional; when omitted or empty the backend permits only
+// spec.DefaultNetworkModes() (the safe bridge default).
+func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, api dockerAPI, trustedRegistries []string, allowedNetworkModes ...[]spec.NetworkMode) *Backend {
 	canon := make([]string, 0, len(allowDirs))
 	for _, d := range allowDirs {
 		if r, err := filepath.EvalSymlinks(d); err == nil {
@@ -145,6 +144,14 @@ func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, a
 	if len(allowedNetworkModes) > 0 {
 		allowed = allowedNetworkModes[0]
 	}
+	regs := trustedRegistries
+	if len(regs) == 0 {
+		regs = appconfig.DefaultTrustedRegistries
+	}
+	trusted := make(map[string]struct{}, len(regs))
+	for _, r := range regs {
+		trusted[r] = struct{}{}
+	}
 	return &Backend{
 		api: api,
 		cfg: config{
@@ -153,6 +160,7 @@ func New(allowDirs []string, allowSymlinks bool, cwdMode, defaultImage string, a
 			cwdMode:             cwdMode,
 			defaultImage:        defaultImage,
 			allowedNetworkModes: allowed,
+			trustedRegistries:   trusted,
 		},
 	}
 }
@@ -215,7 +223,7 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	}
 	// Enforce the trusted-registry / digest policy (§7.9) before any Docker
 	// side-effect happens (C05/T7).
-	if err := validateImageRef(s.Image); err != nil {
+	if err := b.validateImageRef(s.Image); err != nil {
 		return "", err
 	}
 
@@ -497,9 +505,53 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	}
 	defer hijacked.Close()
 
+	// Streaming (Phase 6, SPEC §5.1): when a progress sink is present in the
+	// context we emit a `start` event (carrying the redacted argv), one event
+	// per batched stdout/stderr line (fed from the stdcopy demux to
+	// LineBatchers), a terminal `done` event carrying the exit code, and a
+	// terminal `cancelled` event on context cancellation. Progress is a single
+	// monotonic counter shared across both streams. Without a real sink the
+	// no-op discards everything and the Result is byte-for-byte unchanged.
+	sink := progress.SinkFromContext(ctx)
+
+	// A single shared, monotonically increasing Progress counter across the
+	// whole stream (start, both stdout/stderr chunks, done, cancelled) so the
+	// emitted sequence is never decreasing.
+	var mu sync.Mutex
+	var seq int64
+	emit := func(msg string, total int64) {
+		if sink == nil {
+			return
+		}
+		mu.Lock()
+		seq++
+		p := seq
+		mu.Unlock()
+		sink(ctx, progress.Event{Message: msg, Progress: p, Total: total})
+	}
+	batcherSink := func(_ context.Context, e progress.Event) { emit(e.Message, e.Total) }
+
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, hijacked.Reader); err != nil {
+	outWriter := io.Writer(&stdout)
+	errWriter := io.Writer(&stderr)
+	var outBatcher, errBatcher *progress.LineBatcher
+	if sink != nil {
+		emit("start: "+strings.Join(req.Argv, " "), 0)
+		outBatcher = progress.NewLineBatcher(batcherSink)
+		errBatcher = progress.NewLineBatcher(batcherSink)
+		outWriter = io.MultiWriter(&stdout, outBatcher)
+		errWriter = io.MultiWriter(&stderr, errBatcher)
+	}
+	if _, err := stdcopy.StdCopy(outWriter, errWriter, hijacked.Reader); err != nil {
 		return nil, fmt.Errorf("docker: exec read: %w", err)
+	}
+	// Flush any trailing partial (non-newline-terminated) output so it is
+	// streamed too before the terminal events.
+	if outBatcher != nil {
+		outBatcher.Flush()
+	}
+	if errBatcher != nil {
+		errBatcher.Flush()
 	}
 
 	inspect, err := b.api.ContainerExecInspect(ctx, execResp.ID)
@@ -507,7 +559,17 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		return nil, fmt.Errorf("docker: exec inspect: %w", err)
 	}
 
-	return &exec.Result{ExitCode: inspect.ExitCode, Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
+	res := &exec.Result{ExitCode: inspect.ExitCode, Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+
+	if sink != nil {
+		emit(fmt.Sprintf("done: exit code %d", inspect.ExitCode), int64(len(res.Stdout)+len(res.Stderr)))
+		if ctx.Err() != nil {
+			// The command ran (the fake ignores cancellation); surface the
+			// cancellation as a terminal event before returning the result.
+			emit("cancelled", 0)
+		}
+	}
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -615,11 +677,11 @@ func (b *Backend) withinAllowDirs(p string) bool {
 
 // validateImageRef enforces the sandbox image policy (§7.9): the reference
 // must parse as a valid image reference and its registry must be in the
-// trusted allowlist. This prevents the server from pulling sandbox images from
-// arbitrary/untrusted registries (C05/T7). Digest-pinning is the recommended
-// deployment posture (documented in SPEC §7.9); a trusted registry is the
-// hard enforcement boundary here.
-func validateImageRef(ref string) error {
+// backend's trusted allowlist (b.cfg.trustedRegistries). This prevents the
+// server from pulling sandbox images from arbitrary/untrusted registries
+// (C05/T7). Digest-pinning is the recommended deployment posture (documented
+// in SPEC §7.9); a trusted registry is the hard enforcement boundary here.
+func (b *Backend) validateImageRef(ref string) error {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return errors.New("sandbox: image is required")
@@ -632,7 +694,7 @@ func validateImageRef(ref string) error {
 	if domain == "" {
 		domain = "docker.io"
 	}
-	if _, ok := trustedRegistries[domain]; !ok {
+	if _, ok := b.cfg.trustedRegistries[domain]; !ok {
 		return fmt.Errorf("sandbox: image registry %q is not in the trusted allowlist", domain)
 	}
 	return nil

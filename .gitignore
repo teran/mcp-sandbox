@@ -6,7 +6,11 @@
 # or on the host). These are excluded so gosec/golangci-lint do not scan them
 # and they never pollute the working tree.
 /.go-cache/
+/.gocache/
+/.golangci-cache/
+/.gomod/
 /.gopath/
+/.tmp/
 /.lint-bin/
 
 # Editor/OS

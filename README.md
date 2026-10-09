@@ -43,6 +43,10 @@ restrictive than the host, never less.
 - **Immutable `Isolation` policy** the caller cannot weaken.
 - Secret-safe output: a single redaction layer hides `secret:true` fields from
   all output and logs.
+- **Live streaming output**: long-running tools (starting with `sandbox_exec`)
+  emit `notifications/progress` so the model-host sees command output and the
+  call parameters as they run — additive, redacted and ANSI-sanitized (see
+  `SPEC.md` §5.1).
 - Human-in-the-loop confirmation for destructive tools (client-side, see below).
 
 ## Security model
@@ -119,6 +123,9 @@ auth via environment, no HTTP headers).
 | `LOG_FORMAT` | `text` | `text` or `json`. |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
 | `SANDBOX_CWD_MODE` | `ro` | Session `cwd` mount mode: `ro` (default) or `rw` (opt-in, global feature flag). |
+| `SANDBOX_CGROUP_CPU_LIMIT_CORES` | unset (`0`) | Docker cgroup CPU limit in **CPU cores** (unit suffix `_CORES`); translated server-side to `NanoCPUs = cores * 1_000_000_000`. Unset/`0` ⇒ built-in server default applies (1 CPU). See `SPEC.md` §7.1. |
+| `SANDBOX_CGROUP_MEMORY_LIMIT_GB` | unset (`0`) | Docker cgroup memory limit in **gibibytes** (unit suffix `_GB`); translated server-side to `Memory = gb * 1024^3` bytes, with `MemorySwap` set equal to `Memory` so swap stays disabled. Unset/`0` ⇒ built-in server default applies (4 GiB, swap off). See `SPEC.md` §7.1. |
+| `TRUSTED_REGISTRIES` | `docker.io, index.docker.io, registry-1.docker.io, ghcr.io` | Comma-separated allowlist of registry domains the sandbox may pull images from (**REPLACE semantics** — set ⇒ entirely replaces the default; unset/empty/whitespace-only ⇒ falls back to the default above). See `SPEC.md` §7.9. |
 
 Example:
 
@@ -207,7 +214,8 @@ Grouped **read → write → delete** (S03):
   `sandbox_create` (requires `session_id` — the OpenCode client session id,
   recorded as a container label for traceability; session `cwd` mounted 1:1
   read-only by default, opt-in `rw` via `SANDBOX_CWD_MODE=rw`),
-  `sandbox_exec` (write-classified; ANSI-sanitized; redacted argv).
+  `sandbox_exec` (write-classified; ANSI-sanitized; redacted argv; streams live
+  output via `notifications/progress` when a progress token is passed, §5.1).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
 
 > **Files come from the image, the host, or the runtime — never via MCP
@@ -245,8 +253,8 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
 - Single **redaction layer** hides `secret:true` fields from all output and
   logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never argv/image.
 - Sessions use opaque `crypto/rand` ids with label-based Docker ownership.
-- Supply chain: sandbox images **pinned by digest**, trusted registries,
-  signed packages.
+- Supply chain: sandbox images **pinned by digest**, **trusted registries**
+  (configurable via `TRUSTED_REGISTRIES`, §7.9), signed packages.
 
 ### Docker socket access (known limitation)
 

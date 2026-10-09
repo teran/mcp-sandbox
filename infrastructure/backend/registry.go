@@ -41,6 +41,18 @@ type Config struct {
 	// allowed only when explicitly listed. Empty means the server defaults to
 	// the safe bridge mode only.
 	AllowNetworkModes []string
+	// TrustedRegistries is the allowlist of image registries the sandbox may
+	// pull images from (SPEC §7.9, C05/T7). Empty defaults to the built-in
+	// allowlist (docker.io / ghcr.io). Any image reference whose registry is
+	// not listed here is rejected at container-create time.
+	TrustedRegistries []string
+	// CgroupCPULimitCores is the per-sandbox CPU limit in cores. 0 means
+	// unset — the built-in server default (1 CPU) applies.
+	CgroupCPULimitCores uint64
+	// CgroupMemoryLimitGB is the per-sandbox memory limit in gibibytes. 0
+	// means unset — the built-in server default (4 GiB) applies. Swap stays
+	// disabled.
+	CgroupMemoryLimitGB uint64
 }
 
 // Factory describes how to construct a backend. Backends are registered by

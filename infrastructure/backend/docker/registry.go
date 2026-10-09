@@ -51,7 +51,7 @@ func newFromConfig(cfg backend.Config) (role.Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(cfg.AllowDirs, cfg.AllowSymlinks, cfg.CwdMode, cfg.DefaultImage, cli, toNetworkModes(cfg.AllowNetworkModes)), nil
+	return New(cfg.AllowDirs, cfg.AllowSymlinks, cfg.CwdMode, cfg.DefaultImage, cli, cfg.TrustedRegistries, toNetworkModes(cfg.AllowNetworkModes)), nil
 }
 
 // toNetworkModes converts the validated ALLOW_NETWORK_MODES strings into typed

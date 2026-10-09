@@ -21,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/domain/progress"
 )
 
 // Source identifies the transport of a call. This Local stdio-only server
@@ -63,6 +64,12 @@ type Dependencies struct {
 	NewRequestID func() string
 	// WithRequestID stores a request id in the context (L09).
 	WithRequestID func(ctx context.Context, id string) context.Context
+	// ProgressSink optionally returns a progress Sink for the given tool
+	// request. When non-nil it is stashed into the request context before
+	// dispatch, so any tool can emit progress notifications via
+	// progress.SinkFromContext (Phase 6, SPEC §5.1). Nil-safe: when unset no
+	// sink is stashed and SinkFromContext yields the no-op.
+	ProgressSink func(*mcp.CallToolRequest) progress.Sink
 }
 
 // Call is the shared handler-wrapper. It validates the raw arguments against
@@ -75,6 +82,13 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 	start := time.Now()
 	requestID := deps.NewRequestID()
 	ctx = deps.WithRequestID(ctx, requestID)
+
+	// Stash the progress sink into the context before dispatch (Phase 6,
+	// SPEC §5.1). This is generic: every tool inherits it and can emit live
+	// progress via progress.SinkFromContext. Nil-safe.
+	if deps.ProgressSink != nil {
+		ctx = progress.WithSink(ctx, deps.ProgressSink(req))
+	}
 
 	// Redact the raw arguments for the access log (S08/S02); never log the
 	// full argv or other sensitive values. Raw JSON carries no struct tags, so

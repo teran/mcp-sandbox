@@ -207,6 +207,43 @@ official **go-sdk v1.8.0** (**M01**).
 Per-tool **Instructions** are preferred over server-level instructions and are
 exposed per tool (M04).
 
+### 5.1 Streaming output via `notifications/progress`
+
+Long-running tools — starting with `sandbox_exec` — can stream live output and
+call parameters to the model-host via the MCP **`notifications/progress`**
+notification while the command runs. This is **additive**: the client opts in by
+passing a **progress token**; without one, tool behavior (and the final
+`Result`) is **byte-for-byte unchanged** and no progress notifications are
+emitted.
+
+**Streaming contract** (`sandbox_exec` and any long-running tool):
+
+1. **`start`** — emitted once when execution begins, carrying the **redacted**
+   `argv` so the model-host sees the actual call parameters that are running.
+2. **chunks** — stdout/stderr are demuxed (via the Docker `stdcopy` stream) and
+   fed through the line-batched `domain/progress.LineBatcher`; each batch
+   becomes a progress notification whose `Message` is **ANSI-sanitized** and
+   **secrets-redacted** (S02/S09).
+3. **`done`** — terminal event carrying the command's **exit code**.
+4. **`cancelled`** — terminal event emitted on **context cancellation** (e.g. a
+   client `cancel`, or a `req.Timeout` honored as a cancellation) **before** the
+   existing error is returned to the model.
+
+**Security note:** streaming output is subject to the same contract as all other
+output — it passes through the **redaction layer (S02)** and **ANSI sanitization
+(S09)** before being emitted, so no secret and no control escape sequence leaks
+to the model-host through the progress channel (see §7.3, §7.4).
+
+**Architecture:** streaming is a pure-domain concern in the new
+`domain/progress` package — `Event{Message, Progress, Total}`, a `Sink` callback
+and the `LineBatcher`. The sink is threaded **generically** via `context`
+(`WithSink`/`SinkFromContext`) so **every** tool inherits it; it is **nil-safe**
+(no sink / no progress token ⇒ no-op, behavior unchanged). `LineBatcher` is
+**line-buffered with no goroutine or ticker** (zero lifecycle risk): it batches
+on complete lines and a partial-line size threshold, flushes on EOF, applies a
+per-message cap, and tracks a **monotonic** `Progress` byte counter. See
+§6.1 for the package layout and §7.3/§7.4 for the redaction/ANSI guarantees.
+
 ---
 
 ## 6. Architecture
@@ -233,6 +270,9 @@ domain/                    pure domain model, no infra dependencies
                            Introspectable (+ ErrCapabilityNotSupported)
     capability/            capability set types
   session/                 Session aggregate: id, spec, state, reaper, mutex
+  progress/                pure-domain streaming: Event{Message, Progress, Total},
+                           Sink, LineBatcher (line-buffered, no goroutine),
+                           WithSink/SinkFromContext (context-threaded)
 application/               use-case orchestration
   config/                  env-driven Config (ALLOW_DIRS, LOG_*), validation
   sandbox/                 sandbox service: create/use/destroy, Backend select
@@ -418,6 +458,9 @@ startup (local wiring only):
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Reaper idle window. |
 | `SANDBOX_CWD_MODE` | `ro` | Session `cwd` mount mode: `ro` (default) or `rw` (opt-in, global feature flag, §7.2). |
+| `SANDBOX_CGROUP_CPU_LIMIT_CORES` | unset (`0`) | Operator-configurable Docker cgroup CPU limit, in **CPU cores** (unit suffix `_CORES`). Translated server-side to `NanoCPUs = cores * 1_000_000_000` (**§7.1**). Unset/`0` ⇒ built-in server default applies. |
+| `SANDBOX_CGROUP_MEMORY_LIMIT_GB` | unset (`0`) | Operator-configurable Docker cgroup memory limit, in **gibibytes** (unit suffix `_GB`). Translated server-side to `Memory = gb * 1024^3` bytes; `MemorySwap` is set equal to `Memory` so swap stays disabled (**§7.1**). Unset/`0` ⇒ built-in server default applies. |
+| `TRUSTED_REGISTRIES` | built-in safe default | Comma-separated allowlist of registry domains the sandbox may pull images from (**REPLACE semantics**, §7.9). Unset/empty/whitespace-only ⇒ falls back to the built-in default (`docker.io`, `index.docker.io`, `registry-1.docker.io`, `ghcr.io`). |
 
 ---
 
@@ -451,6 +494,23 @@ create, regardless of the input spec:
 
 Because the block is immutable and applied by the server, a caller cannot pass
 a spec that disables these protections.
+
+**Operator-configurable resource limits.** The `Memory`/`MemorySwap`/`NanoCPUs`
+values (rows above) are seeded from operator environment variables — see §6.8:
+`SANDBOX_CGROUP_CPU_LIMIT_CORES` and `SANDBOX_CGROUP_MEMORY_LIMIT_GB`. Both
+default to **unset (`0`)**, in which case the built-in server defaults apply
+(currently 1 CPU, 4 GiB, swap off, `PidsLimit` 512). The unit suffixes (`_CORES`,
+`_GB`) are intentional so the configuration form is self-documenting:
+
+- **CPU:** `SANDBOX_CGROUP_CPU_LIMIT_CORES` (uint, cores) → `NanoCPUs =
+  cores * 1_000_000_000`.
+- **Memory:** `SANDBOX_CGROUP_MEMORY_LIMIT_GB` (uint, gibibytes) →
+  `Memory = gb * 1024^3` bytes; `MemorySwap` is set **equal** to `Memory` so
+  swap remains disabled.
+
+These set the operator-level baseline only. A caller can still **tighten or
+override per-request** via `memory`/`nano_cpus` on `sandbox_create` on top of
+this base, but can **never weaken** the immutable block itself.
 
 ### 7.2 Filesystem scope & mounts (S04)
 
@@ -503,6 +563,9 @@ a spec that disables these protections.
 - **Do not log the full `argv`** of `sandbox_exec` — redact paths/values while
   keeping the access-log shape (L08).
 - **No secret leakage** in any output or log (**N02/L05**).
+- **Streaming output is redacted too** (§5.1): the same redaction layer applies
+  to the `notifications/progress` chunks emitted while a command runs, so no
+  secret leaks through the live-streaming channel.
 
 ### 7.4 Strict input & output validation (S08/S09)
 
@@ -511,7 +574,8 @@ a spec that disables these protections.
   rejects with `InvalidParams` (**S08/N22**).
 - Output conforms to `outputSchema`; **ANSI/control escape sequences are
   filtered** in text output (**S09/N23**) — `sandbox_exec` output passes through
-  ANSI sanitization.
+  ANSI sanitization. The same sanitization is applied to **streamed** output
+  before it is emitted via `notifications/progress` (§5.1).
 
 ### 7.5 No shell / SQL / URL concatenation (S11 / N21)
 
@@ -566,9 +630,32 @@ a spec that disables these protections.
 - **Trusted-registry allowlist is enforced in code** (`validateImageRef` in the
   docker backend, applied on every `sandbox_create` before any Docker
   side-effect): an image reference is accepted only if it parses as a valid
-  reference and its registry is in the allowlist (`docker.io`,
-  `index.docker.io`, `registry-1.docker.io`, `ghcr.io`). Images from
+  reference and its registry is in the allowlist. Images from
   arbitrary/untrusted registries are **rejected**.
+- **Configurable allowlist (`TRUSTED_REGISTRIES`):** the allowlist is no longer
+  hardcoded — it is read from the `TRUSTED_REGISTRIES` environment variable
+  (see §6.8) as a comma-separated list of registry domains. It uses **REPLACE
+  semantics**: when set, the variable **entirely replaces** the allowlist; when
+  unset, empty, or whitespace-only, it **falls back** to the built-in safe
+  default — `DefaultTrustedRegistries` =
+  `docker.io, index.docker.io, registry-1.docker.io, ghcr.io`.
+- **Matching & validation:** each configured entry is matched **exactly** against
+  the normalized registry domain of the image reference, taken from
+  `reference.Domain(reference.ParseNormalizedNamed(...))`. Entries are
+  **lowercased** and **deduplicated**. Entries are rejected when they contain a
+  wildcard/glob (`* ? [`), a scheme (`://`/`//`), internal whitespace, or any
+  character outside `[a-z0-9._:-]`; a colon is permitted **only** as an explicit
+  port (e.g. `registry.example.com:5000`). Validation is **fail-closed** — a
+  malformed or ambiguous value errors at startup; there is **no allow-all**
+  escape hatch.
+- **`registry-1.docker.io` is not normalized** to `docker.io` by the parser, so
+  it must be listed as a **separate explicit entry** if it is to be trusted. The
+  built-in default includes it for this reason.
+- **Operator posture:** because the variable **replaces** the default, an
+  operator who sets `TRUSTED_REGISTRIES` to enable a private registry must list
+  any public registries they still want **explicitly** alongside it (e.g.
+  `TRUSTED_REGISTRIES=registry.homelab.teran.dev, docker.io, ghcr.io`). There is
+  no implicit union with the default.
 - **Auto-pull of a trusted-but-missing image**: on `sandbox_create`, if the
   (already validated) image is not present in the local cache the backend pulls
   it from its trusted registry before creating the container. The pull only
@@ -579,7 +666,9 @@ a spec that disables these protections.
 - **Digest-pinning is the recommended deployment posture**: images **should**
   be referenced by digest (`image@sha256:…`) rather than a floating tag, and
   this is the documented production guideline (C05/T7); the hard enforcement
-  boundary is the trusted-registry allowlist.
+  boundary is the trusted-registry allowlist. Digest-pinning remains the
+  **strongest** posture even on a trusted registry — the allowlist scopes *where*
+  images may come from, while a digest pins *exactly which* image is used.
 - Dependencies are pinned to the **latest stable** versions (C05) and
   **verified**; installed packages at build/install time are **signed** where
   available.

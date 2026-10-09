@@ -10,6 +10,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
@@ -189,7 +190,28 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			res, err := b.svc.Exec(ctx, exec.Request{
+			// Fetch the sandbox's known secret values once so both the progress
+			// stream and the final structured output are redacted against them
+			// (S02/§7.3).
+			secrets := sandboxSecretValues(b, in.ID)
+			// Wrap the context sink so streamed progress events are secrets-
+			// redacted (S02) and ANSI-sanitized (S09) before they reach the
+			// caller — the same contract as any other output (Phase 6, §5.1).
+			// Progress/Total are preserved. Nil-safe: SinkFromContext is never
+			// nil, so a no-op sink is wrapped harmlessly.
+			sink := progress.SinkFromContext(ctx)
+			execCtx := ctx
+			if sink != nil {
+				wrapped := func(c context.Context, e progress.Event) {
+					sink(c, progress.Event{
+						Message:  redactSecrets(sanitizeANSI(e.Message), secrets),
+						Progress: e.Progress,
+						Total:    e.Total,
+					})
+				}
+				execCtx = progress.WithSink(ctx, wrapped)
+			}
+			res, err := b.svc.Exec(execCtx, exec.Request{
 				SandboxID:  in.ID,
 				Argv:       in.Argv,
 				WorkingDir: in.WorkingDir,
@@ -204,7 +226,6 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			// from the env, or `cat /run/sandbox/<secret>`); the struct-tag
 			// redactor cannot see inside free-form text, so we replace the
 			// known secret values before returning the output.
-			secrets := sandboxSecretValues(b, in.ID)
 			return ExecOutput{
 				ID:       in.ID,
 				ExitCode: res.ExitCode,

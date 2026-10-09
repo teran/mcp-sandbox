@@ -75,7 +75,7 @@ func (s *Service) ensure(ctx context.Context) (*session.Manager, role.Backend, e
 func (s *Service) Policy() sandboxtool.Policy {
 	return sandboxtool.Policy{
 		DefaultImage: s.cfg.DefaultImage,
-		Isolation:    defaultIsolation(),
+		Isolation:    s.defaultIsolation(),
 		Backend:      "docker",
 	}
 }
@@ -189,8 +189,11 @@ func toNetworkModes(modes []string) []spec.NetworkMode {
 
 // defaultIsolation is the immutable, server-enforced hardening block (SPEC
 // §7.1). sandbox_create applies it to every spec; a caller can never weaken it.
-func defaultIsolation() spec.Isolation {
-	return spec.Isolation{
+// Operator-configured cgroup resource limits (SANDBOX_CGROUP_CPU_LIMIT_CORES /
+// SANDBOX_CGROUP_MEMORY_LIMIT_GB) override the built-in NanoCPUs and
+// Memory/MemorySwap when set (>0); unset keeps the built-in defaults.
+func (s *Service) defaultIsolation() spec.Isolation {
+	iso := spec.Isolation{
 		ReadOnlyRootfs:  true,
 		CapDrop:         []string{"ALL"},
 		NoNewPrivileges: true,
@@ -207,4 +210,13 @@ func defaultIsolation() spec.Isolation {
 		TmpfsWorkdir: true,
 		AutoRemove:   true,
 	}
+	if s.cfg.CgroupCPULimitCores > 0 {
+		iso.NanoCPUs = int64(s.cfg.CgroupCPULimitCores * 1_000_000_000)
+	}
+	if s.cfg.CgroupMemoryLimitGB > 0 {
+		mem := int64(s.cfg.CgroupMemoryLimitGB * 1024 * 1024 * 1024)
+		iso.Memory = mem
+		iso.MemorySwap = mem
+	}
+	return iso
 }
