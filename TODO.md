@@ -132,6 +132,28 @@ profile model, the application store and the `profile_list` tool; the
       `SANDBOX_PROFILES_DIR`, `profile_list`, removed envs, breaking
       `sandbox_create` migration note, digest-pinning convention — `D01 D02`
 
+## Sandbox lifecycle & GC (backlog — designed, not yet wired)
+
+These document **intended** behavior that is currently **non-functional**: sandboxes
+are removed only by explicit `sandbox_destroy`/`sandbox_destroy_all`. See
+`SPEC.md` §6.6.
+
+- [ ] **Wire the idle reaper (in-process):** add a per-process background loop that
+      periodically calls `Manager.Reap(ctx, cfg.SandboxIdleTimeout, now)`; ensure
+      every per-session tool (`exec`/`info`/`stats`) calls `Session.Touch(at)` (not
+      the global `list`); maintain the `busy` counter (increment on exec start,
+      decrement + `Touch` on exec end) so a session with a running `exec` is never
+      reaped even if it outlives the idle window — `X01 X02 X05`
+- [ ] **Implement orphan-GC (process death):** graceful shutdown calls
+      `DestroyAll()` of the process's own sessions; plus a startup/periodic sweep
+      that lists `mcp-sandbox`-labeled containers (ownership label + session id)
+      and destroys any whose session id is not among the live sessions of this
+      process — `X01`
+- [ ] **Tests for GC:** unit (reaper skip-busy, `Touch`/`Expired`, orphan sweep)
+      + e2e (idle reaping, orphan reclamation) — `C01 C04GO T01 T02 C09GO`
+- [ ] **Docs:** flip the "NOT WIRED / non-functional" callouts in `SPEC.md`
+      `§6.6`, `README.md` "Sandbox lifecycle & GC", `AGENTS.md` once wired — `D01 D02`
+
 ## Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).

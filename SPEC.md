@@ -450,16 +450,52 @@ create → use (exec/read/write/copy/install) → destroy
 
 - **Mounts are immutable** — changing a mount requires `destroy` + `create`
   (recreate). This is enforced by the session manager (X01 state model).
-- **Reaper:** an idle-timeout reaper destroys sessions that have been idle
-  beyond a configurable window.
+- **Reaper (idle) — DESIGNED, NOT YET WIRED (non-functional today):** the
+  intended design is an **in-process idle reaper**. A background loop (per
+  `mcp-sandbox` process) periodically calls
+  `Manager.Reap(ctx, cfg.SandboxIdleTimeout, now)` to destroy sessions idle
+  longer than `SANDBOX_IDLE_TIMEOUT` (default `15m`). Idle is tracked per
+  session:
+  - a **`lastActive`** marker — set on `create`, extended on any per-session
+    tool access (`exec`/`info`/`stats`; **not** on the global `list`) via
+    `Session.Touch(at)`; and
+  - a **`busy`** counter — incremented when an `exec` starts, decremented (and
+    `Touch`ed) when it ends; `Session.Expired(timeout, now)` returns true only
+    when the session is idle **and not busy**, so a session with a **running
+    `exec` is never reaped**, even if that exec outlives the idle window. The
+    reaper skips busy sessions.
+  - **Current status — NOT WIRED / non-functional:** no background goroutine
+    calls `Reap`, and no tool call (`exec`/`info`/`stats`) calls `Touch`.
+    Sandboxes are today removed **only** by explicit
+    `sandbox_destroy`/`sandbox_destroy_all`. Automatic retention/GC does **not**
+    run. The mechanism above is the **intended** design and is captured here as
+    future work (see TODO).
 - **Shutdown-teardown:** on server shutdown, `DestroyAll` destroys every
   remaining sandbox (ephemeral guarantee).
+- **Orphan reclamation (process death) — DESIGNED, NOT YET IMPLEMENTED:** when
+  an MCP process exits (agent closes / transport ends), its running containers
+  are **orphaned** — `AutoRemove` fires only on container **stop**, not on
+  process death. The Docker backend labels containers with an `mcp-sandbox`
+  ownership label carrying the **session id**. Intended mitigation (future
+  work, not yet implemented):
+  - **graceful shutdown** calls `DestroyAll()` of the process's own sessions; and
+  - an **orphan-GC** that, on startup and/or periodically, lists the labeled
+    containers and destroys any whose session id is **not** among the live
+    sessions of this process.
+  - **Current status — NOT YET IMPLEMENTED:** only the graceful-shutdown path
+    is designed; there is no orphan sweep today.
 - **State model (X01):** **stateful, per-session, in-memory.** State lives in
   the session manager (a process-local map); it is *not* persisted to disk or a
   DB. Reasoning: sandboxes are ephemeral by design and tied to the lifetime of
   the model-host process that spawned the server. No persistence layer, no
   encryption-at-rest, no schema migration (X04 not applicable — declared
   stateful-but-in-memory).
+  - **Per-process / multi-copy model:** each `mcp-sandbox` process tracks **only
+    its own** sessions in its own in-memory map. Concurrent copies of the server
+    do **not** coordinate; each process reaps its own sessions. All markers
+    (`lastActive`, `busy`) are in-memory and **die with the process** — after a
+    process exits, its sessions become **orphans** that only the orphan-GC (see
+    below) can reclaim by session-id label matching.
 - **Idempotency (X02):** mutating tools have a data-level idempotency
   mechanism — `sandbox_create` does **search-before-create** (a duplicate
   creation — a session with the same id — is surfaced as an **error** rather
@@ -500,7 +536,7 @@ startup (local wiring only):
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level; stdio logging is on **only when set** (**L02**). |
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600` (**L01/L03**). |
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
-| `SANDBOX_IDLE_TIMEOUT` | `15m` | Reaper idle window. |
+| `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window (**not yet wired** — the reaper is designed but not running; see §6.6). |
 | `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, READ-ONLY** YAML sandbox profiles — one `<name>.yml` per profile (**Phase 7**, §7.11). The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. There is **no** profile create/update/delete mechanism. |
 
 > **Removed configuration (Phase 7).** The following env vars were **removed**;

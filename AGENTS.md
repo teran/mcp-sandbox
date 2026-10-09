@@ -145,6 +145,15 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
 - **State model (X01):** **stateful, per-session, in-memory** — sessions live in
   the session manager's process map, tied to the model-host process lifetime.
   No persistence, no DB, no encryption-at-rest, no migration (X04 N/A).
+  Each `mcp-sandbox` process tracks **only its own** sessions; concurrent copies
+  do not coordinate.
+- **Session lifecycle / GC (designed, NOT YET WIRED):** the idle reaper
+  (`Manager.Reap`, `Session.Touch`/`Expired`, `SANDBOX_IDLE_TIMEOUT`) and the
+  orphan-GC are **designed but non-functional today** — no goroutine calls
+  `Reap`, no tool calls `Touch`, and there is no orphan sweep. Sandboxes are
+  removed **only** by explicit `sandbox_destroy`/`sandbox_destroy_all`. Any
+  change touching session lifecycle/GC should treat these as open work (see
+  `SPEC.md` §6.6 and `TODO.md`).
 - **Idempotency (X02):** `sandbox_create` = search-before-create;
   `sandbox_destroy`/`destroy_all` = naturally idempotent; `write_file`/
   `copy_*` = natural-key upsert. Declare `idempotentHint:true` only where a real

@@ -94,8 +94,9 @@ Highlights:
   instructions, input/output schema and a redaction contract, wrapped by a
   shared handler pipeline (validate → access-log → dispatch → redact →
   structured output).
-- **Session lifecycle**: `create → use → destroy`, immutable mounts, idle
-  reaper, shutdown `DestroyAll`.
+- **Session lifecycle**: `create → use → destroy`, immutable mounts, shutdown
+  `DestroyAll`. See [Sandbox lifecycle & GC](#sandbox-lifecycle--gc) — automatic
+  idle-reaping and orphan cleanup are **designed but not yet wired**.
 
 ## Requirements
 
@@ -213,6 +214,30 @@ both **required** (with `session_id`). To migrate:
 - **TLS:** **never implemented in-server** (S01). The server has no HTTP
   listener, so there is no in-server TLS surface. If the server is ever placed
   behind a network-facing gateway, TLS termination is the reverse proxy's job.
+
+## Sandbox lifecycle & GC
+
+Sandbox lifecycles follow `create → use → destroy`.
+
+> **Known limitation (non-functional today):** sandboxes persist until they are
+> **explicitly destroyed** with `sandbox_destroy` / `sandbox_destroy_all`. The
+> **automatic** idle reaper (`SANDBOX_IDLE_TIMEOUT`) and orphan cleanup are
+> **designed but not yet wired** into the running server — no background
+> goroutine calls `Manager.Reap`, and no tool call updates the idle marker. This
+> is documented future work (see `SPEC.md` §6.6 and `TODO.md`).
+
+Planned (not yet implemented):
+
+- **Idle reaper (in-process):** a per-process background loop that destroys
+  sessions idle beyond `SANDBOX_IDLE_TIMEOUT` (default `15m`), skipping any
+  session with a running `exec`.
+- **Orphan reclamation (process death):** when a process exits, its running
+  containers become orphaned (`AutoRemove` fires on container stop, not process
+  death). Graceful shutdown is intended to `DestroyAll()` its own sessions, and
+  an orphan-GC would destroy labeled `mcp-sandbox` containers whose session id
+  is no longer live.
+
+**Today, GC is non-functional:** only explicit destroy removes sandboxes.
 
 ## OpenCode setup
 
