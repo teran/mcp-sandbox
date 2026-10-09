@@ -6,8 +6,8 @@ package profile
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -120,6 +120,16 @@ func Load(dir string) (*Store, error) {
 		return nil, fmt.Errorf("profile: read dir %q: %w", dir, err)
 	}
 
+	// Open the profiles directory once as a scoped root so that every file
+	// read below is structurally confined to dir — traversal out of it is
+	// impossible regardless of fname (which comes from ReadDir and is a bare
+	// base name, but os.Root enforces the boundary even against hostile input).
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("profile: open root %q: %w", dir, err)
+	}
+	defer root.Close()
+
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -128,7 +138,12 @@ func Load(dir string) (*Store, error) {
 		if !strings.HasSuffix(fname, ".yml") && !strings.HasSuffix(fname, ".yaml") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, fname))
+		f, err := root.Open(fname)
+		if err != nil {
+			return nil, fmt.Errorf("profile: open %q: %w", fname, err)
+		}
+		data, err := io.ReadAll(f)
+		f.Close()
 		if err != nil {
 			return nil, fmt.Errorf("profile: read %q: %w", fname, err)
 		}
