@@ -128,7 +128,7 @@ func Load(dir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("profile: open root %q: %w", dir, err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	for _, e := range entries {
 		if e.IsDir() {
@@ -143,7 +143,7 @@ func Load(dir string) (*Store, error) {
 			return nil, fmt.Errorf("profile: open %q: %w", fname, err)
 		}
 		data, err := io.ReadAll(f)
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			return nil, fmt.Errorf("profile: read %q: %w", fname, err)
 		}
