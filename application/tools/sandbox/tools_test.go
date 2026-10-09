@@ -75,7 +75,7 @@ func callWrapped(t *testing.T, d *def.ToolDef, args any) *mcp.CallToolResult {
 		// returned unchanged so tests observe unmodified output.
 		Redact:        func(v any) any { return v },
 		NewRequestID:  func() string { return "req-1" },
-		WithRequestID: func(ctx context.Context, id string) context.Context { return ctx },
+		WithRequestID: func(ctx context.Context, _ string) context.Context { return ctx },
 	}
 	res, err := handler.Call(context.Background(), deps, d, req)
 	if err != nil {
@@ -419,9 +419,15 @@ func TestSandboxCreate_SchemaRejectsRemovedParams(t *testing.T) {
 	d := toolByName(t, newFake(), "sandbox_create")
 	base := map[string]any{"profile": "default", "cwd": "/c", "session_id": "s"}
 	removed := []map[string]any{
-		{"image": "x"}, {"env": map[string]string{"A": "1"}}, {"mounts": []any{}},
-		{"nano_cpus": int64(1)}, {"memory": int64(1)}, {"pids_limit": int64(1)},
-		{"uid": int64(1000)}, {"gid": int64(1000)}, {"sudo": "never"},
+		{"image": "x"},
+		{"env": map[string]string{"A": "1"}},
+		{"mounts": []any{}},
+		{"nano_cpus": int64(1)},
+		{"memory": int64(1)},
+		{"pids_limit": int64(1)},
+		{"uid": int64(1000)},
+		{"gid": int64(1000)},
+		{"sudo": "never"},
 	}
 	for _, extra := range removed {
 		args := map[string]any{}

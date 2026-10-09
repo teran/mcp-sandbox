@@ -20,16 +20,16 @@ type Lister interface {
 	List() []*domainprofile.Profile
 }
 
-// ProfileSummary is one entry of profile_list output: name + description only
+// Summary is one entry of profile_list output: name + description only
 // (S02). No env/mount/image/user/sudo fields are ever emitted.
-type ProfileSummary struct {
+type Summary struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
 
 // ListOutput is the structured output of profile_list.
 type ListOutput struct {
-	Profiles []ProfileSummary `json:"profiles"`
+	Profiles []Summary `json:"profiles"`
 }
 
 // All returns every profile tool definition. The profile tool set is exactly
@@ -64,9 +64,9 @@ func profileListDef(l Lister) *def.ToolDef {
 		OutputSchema: objectSchema(),
 		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			ps := l.List()
-			out := ListOutput{Profiles: make([]ProfileSummary, 0, len(ps))}
+			out := ListOutput{Profiles: make([]Summary, 0, len(ps))}
 			for _, p := range ps {
-				out.Profiles = append(out.Profiles, ProfileSummary{Name: p.Name, Description: p.Description})
+				out.Profiles = append(out.Profiles, Summary{Name: p.Name, Description: p.Description})
 			}
 			return out, nil
 		},

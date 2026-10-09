@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 )
 
 // writeProfile writes a profile file into dir and returns its path.
@@ -193,5 +191,5 @@ func TestStore_GetReturnsProfile(t *testing.T) {
 	if !ok {
 		t.Fatal("expected profile")
 	}
-	var _ *domainprofile.Profile = p // type check: Get returns a domain profile
+	_ = p // Get returns a *domainprofile.Profile
 }
