@@ -139,6 +139,82 @@ func TestResolveMounts(t *testing.T) {
 	}
 }
 
+// TestResolveMounts_CwdWritableHonorsProfileMode pins the fix for the profile's
+// cwd.mode: rw being ignored: when the spec's first mount is the cwd entry with
+// ReadOnly:false (as BuildSpec produces for cwd.mode: rw), the WorkingDir bind
+// mount is writable and the cwd is not double-mounted.
+func TestResolveMounts_CwdWritableHonorsProfileMode(t *testing.T) {
+	allowDir := t.TempDir()
+	proj := filepath.Join(allowDir, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackendForDirs(newFakeClient(), allowDir)
+
+	s := baseSpec()
+	s.WorkingDir = proj
+	s.Mounts = []spec.Mount{
+		{Source: proj, Target: proj, ReadOnly: false},  // cwd entry (cwd.mode: rw)
+		{Source: proj, Target: "/mnt", ReadOnly: true}, // extra mount, same source
+	}
+	mounts, err := b.resolveMounts(s)
+	if err != nil {
+		t.Fatalf("resolveMounts: %v", err)
+	}
+	// Exactly two mounts: the cwd bind + the extra mount (no double-mount).
+	if len(mounts) != 2 {
+		t.Fatalf("mounts = %d, want 2 (cwd + extra, no double-mount): %+v", len(mounts), mounts)
+	}
+	if mounts[0].Source != proj || mounts[0].Target != proj {
+		t.Fatalf("cwd mount = %+v", mounts[0])
+	}
+	if mounts[0].ReadOnly {
+		t.Fatal("cwd bind mount must be writable when cwd.mode: rw")
+	}
+	// The extra mount's own ReadOnly flag is still honoured.
+	if !mounts[1].ReadOnly {
+		t.Fatal("extra mount should keep its own ReadOnly flag")
+	}
+}
+
+// TestResolveMounts_CwdReadOnlyByDefault pins the unchanged default: with no
+// cwd entry (or an explicit ro cwd entry) the WorkingDir bind mount stays
+// read-only.
+func TestResolveMounts_CwdReadOnlyByDefault(t *testing.T) {
+	allowDir := t.TempDir()
+	proj := filepath.Join(allowDir, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackendForDirs(newFakeClient(), allowDir)
+
+	// No cwd entry in Mounts → default read-only.
+	s := baseSpec()
+	s.WorkingDir = proj
+	mounts, err := b.resolveMounts(s)
+	if err != nil {
+		t.Fatalf("resolveMounts: %v", err)
+	}
+	if len(mounts) != 1 || mounts[0].Source != proj || mounts[0].Target != proj {
+		t.Fatalf("cwd mount = %+v", mounts)
+	}
+	if !mounts[0].ReadOnly {
+		t.Fatal("cwd bind mount must default to read-only")
+	}
+
+	// Explicit ro cwd entry → read-only and single mount.
+	s2 := baseSpec()
+	s2.WorkingDir = proj
+	s2.Mounts = []spec.Mount{{Source: proj, Target: proj, ReadOnly: true}}
+	mounts, err = b.resolveMounts(s2)
+	if err != nil {
+		t.Fatalf("resolveMounts: %v", err)
+	}
+	if len(mounts) != 1 || !mounts[0].ReadOnly {
+		t.Fatalf("ro cwd mount = %+v, want single read-only", mounts)
+	}
+}
+
 func TestBuildConfig_WorkingDirDefaults(t *testing.T) {
 	b := newBackendForDirs(newFakeClient())
 	s := baseSpec()

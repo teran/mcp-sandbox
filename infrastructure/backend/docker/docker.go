@@ -361,9 +361,9 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 
 // resolveMounts validates and converts the spec's cwd and mounts into docker
 // mount specs (Phase 7). The session cwd is mounted 1:1 at the same absolute
-// path (§7.2) as the first mount, read-only by default (the profile's cwd.mode
-// is baked into the spec's first mount). Every host path — the cwd and each
-// profile mount source — must stay within ALLOW_DIRS (S04).
+// path (§7.2) as the first mount, honouring the profile's cwd.mode (rw/ro) via
+// the spec's cwd mount entry. Every host path — the cwd and each profile mount
+// source — must stay within ALLOW_DIRS (S04).
 func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 	var out []mount.Mount
 
@@ -371,11 +371,22 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 		if err := b.verifyHostPath(s.WorkingDir); err != nil {
 			return nil, fmt.Errorf("docker: cwd: %w", err)
 		}
+		// The profile's cwd mode (cwd.mode: rw/ro) is baked into the spec's
+		// first mount entry by BuildSpec; mirror it onto the WorkingDir bind
+		// mount here so a writable cwd stays writable. Default to read-only
+		// when no matching cwd entry exists.
+		readOnly := true
+		for _, m := range s.Mounts {
+			if m.Source == s.WorkingDir && m.Target == s.WorkingDir {
+				readOnly = m.ReadOnly
+				break
+			}
+		}
 		out = append(out, mount.Mount{
 			Type:     mount.TypeBind,
 			Source:   s.WorkingDir,
 			Target:   s.WorkingDir, // 1:1, same absolute path, no rewriting
-			ReadOnly: true,         // cwd is read-only by default
+			ReadOnly: readOnly,     // honours the profile's cwd.mode
 		})
 	}
 
