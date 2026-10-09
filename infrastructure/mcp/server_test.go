@@ -10,8 +10,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 
+	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
+	"github.com/teran/mcp-sandbox/infrastructure/backend"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
@@ -105,5 +107,24 @@ func TestNewServer_RegistersTools(t *testing.T) {
 	s := NewServer(&mcp.Implementation{Name: "mcp-sandbox", Version: "dev"}, l, tools, HandlerDependencies(l))
 	if s == nil {
 		t.Fatal("server is nil")
+	}
+}
+
+// TestBuildTools_EmptyProfileStoreKeepsProfileList pins Fix 2: when the server
+// starts with a functional empty profile store (the Load-error fallback), the
+// profile_list tool must stay in the toolset. Regression: a nil store previously
+// dropped profile_list entirely.
+func TestBuildTools_EmptyProfileStoreKeepsProfileList(t *testing.T) {
+	svc := NewService(backend.NewRegistry(), backend.Config{})
+	svc.SetProfileStore(profile.Empty())
+
+	hasProfileList := false
+	for _, d := range BuildTools(svc) {
+		if d.Name == "profile_list" {
+			hasProfileList = true
+		}
+	}
+	if !hasProfileList {
+		t.Fatal("profile_list missing from toolset with an empty (non-nil) profile store")
 	}
 }

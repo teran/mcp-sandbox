@@ -193,3 +193,96 @@ func TestStore_GetReturnsProfile(t *testing.T) {
 	}
 	_ = p // Get returns a *domainprofile.Profile
 }
+
+// TestLoad_FriendlyCgroupsUnits pins the friendly-unit translation (SPEC §7.11):
+// an operator profile using cpu_cores/memory_gb must load successfully and yield
+// correct NanoCPUs/Memory/MemorySwap, with swap defaulted to Memory.
+func TestLoad_FriendlyCgroupsUnits(t *testing.T) {
+	const yaml = `name: friendly
+description: friendly units profile
+image: docker.io/library/alpine:3.20
+network:
+  mode: bridge
+cgroups:
+  cpu_cores: 4
+  memory_gb: 8
+  pids_limit: 256
+sudo: never
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "friendly.yml", yaml)
+
+	st, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p, ok := st.Get("friendly")
+	if !ok {
+		t.Fatal("Get(friendly) = not found")
+	}
+	if got := p.Cgroups.NanoCPUs; got != int64(4*1_000_000_000) {
+		t.Fatalf("NanoCPUs = %d, want %d", got, int64(4*1_000_000_000))
+	}
+	if got := p.Cgroups.Memory; got != int64(8*1024*1024*1024) {
+		t.Fatalf("Memory = %d, want %d", got, int64(8*1024*1024*1024))
+	}
+	if got := p.Cgroups.MemorySwap; got != p.Cgroups.Memory {
+		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Cgroups.Memory)
+	}
+	if got := p.Cgroups.PidsLimit; got != 256 {
+		t.Fatalf("PidsLimit = %d, want 256", got)
+	}
+}
+
+// TestLoad_FriendlyUnits_RawTakePrecedence pins that explicit raw values win
+// over friendly units when both are present.
+func TestLoad_FriendlyUnits_RawTakePrecedence(t *testing.T) {
+	const yaml = `name: raw-wins
+description: raw precedence profile
+image: docker.io/library/alpine:3.20
+network:
+  mode: bridge
+cgroups:
+  cpu_cores: 4
+  memory_gb: 8
+  nano_cpus: 2000000000
+  memory: 1073741824
+  pids_limit: 256
+sudo: never
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "raw.yml", yaml)
+
+	st, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p, ok := st.Get("raw-wins")
+	if !ok {
+		t.Fatal("Get(raw-wins) = not found")
+	}
+	if got := p.Cgroups.NanoCPUs; got != int64(2_000_000_000) {
+		t.Fatalf("NanoCPUs = %d, want %d (raw precedence)", got, int64(2_000_000_000))
+	}
+	if got := p.Cgroups.Memory; got != int64(1_073_741_824) {
+		t.Fatalf("Memory = %d, want %d (raw precedence)", got, int64(1_073_741_824))
+	}
+	if got := p.Cgroups.MemorySwap; got != p.Cgroups.Memory {
+		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Cgroups.Memory)
+	}
+}
+
+// TestEmpty_IsFunctional pins that Empty() yields a functional, non-nil store:
+// Get reports not-found and List returns an empty slice.
+func TestEmpty_IsFunctional(t *testing.T) {
+	st := Empty()
+	if st == nil {
+		t.Fatal("Empty() returned nil store")
+	}
+	if _, ok := st.Get("anything"); ok {
+		t.Fatal("Get on empty store should report not-found")
+	}
+	if list := st.List(); len(list) != 0 {
+		t.Fatalf("List() = %v, want empty", list)
+	}
+}

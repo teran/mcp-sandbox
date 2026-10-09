@@ -53,17 +53,52 @@ type yamlUlimit struct {
 	Hard uint64 `yaml:"hard"`
 }
 
+// yamlCgroups is the cgroups block of an operator-authored profile. Either the
+// raw values (nano_cpus / memory / memory_swap) or the friendly units
+// (cpu_cores / memory_gb) may be used; the raw values take precedence when both
+// are present. CPU_cores is expressed in whole/virtual cores (1.0 = one core),
+// Memory_GB in whole gibibytes.
 type yamlCgroups struct {
 	NanoCPUs   int64        `yaml:"nano_cpus"`
 	Memory     int64        `yaml:"memory"`
 	MemorySwap int64        `yaml:"memory_swap"`
 	PidsLimit  int64        `yaml:"pids_limit"`
+	CPU_cores  float64      `yaml:"cpu_cores"`
+	Memory_GB  int64        `yaml:"memory_gb"`
 	Ulimits    []yamlUlimit `yaml:"ulimits"`
 }
 
 type yamlUser struct {
 	UID uint32 `yaml:"uid"`
 	GID uint32 `yaml:"gid"`
+}
+
+// toDomain converts the parsed cgroups block into the domain Cgroups, applying
+// friendly-unit translation (SPEC §7.11). Rules:
+//
+//   - raw values take precedence; friendly units are only consulted when the
+//     corresponding raw value is unset (0);
+//   - cpu_cores -> NanoCPUs (cores * 1e9 nanos);
+//   - memory_gb -> Memory (GiB);
+//   - when only Memory is set, MemorySwap defaults to Memory so the
+//     "memory_swap >= memory" Validate invariant holds with swap disabled.
+func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
+	cg := domainprofile.Cgroups{
+		NanoCPUs:   yc.NanoCPUs,
+		Memory:     yc.Memory,
+		MemorySwap: yc.MemorySwap,
+		PidsLimit:  yc.PidsLimit,
+	}
+	if cg.NanoCPUs == 0 && yc.CPU_cores > 0 {
+		cg.NanoCPUs = int64(yc.CPU_cores * 1_000_000_000)
+	}
+	if cg.Memory == 0 && yc.Memory_GB > 0 {
+		cg.Memory = yc.Memory_GB * 1024 * 1024 * 1024
+	}
+	if cg.Memory > 0 && cg.MemorySwap == 0 {
+		cg.MemorySwap = cg.Memory
+	}
+	return cg
 }
 
 // toDomain converts the parsed YAML into a domain Profile.
@@ -78,13 +113,8 @@ func (yp *yamlProfile) toDomain() *domainprofile.Profile {
 			Mode:   yp.Cwd.Mode,
 		},
 		Network: domainprofile.Network{Mode: spec.NetworkMode(yp.Network.Mode)},
-		Cgroups: domainprofile.Cgroups{
-			NanoCPUs:   yp.Cgroups.NanoCPUs,
-			Memory:     yp.Cgroups.Memory,
-			MemorySwap: yp.Cgroups.MemorySwap,
-			PidsLimit:  yp.Cgroups.PidsLimit,
-		},
-		Sudo: spec.SudoPolicy(yp.Sudo),
+		Cgroups: yp.Cgroups.toDomain(),
+		Sudo:    spec.SudoPolicy(yp.Sudo),
 	}
 	for _, m := range yp.Mounts {
 		p.Mounts = append(p.Mounts, domainprofile.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
@@ -162,6 +192,14 @@ func Load(dir string) (*Store, error) {
 	}
 
 	return st, nil
+}
+
+// Empty returns a functional empty store: Get always reports not-found and
+// List returns an empty slice. It is used to keep the server operational with a
+// non-nil store when profile loading fails (an operator mistake must not take
+// profile_list / sandbox_create down entirely).
+func Empty() *Store {
+	return &Store{profiles: make(map[string]*domainprofile.Profile)}
 }
 
 // Get returns the profile with the given name.
