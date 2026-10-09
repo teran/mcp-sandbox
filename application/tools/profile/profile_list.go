@@ -39,12 +39,19 @@ func All(l Lister) []*def.ToolDef {
 }
 
 // objectSchema builds an object-rooted schema with additionalProperties
-// disabled (S08).
+// disabled (S08). It is used for the tool's INPUT (which takes no arguments).
 func objectSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
 		Type:                 "object",
 		AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
 	}
+}
+
+// outputSchema builds a permissive object-rooted OUTPUT schema (S09): the
+// server generates the output, so additional properties are allowed (matches
+// the sandbox package's objectOutput()).
+func outputSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "object"}
 }
 
 // profileListDef declares profile_list: enumerate operator-authored profiles.
@@ -61,7 +68,7 @@ func profileListDef(l Lister) *def.ToolDef {
 			OpenWorldHint:   false,
 		},
 		InputSchema:  objectSchema(),
-		OutputSchema: objectSchema(),
+		OutputSchema: outputSchema(),
 		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			ps := l.List()
 			out := ListOutput{Profiles: make([]Summary, 0, len(ps))}
