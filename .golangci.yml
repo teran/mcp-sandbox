@@ -42,6 +42,7 @@ linters:
     - maintidx
     - makezero
     - mirror
+    - misspell
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
