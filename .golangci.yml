@@ -24,6 +24,7 @@ linters:
     - errname
     - exptostd
     - fatcontext
+    - gocheckcompilerdirectives
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
