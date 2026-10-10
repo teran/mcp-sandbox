@@ -50,6 +50,7 @@ linters:
     - noctx
     - nolintlint
     - nosprintfhostport
+    - predeclared
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
