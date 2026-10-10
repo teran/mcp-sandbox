@@ -19,6 +19,7 @@ linters:
     - decorder
     - durationcheck
     - embeddedstructfieldcheck
+    - errcheck
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
