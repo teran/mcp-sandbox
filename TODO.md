@@ -6,9 +6,9 @@
 
 ## Phase 0 — Scaffold & foundation
 
-- [ ] 0.1 Repo scaffold: `go.mod` (Go 1.27.1, go-sdk v1.8.0, logrus, docker SDK, go-docker-testsuite), `cmd/mcp-sandbox/main.go` (composition root, `-mode stdio`) — `C01GO C02GO M01 M06`
-- [ ] 0.2 Makefile interface: `lint` / `test` / `build` / `e2e` (no `container-image`) + `.PHONY` — `R07 N31`
-- [ ] 0.3 CI (GitHub Actions): lint / test / build / e2e + hard-gate jobs (gremlins 80/80, gitleaks) — `C01 C02 C03 C04 C08GO N36`
+- [ ] 0.1 Repo scaffold: `go.mod` (Go 1.27.1, go-sdk v1.8.0, logrus, docker SDK), `cmd/mcp-sandbox/main.go` (composition root, `-mode stdio`) — `C01GO C02GO M01 M06`
+- [ ] 0.2 Makefile interface: `lint` / `test` / `build` (no `container-image`, no `e2e`) + `.PHONY` — `R07 N31`
+- [ ] 0.3 CI (GitHub Actions): lint / test / build + hard-gate jobs (gremlins 80/80, gitleaks) — `C01 C02 C03 C08GO N36`
 - [ ] 0.4 `.golangci.yml`, `.go-arch-lint.yml` (layers), `.goreleaser.yml` (ldflags) — `C03GO C07GO B01 B02`
 - [ ] 0.5 Config (envconfig) + `ALLOW_DIRS`/`ALLOW_SYMLINKS` validation — `S04`
 - [ ] 0.6 Logging: logrus, stdio→file channel, enablement by `LOG_LEVEL`, banner, SDK slog wiring, access-log at info, request_id — `L01–L09 L01GO–L04GO B05`
@@ -25,7 +25,7 @@
 - [ ] 2.1 Backend registry + capability select; `init()`-registration of docker; lazy `Available()` — `A02/N35 M06`
 - [ ] 2.2 Docker implementation of roles via official docker SDK (unix socket) — `L02GO N05GO`
 - [ ] 2.3 Isolation: read-only root, cap-drop ALL, no-new-privileges, seccomp (default), non-root user, pids/mem/cpu/ulimits, network bridge (host forbidden), tmpfs mounts (`/run` noexec + `/tmp` writable/executable), AutoRemove — `§7.1` (server-enforced, immutable)
-- [ ] 2.4 Mounts/`ALLOW_DIRS`: EvalSymlinks + open-then-verify + `O_NOFOLLOW`, read-only default, minimize bind-mounts (`copy_in`/`copy_out`); **session `cwd` mounted 1:1 at the same absolute path** (read-only default) — `S04 N03 §7.2`
+- [ ] 2.4 Mounts/`ALLOW_DIRS`: EvalSymlinks + open-then-verify, read-only default, minimize bind-mounts (`copy_in`/`copy_out`); **session `cwd` mounted 1:1 at the same absolute path** (read-only default) — `S04 N03 §7.2`
 - [ ] 2.5 Secrets → tmpfs `0600`, redactor at output boundary (incl. Docker errors) — `S02 N02 L05`
 - [ ] 2.6 Session: reaper (idle), `DestroyAll`, label ownership, idempotent destroy — `X01 X02 X05`
 - [ ] 2.7 Docker unit tests (fake client) — `C01 C04GO`
@@ -44,8 +44,12 @@
 
 ## Phase 4 — e2e contract suite
 
-- [x] 4.1 `e2e/contract` independent suite (lifecycle/exec/fs/copy/read-only-root/mount-immutability/uid-gid/concurrency/introspect/cleanup) — `T02 C09GO`
-- [x] 4.2 `e2e/docker` + `make e2e` + e2e CI job — `C04 C09GO N07GO`
+**DECIDED — e2e is N/A (removed).** No e2e suite, no `make e2e`, no e2e CI job.
+A real e2e would require Docker-in-Docker from inside a hardened sandbox
+(nested/rootless daemon or socket access), which conflicts with the immutable
+`Isolation` block and is out of the MVP scope. The full tool-handler → Docker
+backend path is covered by unit tests + the C01 coverage gate. `C09GO N07GO
+T02 C04 N30` declared not applicable. The `e2e/` directory is removed.
 
 ## Phase 5 — Security verification
 
