@@ -107,6 +107,57 @@ func TestExec_ProgressStreamingOrderedStartChunkDone(t *testing.T) {
 	}
 }
 
+// TestExec_ProgressStartShowsCommand pins that the `start:` stream event shows
+// the raw visible command (req.Command), not the argv wrapper.
+func TestExec_ProgressStartShowsCommand(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{stdout: "ok\n", exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-cmd")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ps := &progressSink{}
+	req := exec.Request{Command: "git status", Argv: []string{"/bin/sh", "-c", "git status"}}
+	if _, err := b.Exec(progress.WithSink(ctx, ps.sink), "sess-cmd", req); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	ev := ps.got()
+	if len(ev) == 0 {
+		t.Fatal("expected at least a start event")
+	}
+	// When Command is set, the start message shows exactly the raw command.
+	if ev[0].Message != "start: git status" {
+		t.Fatalf("start message = %q, want \"start: git status\"", ev[0].Message)
+	}
+}
+
+// TestExec_ProgressStartFallsBackToArgv pins that when Command is empty the
+// start event falls back to joining argv.
+func TestExec_ProgressStartFallsBackToArgv(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{stdout: "ok\n", exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-fb")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ps := &progressSink{}
+	req := exec.Request{Argv: []string{"bash", "-c", "echo hi"}} // Command empty
+	if _, err := b.Exec(progress.WithSink(ctx, ps.sink), "sess-fb", req); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	ev := ps.got()
+	if len(ev) == 0 {
+		t.Fatal("expected at least a start event")
+	}
+	if ev[0].Message != "start: bash -c echo hi" {
+		t.Fatalf("start message = %q, want argv join", ev[0].Message)
+	}
+}
+
 // TestExec_ProgressCancelEmitsTerminalCancelled verifies that when the context
 // is cancelled, Exec emits a terminal "cancelled" event before returning.
 func TestExec_ProgressCancelEmitsTerminalCancelled(t *testing.T) {

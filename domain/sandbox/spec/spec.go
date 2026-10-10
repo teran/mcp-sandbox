@@ -136,6 +136,9 @@ type SandboxSpec struct {
 	Secrets      []SecretRef
 	ReadOnlyRoot bool
 	Isolation    Isolation
+	// Shell is the profile-configured shell (with optional whitespace-separated
+	// args) used to build the sandbox_exec wrapper. Empty means "bash".
+	Shell string
 
 	// ClientSessionID is the OpenCode client session id that created the
 	// sandbox (§4/§7.8). It is passed as a required sandbox_create parameter and

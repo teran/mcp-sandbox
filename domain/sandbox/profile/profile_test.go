@@ -111,6 +111,50 @@ func TestProfileValidate_Errors(t *testing.T) {
 	}
 }
 
+// TestProfileValidate_Shell pins the shell validation: a bare name, an absolute
+// path and a multi-token ("bash -l") shell are accepted; a NUL or newline in the
+// shell is rejected.
+func TestProfileValidate_Shell(t *testing.T) {
+	for _, shell := range []string{"bash", "/bin/sh", "bash -l", "/bin/bash -l"} {
+		p := validProfile()
+		p.Shell = shell
+		if err := p.Validate(); err != nil {
+			t.Errorf("shell %q should validate: %v", shell, err)
+		}
+	}
+	for _, shell := range []string{"bash\x00", "bash\n-l", "/bin/sh\x00", "a\nb"} {
+		p := validProfile()
+		p.Shell = shell
+		if err := p.Validate(); err == nil {
+			t.Errorf("shell %q should be rejected (NUL/newline)", shell)
+		}
+	}
+}
+
+// TestBuildSpec_ShellDefaultBash pins that an unset profile shell defaults to
+// "bash" in the built SandboxSpec.
+func TestBuildSpec_ShellDefaultBash(t *testing.T) {
+	p := validProfile()
+	p.Shell = "" // unset
+	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if sp.Shell != "bash" {
+		t.Fatalf("Shell = %q, want default \"bash\"", sp.Shell)
+	}
+}
+
+// TestBuildSpec_ShellPropagated pins that a set profile shell (including args)
+// is propagated into the built SandboxSpec.
+func TestBuildSpec_ShellPropagated(t *testing.T) {
+	for _, shell := range []string{"/bin/sh", "bash -l"} {
+		p := validProfile()
+		p.Shell = shell
+		sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+		if sp.Shell != shell {
+			t.Fatalf("Shell = %q, want propagated %q", sp.Shell, shell)
+		}
+	}
+}
+
 // TestProfileValidate_ImageParseOnly pins Phase 7: image validation is
 // parse-only — any valid reference (from ANY registry) is accepted, because the
 // image source comes from this operator-authored profile and there is no

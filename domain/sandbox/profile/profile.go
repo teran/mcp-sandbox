@@ -89,6 +89,9 @@ type Profile struct {
 	Cgroups     Cgroups
 	User        *spec.UIDGID
 	Sudo        spec.SudoPolicy
+	// Shell is the shell (and optional whitespace-separated args) used to run
+	// sandbox_exec commands. Empty means "bash" (defaulted at BuildSpec).
+	Shell string
 }
 
 // Params are the per-request, client-supplied parameters merged into the spec
@@ -150,6 +153,9 @@ func (p *Profile) Validate() error {
 	if p.Sudo != spec.SudoNever && p.Sudo != spec.SudoRequire {
 		return fmt.Errorf("profile: invalid sudo policy %q", p.Sudo)
 	}
+	if strings.ContainsAny(p.Shell, "\x00\n") {
+		return fmt.Errorf("profile: shell must not contain NUL or newline")
+	}
 	return nil
 }
 
@@ -200,6 +206,13 @@ func (p *Profile) BuildSpec(pol spec.Isolation, params Params) spec.SandboxSpec 
 		mounts = append(mounts, spec.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
 	}
 
+	// The shell defaults to "bash" when unset and propagates into the spec so
+	// the exec tool can build the command wrapper from it (SPEC §7.10).
+	shell := p.Shell
+	if strings.TrimSpace(shell) == "" {
+		shell = "bash"
+	}
+
 	return spec.SandboxSpec{
 		Image:           p.Image,
 		WorkingDir:      cwdTarget,
@@ -210,6 +223,7 @@ func (p *Profile) BuildSpec(pol spec.Isolation, params Params) spec.SandboxSpec 
 		UIDGID:          uidgid,
 		Sudo:            p.Sudo,
 		Secrets:         params.Secrets,
+		Shell:           shell,
 		ReadOnlyRoot:    true,
 		Isolation:       iso,
 		ClientSessionID: params.ClientSessionID,

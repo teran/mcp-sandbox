@@ -7,7 +7,15 @@ package exec
 type Request struct {
 	// SandboxID is the target sandbox session.
 	SandboxID string
-	// Argv is the command and its arguments as an array. No shell is involved.
+	// Command is the raw visible command string (presentation/streaming only,
+	// never executed). The executed argv is always the fixed wrapper
+	// [shellTokens..., "-c", command].
+	Command string
+	// Env is an optional per-exec environment override. Keys/VALUES are
+	// validated at the tool boundary. An empty map means no override.
+	Env map[string]string
+	// Argv is the command wrapper [shellTokens..., "-c", command], built by the
+	// tool layer from the profile shell. It is what the backend actually runs.
 	Argv []string
 	// WorkingDir overrides the working directory inside the sandbox (optional).
 	WorkingDir string

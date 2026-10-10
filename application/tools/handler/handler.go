@@ -232,6 +232,15 @@ func IsInvalidArgumentsResult(res *mcp.CallToolResult) bool {
 	return IsInvalidArguments(res.GetError())
 }
 
+// NewInvalidArgumentsError builds an invalid-arguments (S08) error — the same
+// kind the wrapper's schema-validation failure produces — so a handler can
+// reject semantically-invalid-but-schema-valid input (e.g. an empty command or
+// a malformed env map) and have it surface to the model-host as InvalidParams
+// rather than as an execution error.
+func NewInvalidArgumentsError(format string, args ...any) error {
+	return &invalidArgumentsError{err: fmt.Errorf(format, args...)}
+}
+
 // errInvalidArguments wraps an input-validation failure (S08).
 var errInvalidArguments = errors.New("invalid arguments")
 

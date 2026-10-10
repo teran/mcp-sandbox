@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -460,7 +461,7 @@ func TestSandboxExec_Handler(t *testing.T) {
 	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("\x1b[31mok\x1b[0m"), Stderr: []byte("err")}
 	d := toolByName(t, svc, "sandbox_exec")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"echo", "hi"}})
+	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "echo hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,8 +472,120 @@ func TestSandboxExec_Handler(t *testing.T) {
 	if svc.execReq.User != "1000:1000" {
 		t.Fatalf("user = %q", svc.execReq.User)
 	}
-	if svc.execReq.Argv[0] != "echo" {
+	// The raw visible command must be carried on Request.Command.
+	if svc.execReq.Command != "echo hi" {
+		t.Fatalf("command = %q", svc.execReq.Command)
+	}
+	// The executed argv is always the default (bash) wrapper.
+	if !reflect.DeepEqual(svc.execReq.Argv, []string{"bash", "-c", "echo hi"}) {
 		t.Fatalf("argv = %v", svc.execReq.Argv)
+	}
+}
+
+// TestSandboxExec_WrapperFromProfileShell pins that the argv wrapper is built
+// from the session spec's configured shell: shell "/bin/sh" → ["/bin/sh","-c",
+// command].
+func TestSandboxExec_WrapperFromProfileShell(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{Shell: "/bin/sh", UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "git status"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(svc.execReq.Argv, []string{"/bin/sh", "-c", "git status"}) {
+		t.Fatalf("argv = %v, want [/bin/sh -c git status]", svc.execReq.Argv)
+	}
+}
+
+// TestSandboxExec_WrapperFromShellWithArgs pins that a shell carrying
+// whitespace-separated args is split into tokens before the wrapper: shell
+// "bash -l" → ["bash","-l","-c",command].
+func TestSandboxExec_WrapperFromShellWithArgs(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{Shell: "bash -l", UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "pwd"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(svc.execReq.Argv, []string{"bash", "-l", "-c", "pwd"}) {
+		t.Fatalf("argv = %v, want [bash -l -c pwd]", svc.execReq.Argv)
+	}
+}
+
+// TestSandboxExec_DefaultShellBash pins that an empty session shell falls back
+// to "bash".
+func TestSandboxExec_DefaultShellBash(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation}) // Shell == ""
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "ls -la"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(svc.execReq.Argv, []string{"bash", "-c", "ls -la"}) {
+		t.Fatalf("argv = %v, want [bash -c ls -la]", svc.execReq.Argv)
+	}
+}
+
+// TestSandboxExec_EnvPassthrough pins that the per-exec env map is carried to
+// Request.Env.
+func TestSandboxExec_EnvPassthrough(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "env", "env": map[string]string{"FOO": "bar", "BAZ": "qux=1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if svc.execReq.Env["FOO"] != "bar" || svc.execReq.Env["BAZ"] != "qux=1" {
+		t.Fatalf("env = %+v", svc.execReq.Env)
+	}
+}
+
+// TestSandboxExec_EmptyEnvNoOverride pins that omitting env yields a nil (no
+// override) Request.Env.
+func TestSandboxExec_EmptyEnvNoOverride(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "ls"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(svc.execReq.Env) != 0 {
+		t.Fatalf("env = %+v, want nil/empty (no override)", svc.execReq.Env)
+	}
+}
+
+// TestSandboxExec_SummaryOptional pins that `summary` is optional: the call
+// succeeds with and without it (it is not required and is passed through to the
+// backend request surface only if implemented there — at minimum it must not be
+// required).
+func TestSandboxExec_SummaryOptional(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"id": "abc", "command": "ls"},
+		{"id": "abc", "command": "ls", "summary": "list files"},
+	} {
+		svc := newFake()
+		svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+		svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+		d := toolByName(t, svc, "sandbox_exec")
+		if _, err := callHandler(t, d, svc, args); err != nil {
+			t.Fatalf("args %v: unexpected error: %v", args, err)
+		}
+	}
+}
+
+// TestSandboxExec_UnknownSession pins that exec on an unknown session surfaces
+// the session error.
+func TestSandboxExec_UnknownSession(t *testing.T) {
+	svc := newFake()
+	svc.getErr = errFake
+	d := toolByName(t, svc, "sandbox_exec")
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "ghost", "command": "ls"}); !errors.Is(err, errFake) {
+		t.Fatalf("err = %v, want session error", err)
 	}
 }
 
@@ -493,7 +606,7 @@ func TestSandboxExec_RedactsSecretFromOutput(t *testing.T) {
 		Stderr:   []byte("warning: topsecret leaked here"),
 	}
 	d := toolByName(t, svc, "sandbox_exec")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"echo", "$SECRET"}})
+	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "echo $SECRET"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +636,7 @@ func TestSandboxExec_NoSecrets_OutputUnchanged(t *testing.T) {
 	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("plain output")}
 	d := toolByName(t, svc, "sandbox_exec")
-	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"echo", "hi"}})
+	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "echo hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,11 +645,14 @@ func TestSandboxExec_NoSecrets_OutputUnchanged(t *testing.T) {
 	}
 }
 
-func TestSandboxExec_EmptyArgv(t *testing.T) {
+func TestSandboxExec_EmptyCommand(t *testing.T) {
 	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
 	d := toolByName(t, svc, "sandbox_exec")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{}}); err == nil {
-		t.Fatal("expected empty argv error")
+	for _, cmd := range []string{"", "   ", "\t"} {
+		if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": cmd}); err == nil {
+			t.Fatalf("command %q: expected empty-command error", cmd)
+		}
 	}
 }
 
@@ -545,13 +661,13 @@ func TestSandboxExec_RootUserPolicy(t *testing.T) {
 	// SudoNever session: root rejected.
 	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Sudo: spec.SudoNever, Isolation: defaultPolicy().Isolation})
 	d := toolByName(t, svc, "sandbox_exec")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"id"}, "user": "root"}); err == nil {
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "id", "user": "root"}); err == nil {
 		t.Fatal("expected root rejection under SudoNever")
 	}
 	// SudoRequire session: root maps to uid 0.
 	svc.session = runningSession("abc", spec.SandboxSpec{Sudo: spec.SudoRequire, Isolation: defaultPolicy().Isolation})
 	svc.execRes = &exec.Result{ExitCode: 0}
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"id"}, "user": "root"}); err != nil {
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "id", "user": "root"}); err != nil {
 		t.Fatalf("root exec failed: %v", err)
 	}
 	if svc.execReq.User != "0" {
@@ -562,7 +678,7 @@ func TestSandboxExec_RootUserPolicy(t *testing.T) {
 func TestSandboxExec_UnsupportedUser(t *testing.T) {
 	svc := newFake()
 	d := toolByName(t, svc, "sandbox_exec")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"x"}, "user": "bogus"}); err == nil {
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "x", "user": "bogus"}); err == nil {
 		t.Fatal("expected unsupported user error")
 	}
 }
@@ -572,7 +688,7 @@ func TestSandboxExec_FallbackNobody(t *testing.T) {
 	svc.session = runningSession("abc", spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
 	svc.execRes = &exec.Result{ExitCode: 0}
 	d := toolByName(t, svc, "sandbox_exec")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"x"}}); err != nil {
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if svc.execReq.User != "65534:65534" {
@@ -585,7 +701,7 @@ func TestSandboxExec_ExecError(t *testing.T) {
 	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
 	svc.execErr = errFake
 	d := toolByName(t, svc, "sandbox_exec")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "argv": []string{"x"}}); !errors.Is(err, errFake) {
+	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "x"}); !errors.Is(err, errFake) {
 		t.Fatalf("err = %v", err)
 	}
 }

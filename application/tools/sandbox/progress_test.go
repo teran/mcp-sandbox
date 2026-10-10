@@ -72,7 +72,7 @@ func TestSandboxExec_ProgressStreamRedactsSecretsAndSanitizesANSI(t *testing.T) 
 	outer := collectEvents(&mu, &events)
 	ctx := progress.WithSink(context.Background(), outer)
 
-	out, err := d.Handler(ctx, marshalProgressArgs(t, map[string]any{"id": "abc", "argv": []string{"echo", "$SECRET"}}))
+	out, err := d.Handler(ctx, marshalProgressArgs(t, map[string]any{"id": "abc", "command": "echo $SECRET"}))
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSandboxExec_ProgressStream_NoSecretsUnchanged(t *testing.T) {
 	var events []progress.Event
 	ctx := progress.WithSink(context.Background(), collectEvents(&mu, &events))
 
-	if _, err := d.Handler(ctx, marshalProgressArgs(t, map[string]any{"id": "abc", "argv": []string{"echo", "hi"}})); err != nil {
+	if _, err := d.Handler(ctx, marshalProgressArgs(t, map[string]any{"id": "abc", "command": "echo hi"})); err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
 	mu.Lock()
@@ -156,7 +156,7 @@ func TestSandboxExec_ProgressStream_NoSinkNilSafe(t *testing.T) {
 
 	d := sandboxExecDef(builder{svc: svc})
 	// No sink in ctx: progressEmitService.Exec will emit via a no-op sink.
-	out, err := d.Handler(context.Background(), marshalProgressArgs(t, map[string]any{"id": "abc", "argv": []string{"echo", "hi"}}))
+	out, err := d.Handler(context.Background(), marshalProgressArgs(t, map[string]any{"id": "abc", "command": "echo hi"}))
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}

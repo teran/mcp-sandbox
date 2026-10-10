@@ -95,12 +95,35 @@ type treeError struct {
 	path, prev string
 }
 
-// TestSandboxExec_SchemaDeclaresRequiredSummary pins the schema contract for
-// the presentation-only `summary` field on sandbox_exec. It must be declared as
-// a scalar string property AND be in the `required` list, and its description
-// must convey that it is a short human-readable command description (rendered
-// by opencode as the tool-call title, unlike the array `argv`).
-func TestSandboxExec_SchemaDeclaresRequiredSummary(t *testing.T) {
+// TestSandboxExec_SchemaRequiresCommand pins the schema contract: `command` is
+// the required scalar string driving the exec; `summary` is OPTIONAL (the
+// required-summary declaration is gone); `argv` is REMOVED (no longer a
+// property, so the strict schema rejects it).
+func TestSandboxExec_SchemaRequiresCommand(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_exec")
+
+	// command: declared, scalar string, in required list.
+	cmd, ok := d.InputSchema.Properties["command"]
+	if !ok {
+		t.Fatal("sandbox_exec input schema must declare a \"command\" property")
+	}
+	if cmd.Type != "string" {
+		t.Fatalf("command type = %q, want \"string\"", cmd.Type)
+	}
+	foundCmd := false
+	for _, r := range d.InputSchema.Required {
+		if r == "command" {
+			foundCmd = true
+		}
+	}
+	if !foundCmd {
+		t.Fatalf("sandbox_exec required list %v must include \"command\"", d.InputSchema.Required)
+	}
+}
+
+// TestSandboxExec_SchemaSummaryOptional pins that `summary` is no longer in the
+// required list (it remains an optional presentation-only scalar).
+func TestSandboxExec_SchemaSummaryOptional(t *testing.T) {
 	d := toolByName(t, newFake(), "sandbox_exec")
 
 	prop, ok := d.InputSchema.Properties["summary"]
@@ -108,17 +131,38 @@ func TestSandboxExec_SchemaDeclaresRequiredSummary(t *testing.T) {
 		t.Fatal("sandbox_exec input schema must declare a \"summary\" property")
 	}
 	if prop.Type != "string" {
-		t.Fatalf("summary type = %q, want \"string\" (scalar primitive rendered by the host)", prop.Type)
+		t.Fatalf("summary type = %q, want \"string\"", prop.Type)
 	}
-
-	found := false
 	for _, r := range d.InputSchema.Required {
 		if r == "summary" {
-			found = true
+			t.Fatalf("summary must NOT be in the required list %v (it is optional)", d.InputSchema.Required)
 		}
 	}
-	if !found {
-		t.Fatalf("sandbox_exec required list %v must include \"summary\"", d.InputSchema.Required)
+}
+
+// TestSandboxExec_SchemaRemovesArgv pins that the array `argv` input is gone:
+// it must not be a declared property (and the strict schema rejects it).
+func TestSandboxExec_SchemaRemovesArgv(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_exec")
+	if _, ok := d.InputSchema.Properties["argv"]; ok {
+		t.Fatal("sandbox_exec schema must no longer declare an \"argv\" property")
+	}
+	// The strict schema (additionalProperties:false) must reject an argv request.
+	if err := validateToolArgs(d, map[string]any{"id": "abc", "command": "ls", "argv": []string{"ls"}}); err == nil {
+		t.Fatal("strict schema must reject the removed \"argv\" field")
+	}
+}
+
+// TestSandboxExec_SchemaDeclaresEnv pins that the optional per-exec `env` map
+// is declared as an object property on sandbox_exec.
+func TestSandboxExec_SchemaDeclaresEnv(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_exec")
+	prop, ok := d.InputSchema.Properties["env"]
+	if !ok {
+		t.Fatal("sandbox_exec input schema must declare an \"env\" property")
+	}
+	if prop.Type != "object" {
+		t.Fatalf("env type = %q, want \"object\"", prop.Type)
 	}
 }
 
@@ -140,20 +184,71 @@ func TestSandboxExec_SummaryDescriptionMentionsCommandDescription(t *testing.T) 
 	}
 }
 
-// TestSandboxExec_MissingSummaryIsInvalidParams goes through the shared wrapper
-// to confirm a sandbox_exec call without the now-required `summary` surfaces as
+// TestSandboxExec_MissingCommandIsInvalidParams goes through the shared wrapper
+// to confirm a sandbox_exec call without the required `command` surfaces as
 // invalid-arguments (InvalidParams), not an execution error.
-func TestSandboxExec_MissingSummaryIsInvalidParams(t *testing.T) {
+func TestSandboxExec_MissingCommandIsInvalidParams(t *testing.T) {
 	svc := newFake()
-	// Set up a valid session + result so that, if the handler were ever reached
-	// (i.e. `summary` is NOT in the required list), the call completes cleanly
-	// and the assertion below fails on the result type instead of panicking.
 	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
-	res := callWrapped(t, d, map[string]any{"id": "abc", "argv": []string{"echo", "hi"}})
+	res := callWrapped(t, d, map[string]any{"id": "abc"})
 	if !handler.IsInvalidArgumentsResult(res) {
 		t.Fatalf("expected invalid-arguments result, got IsError=%v err=%v", res.IsError, res.GetError())
+	}
+}
+
+// TestSandboxExec_WhitespaceCommandIsInvalidParams pins that an empty or
+// whitespace-only `command` is rejected as invalid-arguments.
+func TestSandboxExec_WhitespaceCommandIsInvalidParams(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	res := callWrapped(t, d, map[string]any{"id": "abc", "command": "   "})
+	if !handler.IsInvalidArgumentsResult(res) {
+		t.Fatalf("expected invalid-arguments result for whitespace command, got IsError=%v err=%v", res.IsError, res.GetError())
+	}
+}
+
+// TestSandboxExec_InvalidEnvIsInvalidParams pins that an env with an invalid
+// key or a NUL/newline in a key or value is rejected as invalid-arguments,
+// while a value containing '=' is accepted.
+func TestSandboxExec_InvalidEnvIsInvalidParams(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+
+	cases := []map[string]any{
+		{"env": map[string]string{"": "v"}},       // empty key
+		{"env": map[string]string{"A\x00B": "v"}}, // NUL in key
+		{"env": map[string]string{"A\nB": "v"}},   // newline in key
+		{"env": map[string]string{"A": "v\x00"}},  // NUL in value
+		{"env": map[string]string{"A": "v\nw"}},   // newline in value
+	}
+	for _, env := range cases {
+		args := map[string]any{"id": "abc", "command": "echo hi"}
+		for k, v := range env {
+			args[k] = v
+		}
+		res := callWrapped(t, d, args)
+		if !handler.IsInvalidArgumentsResult(res) {
+			t.Fatalf("env %v: expected invalid-arguments result, got IsError=%v err=%v", env, res.IsError, res.GetError())
+		}
+	}
+}
+
+// TestSandboxExec_EnvValueWithEqualsAccepted pins that a value containing '='
+// is valid (allowed in the value, only '=' separator between key and value).
+func TestSandboxExec_EnvValueWithEqualsAccepted(t *testing.T) {
+	svc := newFake()
+	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+	d := toolByName(t, svc, "sandbox_exec")
+	// Validation must pass; the call must not be rejected as invalid-arguments.
+	if res := callWrapped(t, d, map[string]any{"id": "abc", "command": "echo hi", "env": map[string]string{"A": "b=c"}}); handler.IsInvalidArgumentsResult(res) {
+		t.Fatalf("env value with '=' must be accepted, got err=%v", res.GetError())
 	}
 }
 

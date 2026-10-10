@@ -152,7 +152,7 @@ profile create/update/delete tools, §7.11).
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
 | `sandbox_create` | `false` | `false` | `false` | Create a sandbox from an **operator-authored profile** (**Phase 7**, §7.11). Takes **required** `profile` (the name of a profile in the read-only store), `session_id` (the OpenCode client session id, recorded as a container label for traceability, §7.8) and `cwd` (the model-host's session working directory, mounted per the profile's `cwd` config — 1:1 at the same absolute path by default). Optional `secrets` are delivered as tmpfs `0600` files. All per-request knobs that used to exist — `image`, `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`, `sudo` — are **removed**; they now come **from the profile** (§7.11). Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
-| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Takes **required** `id`, `argv` and `summary` — the last a short human-readable description of the command (e.g. "run unit tests"), purely presentational: it is **not** passed to `exec.Request` and has no effect on execution; MCP clients use it to display the command in the tool-call header (only scalar primitives are rendered, `argv` is a discarded array). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). Optional `timeout` (seconds) is applied via `context.WithTimeout` and becomes a cancellation that reaches the Docker calls and the progress sink (§6.10). |
+| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox. **Classified as write** (the container filesystem may be modified by the command). Takes **required** `id` and `command` (a scalar string, the full command line); optional `env` (a `map[string]string` of per-exec `KEY=VALUE` environment entries, literal — no shell evaluation), `summary` (a short human-readable description of the command, e.g. "run unit tests"; purely presentational — it is **not** passed to `exec.Request` and has no effect on execution; MCP clients use it to display the command in the tool-call header), plus `working_dir`, `timeout` and `user`. The `command` is executed via the profile-configured shell as a **fixed** wrapper `[ <shell>, "-c", command ]` through the Docker exec API (§7.5). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/command redacted (**S02**). Optional `timeout` (seconds) is applied via `context.WithTimeout` and becomes a cancellation that reaches the Docker calls and the progress sink (§6.10). |
 
 > **Files come from the image, the host, or the runtime — never via MCP file-write
 > tools.** The session `cwd` is mounted 1:1, so the model-host writes files on the
@@ -176,19 +176,25 @@ distinct side-effect (not idempotent): a duplicate `session_id` is surfaced as
 an error. The immutable `Isolation` hardening block is applied automatically and
 cannot be weakened by the caller.
 
-**Instructions — `sandbox_exec`:** pass command and args as an **array**, never
-a shell string; output is ANSI-sanitized; runs under the sandbox user with
+**Instructions — `sandbox_exec`:** pass a single scalar `command` string (the
+full command line); it is executed via a **fixed** shell wrapper
+`[ <shell>, "-c", command ]` where `<shell>` is the profile-configured shell
+(§7.11) — **no shell-string concatenation/interpolation** of separate parts
+(§7.5). Optional `env` sets per-exec environment entries (`KEY=VALUE`), with
+**literal values** — no shell evaluation; newlines/NUL and empty keys are
+rejected (`=` in the value is allowed). Optional `summary` holds a short
+human-readable description of the command (e.g. "run unit tests"); it is purely
+presentational — not passed to `exec.Request` and without effect on execution —
+so MCP clients can render the command in the tool-call header (scalar
+primitives are displayed; the visible `command` is the primary display scalar).
+Output is ANSI-sanitized; the command runs under the sandbox user with
 `no-new-privileges`; only allowed capabilities are available. A scoped
 `user: root` / sudo-classed exec runs as uid 0 per the sandbox's `SudoPolicy`
-(§7.10) — never `--privileged`. Note: `argv` is recorded as-is in the
+(§7.10) — never `--privileged`. Note: the `command` is recorded as-is in the
 access-log and is **not** a channel for secrets (see §7.3 S02 disclaimer).
-`summary` is **required** and holds a short human-readable description of the
-command (e.g. "run unit tests"); it is purely presentational — not passed to
-`exec.Request` and without effect on execution — so MCP clients can render the
-command in the tool-call header (only scalar primitives are displayed; the
-`argv` array is discarded). Optional `timeout` (seconds) is honored as a
-`context.WithTimeout` cancellation that also reaches the Docker API calls and
-any progress stream (§6.10); `timeout == 0` means no deadline.
+Optional `timeout` (seconds) is honored as a `context.WithTimeout` cancellation
+that also reaches the Docker API calls and any progress stream (§6.10);
+`timeout == 0` means no deadline.
 
 > **⚠ Phase 7 — breaking change to `sandbox_create`.** The request shape changed
 > incompatibly. Callers that passed `image`, `env`, `mounts`, `nano_cpus`,
@@ -259,7 +265,7 @@ emitted.
 **Streaming contract** (`sandbox_exec` and any long-running tool):
 
 1. **`start`** — emitted once when execution begins, carrying the **redacted**
-   `argv` so the model-host sees the actual call parameters that are running.
+   `command` so the model-host sees the actual call parameters that are running.
 2. **chunks** — stdout/stderr are demuxed (via the Docker `stdcopy` stream) and
    fed through the line-batched `domain/progress.LineBatcher`; each batch
    becomes a progress notification whose `Message` is **ANSI-sanitized** and
@@ -702,18 +708,19 @@ itself can **never** be weakened (by profile or caller).
   to the `notifications/progress` chunks emitted while a command runs, so no
   secret leaks through the live-streaming channel.
 
-> **⚠ argv is logged as-is (S02 disclaimer).** The access-log line (L08) records
-> the `sandbox_exec` `argv` **as passed** — the access-log path is **not** run
-> through secret-value redaction. This is a **deliberate design choice**: the
-> secret model is struct-annotation-based, and `argv` is a free-form command
-> line for which **no** secret values are known in advance, so they **cannot** be
-> reliably masked if one ever appeared there. **Contract / expectation:** `argv`
-> is **not** a channel for secrets — secrets are delivered as tmpfs `0600` files
-> (§7.3) and must never be placed in `argv`. Operators who may pass sensitive
-> values in a command line should note that:
+> **⚠ command is logged as-is (S02 disclaimer).** The access-log line (L08)
+> records the `sandbox_exec` `command` **as passed** — the access-log path is
+> **not** run through secret-value redaction. This is a **deliberate design
+> choice**: the secret model is struct-annotation-based, and `command` is a
+> free-form command line for which **no** secret values are known in advance, so
+> they **cannot** be reliably masked if one ever appeared there. **Contract /
+> expectation:** `command` is **not** a channel for secrets — secrets are
+> delivered as tmpfs `0600` files (§7.3) and must never be placed in a command
+> line. Operators who may pass sensitive values in a command line should note
+> that:
 > - the access log is written to `LOG_FILENAME` (`chmod 600`, operator-owned); and
 > - logging is **opt-in** — it is enabled **only when `LOG_LEVEL` is set**
->   (L02); with `LOG_LEVEL` unset no log file is written and no argv is
+>   (L02); with `LOG_LEVEL` unset no log file is written and no command is
 >   persisted at all.
 
 ### 7.4 Strict input & output validation (S08/S09)
@@ -728,9 +735,15 @@ itself can **never** be weakened (by profile or caller).
 
 ### 7.5 No shell / SQL / URL concatenation (S11 / N21)
 
-- **Commands are executed as argument arrays — no shell** (`sh -c` concatenation
-  is banned). `sandbox_exec` runs the command directly inside the container via
-  the Docker SDK exec API; no user string is interpolated into a shell string.
+- **No shell-string concatenation/interpolation.** `sandbox_exec` takes a
+  scalar `command` string and executes it via a **fixed** wrapper
+  `[ <shell>, "-c", command ]` through the Docker SDK exec API — the whole
+  `command` is passed as **one argv element** to the fixed wrapper, so there is
+  **no concatenation hazard** between separate parts and **no user string is
+  interpolated into a shell string**. The `<shell>` is the profile-configured
+  shell (default `bash`, §7.11), and the wrapper runs inside the **already-
+  isolated** container, so host isolation is unchanged. The only other `sh -c`
+  is the server-authored **fixed** secret-writer script (never user-influenced).
 - No SQL or outbound URL construction exists in the MVP.
 
 ### 7.6 Server process & Docker socket access
@@ -909,6 +922,7 @@ user:                    # non-root enforced; nil ⇒ server default non-root us
   uid: 1000
   gid: 1000
 sudo: never              # never (default) | require
+shell: bash              # optional; default bash; whitespace-separated tokens (§7.5)
 ```
 
 Schema key reference (`domain/sandbox/profile.Profile`):
@@ -925,6 +939,7 @@ Schema key reference (`domain/sandbox/profile.Profile`):
 | `cgroups` | `{nano_cpus,memory,memory_swap,pids_limit,ulimits}` | Optional. Bounded resource limits; profile overrides the server baseline; missing ⇒ server default (§7.1). `memory_swap` ≥ `memory`; values must be bounded (> 0). |
 | `user` | `{uid,gid}` | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user. |
 | `sudo` | string | Optional. `never`(default)/`require`. |
+| `shell` | string | Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image. |
 
 #### Loader & store (read-only)
 

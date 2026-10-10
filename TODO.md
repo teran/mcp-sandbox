@@ -36,7 +36,7 @@
 - [x] 3.1 `application/tools`: `ToolDef`, Registry, shared handler-wrapper (validate → access-log → dispatch → redact → structured output) — `M04 S08 S09 L08`
 - [x] 3.2 MCP server wiring (go-sdk, slog→logrus) — `M01 L07/L03GO`
 - [x] 3.3 READ tools: `sandbox_list`, `sandbox_info`, `sandbox_stats` (originally also `read_file` — trimmed) — `M05 M07 S03`
-- [x] 3.4 WRITE tools: `sandbox_create`, `sandbox_exec` (argument-array, no shell) (originally also `write_file`/`copy_in`/`copy_out`/`install_package` — trimmed) — `S11 N21 S02`
+- [x] 3.4 WRITE tools: `sandbox_create`, `sandbox_exec` (scalar `command` via profile shell, no shell-string concatenation) (originally also `write_file`/`copy_in`/`copy_out`/`install_package` — trimmed) — `S11 N21 S02`
 - [x] 3.5 DELETE tools: `sandbox_destroy`, `sandbox_destroy_all` (destructiveHint, client-side HITL) — `S12 S03`
 - [x] 3.6 Tool tests (annotations, schemas, redaction, access-log) — `M04 S08 S09`
 - [x] 3.7 **Trim** MCP surface to the minimal 7-tool set — remove `sandbox_read_file`, `sandbox_write_file`, `sandbox_copy_in`, `sandbox_copy_out`, `sandbox_install_package` (files come from image/host/runtime; **mount + exec is the core**; §4.2) — `M07 S03`
@@ -70,7 +70,7 @@ Goal: emit `notifications/progress` from `sandbox_exec` (and any long-running to
 - [x] 6.3 `application/tools/handler`: add `Dependencies.ProgressSink func(*mcp.CallToolRequest) progress.Sink`; stash sink into ctx in `Call` before dispatch (generic, every tool inherits) — `M04`
 - [x] 6.4 `infrastructure/mcp/server.go`: wire default `ProgressSink` = closure over `req.Session.NotifyProgress` + `req.Params.GetProgressToken()` (nil-safe) — `M01`
 - [x] 6.5 `application/tools/sandbox/write.go`: `sandboxExecDef` wraps ctx sink with `redactSecrets` + `sanitizeANSI` (S02, secrets known at tool layer), pass to `Exec` — `S02 S09`
-- [x] 6.6 `infrastructure/backend/docker/docker.go`: `Exec` reads sink from ctx; emit `start` (redacted argv) → chunks (stdout/stderr from `stdcopy` demux fed to batchers) → `done` (exit code); terminal `cancelled` event on ctx cancel before returning the existing error — `L02GO X03`
+- [x] 6.6 `infrastructure/backend/docker/docker.go`: `Exec` reads sink from ctx; emit `start` (redacted command) → chunks (stdout/stderr from `stdcopy` demux fed to batchers) → `done` (exit code); terminal `cancelled` event on ctx cancel before returning the existing error — `L02GO X03`
 - [x] 6.7 Unit tests: `domain/progress` (batcher, roundtrip), handler (sink injection), sandbox (redaction wrap), docker fake (streaming, cancel, nil-sink unchanged) — `C01 C04GO T01`
 - [x] 6.8 e2e (`e2e/contract` + `e2e/docker`): progress scenario asserts ≥1 chunk arrives before completion; cancel/timeout scenario asserts terminal notification; final `Result` still byte-for-byte — `T02 C09GO`
 - [x] 6.9 Docs: SPEC/README/AGENTS — document progress notifications and the `sandbox_exec` streaming behavior (English) — `D01 D02`
@@ -311,6 +311,41 @@ backend path is covered by unit tests + the coverage gate (Phase 4, `e2e` N/A).
       network; verify `go-docker-testsuite` drives the live daemon — `@devops`/`@developer`
 - [ ] **Docs:** update `AGENTS.md`/`TODO.md` Phase-4 N/A note and FEEDBACK if the
       lane is adopted — English, `D01 D02`
+
+## `sandbox_exec` input model: scalar `command` + profile `shell` + `env` (backlog — design in progress)
+
+Change the `sandbox_exec` call shape from an `argv: []string` array to a **scalar
+`command` string**, executed via a fixed shell wrapper, so the real command is
+visible in the opencode tool-call header (arrays are discarded from display, only
+scalar primitives render).
+
+**Design direction (agreed, breaking change):**
+- `sandbox_exec` takes `command: string` (the full command line, e.g.
+  `"git status --short --branch"` or `"for t in ...; done"`), executed as
+  `[ <shell>, "-c", command ]` via `docker exec`.
+- `shell` becomes a **profile field** (default `bash`); the operator picks the
+  shell available in the image. Fixes the "which shell" question and keeps it
+  operator-controlled.
+- `env` added as `map[string]string` on the exec call (per-request env vars
+  applied to the exec).
+- Remove `argv` (and `summary` — superseded by the visible `command`; or keep
+  `summary` optional for very long commands).
+- Security: the wrapper is **fixed** (`[shell,"-c",command]`), **no
+  concatenation/interpolation** of separate parts — S11/N21 reworded from "no
+  shell" to "no shell-string *concatenation*". Host isolation unchanged (shell
+  runs inside the already-isolated container).
+
+- [x] **Design:** profile `shell` field (validation, `Validate`/`BuildSpec`,
+      default bash), `sandbox_exec` schema (`command` + `env`, remove
+      `argv`; `summary` kept optional), error semantics, backward-compat note,
+      S11 reword — `@architect`
+      **Decisions:** shell allows whitespace-separated args (wrapper =
+      `shellTokens + ["-c", command]`); empty-shell fallback `bash`; add
+      `Command` display field to `exec.Request`; keep `summary` optional; env
+      rejects newlines in keys AND values.
+- [x] **Tests:** TDD — `@qa`
+- [x] **Implementation:** `@developer`
+- [x] **Docs:** SPEC/README/AGENTS (English, D01/D02)
 
 ## Deferred / open questions (discuss later, non-blocking)
 

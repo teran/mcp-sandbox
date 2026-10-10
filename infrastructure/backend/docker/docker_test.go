@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -518,6 +519,65 @@ func TestExec_UnknownSession(t *testing.T) {
 	b := newBackendForDirs(newFakeClient())
 	if _, err := b.Exec(context.Background(), "ghost", exec.Request{Argv: []string{"x"}}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestExec_EnvSetSorted pins that the per-exec env map is converted to a
+// sorted KEY=VALUE slice on ExecOptions.Env.
+func TestExec_EnvSetSorted(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-env")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	req := exec.Request{Argv: []string{"bash", "-c", "env"}, Env: map[string]string{"Z": "last", "A": "first", "B": "mid"}}
+	if _, err := b.Exec(context.Background(), "sess-env", req); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	opts := api.execCreates[0]
+	want := []string{"A=first", "B=mid", "Z=last"} // sorted by key
+	if !reflect.DeepEqual(opts.Env, want) {
+		t.Fatalf("Env = %v, want %v", opts.Env, want)
+	}
+}
+
+// TestExec_EnvNilWhenEmpty pins that a nil/empty env map produces a nil
+// ExecOptions.Env (no override).
+func TestExec_EnvNilWhenEmpty(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-env0")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := b.Exec(context.Background(), "sess-env0", exec.Request{Argv: []string{"bash", "-c", "env"}}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if opts := api.execCreates[0]; opts.Env != nil {
+		t.Fatalf("Env = %v, want nil when env empty", opts.Env)
+	}
+}
+
+// TestExec_CmdWrapperPassThrough pins that the argv wrapper (built by the tool
+// layer) is passed through to ExecOptions.Cmd untouched.
+func TestExec_CmdWrapperPassThrough(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-w")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wrapper := []string{"bash", "-l", "-c", "git status"}
+	if _, err := b.Exec(context.Background(), "sess-w", exec.Request{Command: "git status", Argv: wrapper}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	opts := api.execCreates[0]
+	if !reflect.DeepEqual(opts.Cmd, wrapper) {
+		t.Fatalf("Cmd = %v, want wrapper %v", opts.Cmd, wrapper)
 	}
 }
 

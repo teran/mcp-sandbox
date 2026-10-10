@@ -32,8 +32,8 @@ restrictive than the host, never less.
 ## Features
 
 - Per-session, isolated, **ephemeral** Docker sandboxes.
-- Execute arbitrary commands inside the sandbox (argument-array exec — **no
-  shell**).
+- Execute arbitrary commands inside the sandbox (scalar `command` executed via
+  the profile-configured shell — **no shell-string concatenation**).
 - The session `cwd` is mounted **1:1 at the same absolute path** (read-only by
   default; `rw` opt-in via the profile's `cwd.mode`); files come from the image,
   the host, or the runtime — **mount + exec is the core mechanism**.
@@ -317,11 +317,15 @@ Grouped **read → write → delete** (S03):
   `SANDBOX_PROFILES_DIR`, `session_id` — the OpenCode client session id recorded
   as a container label for traceability, and `cwd`; optional `secrets`; session
   `cwd` mounted 1:1 read-only by default per the profile's `cwd.mode`),
-  `sandbox_exec` (requires `id`, `argv` and `summary` — the last a short
-  human-readable description of the command, e.g. "run unit tests", used to
-  display the command in the tool-call header by MCP clients; purely
-  presentational and not passed to execution; write-classified; ANSI-sanitized;
-  redacted argv; streams live output via `notifications/progress` when a
+  `sandbox_exec` (requires `id` and `command` — a scalar string with the full
+  command line, executed via the profile-configured shell as a **fixed**
+  `[<shell>,"-c",command]` wrapper; optional `env` — a `map[string]string` of
+  per-exec `KEY=VALUE` environment entries, literal, no shell evaluation —
+  and optional `summary` — a short human-readable description of the command,
+  e.g. "run unit tests", used to display the command in the tool-call header by
+  MCP clients; purely presentational and not passed to execution; also optional
+  `working_dir`, `timeout` and `user`; write-classified; ANSI-sanitized;
+  redacted command; streams live output via `notifications/progress` when a
   progress token is passed, §5.1; optional `timeout` in seconds applied as a
   `context.WithTimeout` cancellation, §6.10).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
@@ -364,7 +368,13 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   session `cwd` **and** every profile mount `source`; the session `cwd` is the
   sanctioned bind-mount (read-only default).
 - Single **redaction layer** hides `secret:true` fields from all output and
-  logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never argv/image.
+  logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never
+  command-line/image.
+- **No shell-string concatenation/interpolation (S11/N21):** `sandbox_exec`
+  takes a scalar `command` passed as **one element** of a **fixed**
+  `[<shell>,"-c",command]` wrapper (shell from the profile, default `bash`,
+  §7.11) — no user string is interpolated into a shell string; the only other
+  `sh -c` is the server-authored fixed secret-writer script.
 - Sessions use opaque `crypto/rand` ids with label-based Docker ownership.
 - **Operator-authored profiles** (Phase 7): the image, env, mounts, network,
   limits, user and sudo are declared in **read-only** YAML files the model

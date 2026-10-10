@@ -10,6 +10,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
@@ -114,44 +115,64 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 	}), nil
 }
 
-// execInput is the typed sandbox_exec arguments. argv is a strict array — never
-// a shell string (S11).
+// execInput is the typed sandbox_exec arguments. The command is a single string
+// executed via a fixed shell wrapper (never a shell string the caller
+// controls — the wrapper is [shellTokens..., "-c", command], S11). Per-exec env
+// overrides are optional.
 type execInput struct {
-	ID         string   `json:"id"`
-	Argv       []string `json:"argv"`
-	Summary    string   `json:"summary"`
-	WorkingDir string   `json:"working_dir"`
-	Timeout    uint64   `json:"timeout"`
-	User       string   `json:"user"`
+	ID         string            `json:"id"`
+	Command    string            `json:"command"`
+	Env        map[string]string `json:"env"`
+	Summary    string            `json:"summary"`
+	WorkingDir string            `json:"working_dir"`
+	Timeout    uint64            `json:"timeout"`
+	User       string            `json:"user"`
 }
 
-// sandboxExecDef declares sandbox_exec: run a command as an argument array.
+// sandboxExecDef declares sandbox_exec: run a command via the sandbox's
+// configured shell wrapper.
 func sandboxExecDef(b builder) *def.ToolDef {
 	return writeTool(b, "sandbox_exec", "Execute a command in a sandbox",
-		"Execute a command inside the sandbox as an argument array (no shell). Runs under the sandbox user by default; user=root runs as scoped uid 0 per the sudo policy. Output is ANSI-sanitized.",
-		"Pass the command and arguments as an array, never a shell string, and fill `summary` with a short human-readable description of the command (one or two words). Do not put secrets in argv. Output is ANSI-sanitized before returning.",
+		"Execute a command inside the sandbox via its configured shell. Runs under the sandbox user by default; user=root runs as scoped uid 0 per the sudo policy. Output is ANSI-sanitized.",
+		"Pass the command as a single string, never a shell string (it is executed via the sandbox's fixed shell wrapper). Fill `summary` with a short human-readable description of the command (one or two words). Do not put secrets in the command or env. Output is ANSI-sanitized before returning.",
 		obj(map[string]*jsonschema.Schema{
 			"id":          strP("Sandbox session id"),
-			"argv":        arrP("Command and arguments as an array (no shell)", strP("Argument")),
+			"command":     strP("The command to run, executed via the sandbox's configured shell"),
+			"env":         envP("Optional per-exec environment overrides (string key/value pairs)"),
 			"summary":     strP("Short human-readable description of the command (e.g. \"run unit tests\")"),
 			"working_dir": strP("Optional working directory"),
 			"timeout":     intP("Command timeout in seconds"),
 			"user":        strEnumP("Run as user", "default", "root"),
-		}, "id", "argv", "summary"),
+		}, "id", "command"),
 		objectOutput(),
-		nil, // no secret fields: argv is not sensitive and is kept visible in access logs
+		nil, // no secret fields: command/env are not sensitive and are kept visible in access logs
 		func(ctx context.Context, args json.RawMessage) (any, error) {
 			var in execInput
 			if err := json.Unmarshal(args, &in); err != nil {
 				return nil, fmt.Errorf("sandbox_exec: %w", err)
 			}
-			if len(in.Argv) == 0 {
-				return nil, errors.New("sandbox_exec: argv must not be empty")
+			if strings.TrimSpace(in.Command) == "" {
+				return nil, handler.NewInvalidArgumentsError("sandbox_exec: command must not be empty")
+			}
+			if err := validateExecEnv(in.Env); err != nil {
+				return nil, err
 			}
 			user, err := resolveUser(b, in.ID, in.User)
 			if err != nil {
 				return nil, err
 			}
+			// Resolve the shell wrapper from the session spec, defaulting to
+			// bash (SPEC §7.10). strings.Fields whitespace-splits a
+			// multi-token shell like "bash -l" into ["bash","-l"].
+			sess, err := b.svc.Get(in.ID)
+			if err != nil {
+				return nil, err
+			}
+			shell := sess.Spec().Shell
+			if strings.TrimSpace(shell) == "" {
+				shell = "bash"
+			}
+			wrapper := append(strings.Fields(shell), "-c", in.Command)
 			// Fetch the sandbox's known secret values once so both the progress
 			// stream and the final structured output are redacted against them
 			// (S02/§7.3).
@@ -175,7 +196,9 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			}
 			res, err := b.svc.Exec(execCtx, exec.Request{
 				SandboxID:  in.ID,
-				Argv:       in.Argv,
+				Command:    in.Command,
+				Env:        in.Env,
+				Argv:       wrapper,
 				WorkingDir: in.WorkingDir,
 				Timeout:    in.Timeout,
 				User:       user,
@@ -195,6 +218,21 @@ func sandboxExecDef(b builder) *def.ToolDef {
 				Stderr:   redactSecrets(sanitizeANSI(string(res.Stderr)), secrets),
 			}, nil
 		})
+}
+
+// validateExecEnv rejects a per-exec env map with an empty key or a NUL/newline
+// in any key or value, surfaced as invalid-arguments (S08/S11). '=' is allowed
+// in values. An empty map is valid (no override).
+func validateExecEnv(env map[string]string) error {
+	for k, v := range env {
+		if k == "" {
+			return handler.NewInvalidArgumentsError("sandbox_exec: env key must not be empty")
+		}
+		if strings.ContainsAny(k, "\x00\n") || strings.ContainsAny(v, "\x00\n") {
+			return handler.NewInvalidArgumentsError("sandbox_exec: env key/value must not contain NUL or newline")
+		}
+	}
+	return nil
 }
 
 // resolveUser maps a requested user to the docker exec user. root requires the

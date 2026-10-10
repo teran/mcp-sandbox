@@ -59,6 +59,23 @@ sudo: never
 
 // --- Get ---
 
+// TestGet_ShellParsesFromYAML pins that the `shell:` YAML key parses into the
+// domain profile's Shell field (defaulted to "bash" when unset).
+func TestGet_ShellParsesFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "default.yml", validYAML)
+	writeProfile(t, dir, "sh.yml", strings.Replace(validYAML, "name: default", "name: shp\nshell: /bin/sh", 1))
+	st := New(dir)
+
+	p, err := st.Get("shp")
+	if err != nil {
+		t.Fatalf("Get(shp): %v", err)
+	}
+	if p.Shell != "/bin/sh" {
+		t.Fatalf("Shell = %q, want \"/bin/sh\" from YAML", p.Shell)
+	}
+}
+
 func TestGet_ReturnsProfile(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "default.yml", validYAML)

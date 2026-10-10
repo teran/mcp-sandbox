@@ -103,9 +103,9 @@ See `SPEC.md` §7.
   structs; sensitive fields annotated `secret:true`. The single redaction
   helper hides them from **all output and logs**. Secrets go into tmpfs `0600`
   files under `/run/sandbox`, **never** argv/image.
-  > **argv is logged as-is (S02 disclaimer):** the `sandbox_exec` access-log
-  > records `argv` as passed and is **not** secret-value-redacted. `argv` is
-  > **not** a channel for secrets — never place a secret in a command line;
+  > **command is logged as-is (S02 disclaimer):** the `sandbox_exec` access-log
+  > records `command` as passed and is **not** secret-value-redacted. `command`
+  > is **not** a channel for secrets — never place a secret in a command line;
   > use tmpfs `0600` secret files. Logging is opt-in (only when `LOG_LEVEL` is
   > set, L02) and the file is `chmod 600` (L01).
 - **Filesystem scope (S04/N03):** host access only via `ALLOW_DIRS`, empty by
@@ -113,9 +113,12 @@ See `SPEC.md` §7.
   `EvalSymlinks`, open-then-verify; reject anything escaping the
   allowed roots. Hardlinks are an OS-level concern, not the path check's.
   Prefer `copy_in`/`copy_out`; write only into tmpfs.
-- **No shell/SQL/URL concatenation (S11/N21):** `sandbox_exec` uses **argument
-  arrays**, never a shell string. `sandbox_install_package` uses a **fixed**
-  apt/dnf invocation — never interpolate into a shell string.
+- **No shell/SQL/URL concatenation (S11/N21):** **no shell-string
+  concatenation/interpolation** — `sandbox_exec` takes a scalar `command`
+  through a **fixed** `[<shell>,"-c",command]` wrapper (shell from the profile,
+  default `bash`); no user string is interpolated into a shell string.
+  `sandbox_install_package` uses a **fixed** apt/dnf invocation — never
+  interpolate into a shell string.
 - **HITL (S12):** destructive tools (`sandbox_destroy`, `sandbox_destroy_all`)
   require **human confirmation**, realized **client-side** by the model-host
   (stdio server has no HTTP UI).

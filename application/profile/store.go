@@ -30,6 +30,7 @@ type yamlProfile struct {
 	Cgroups     yamlCgroups       `yaml:"cgroups"`
 	User        *yamlUser         `yaml:"user"`
 	Sudo        string            `yaml:"sudo"`
+	Shell       string            `yaml:"shell"`
 }
 
 type yamlMount struct {
@@ -124,6 +125,10 @@ func (yp *yamlProfile) toDomain() *domainprofile.Profile {
 	}
 	if yp.User != nil {
 		p.User = &spec.UIDGID{UID: yp.User.UID, GID: yp.User.GID}
+	}
+	p.Shell = yp.Shell
+	if strings.TrimSpace(p.Shell) == "" {
+		p.Shell = "bash"
 	}
 	return p
 }

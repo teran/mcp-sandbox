@@ -536,6 +536,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	opts := container.ExecOptions{
 		Cmd:          req.Argv,
 		User:         req.User,
+		Env:          toEnvSlice(req.Env),
 		WorkingDir:   req.WorkingDir,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -585,7 +586,13 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	errWriter := io.Writer(&stderr)
 	var outBatcher, errBatcher *progress.LineBatcher
 	if sink != nil {
-		emit("start: "+strings.Join(req.Argv, " "), 0)
+		// The start event shows the raw visible command (req.Command), falling
+		// back to the argv wrapper when the command string is absent.
+		startCmd := req.Command
+		if strings.TrimSpace(startCmd) == "" {
+			startCmd = strings.Join(req.Argv, " ")
+		}
+		emit("start: "+startCmd, 0)
 		outBatcher = progress.NewLineBatcher(batcherSink)
 		errBatcher = progress.NewLineBatcher(batcherSink)
 		outWriter = io.MultiWriter(&stdout, outBatcher)
