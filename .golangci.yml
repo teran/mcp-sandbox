@@ -21,6 +21,7 @@ linters:
     - embeddedstructfieldcheck
     - errcheck
     - errchkjson
+    - errname
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
