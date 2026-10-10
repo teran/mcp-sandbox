@@ -74,7 +74,7 @@ Goal: emit `notifications/progress` from `sandbox_exec` (and any long-running to
 - [x] 6.7 Unit tests: `domain/progress` (batcher, roundtrip), handler (sink injection), sandbox (redaction wrap), docker fake (streaming, cancel, nil-sink unchanged) — `C01 C04GO T01`
 - [x] 6.8 e2e (`e2e/contract` + `e2e/docker`): progress scenario asserts ≥1 chunk arrives before completion; cancel/timeout scenario asserts terminal notification; final `Result` still byte-for-byte — `T02 C09GO`
 - [x] 6.9 Docs: SPEC/README/AGENTS — document progress notifications and the `sandbox_exec` streaming behavior (English) — `D01 D02`
-- [ ] 6.10 (follow-up) Honor `req.Timeout` via `context.WithTimeout` in `Exec` so timeouts become cancellations (terminal-notification path already covers it) — `X03`
+- [x] 6.10 Honor `req.Timeout` via `context.WithTimeout` in `Exec` so timeouts become cancellations (terminal-notification path already covers it) — `X03`
 
 ## Phase 7 — Operator-authored sandbox profiles
 
