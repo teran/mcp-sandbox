@@ -368,7 +368,7 @@ func TestCreate_SecretsDeliveredViaExecOnTmpfs(t *testing.T) {
 	opts := api.execCreates[0]
 	// The writer argv is a fixed script; the secret value must never appear in
 	// argv, image or env exposed to exec (§7.3).
-	if bytes.Contains([]byte(strings.Join(opts.Cmd, "\x00")), []byte("supersecret")) {
+	if strings.Contains(strings.Join(opts.Cmd, "\x00"), "supersecret") {
 		t.Fatal("secret value leaked into exec argv")
 	}
 	// The writer must target /run/sandbox/token inside the sandbox.
