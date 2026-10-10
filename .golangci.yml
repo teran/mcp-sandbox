@@ -52,6 +52,7 @@ linters:
     - nosprintfhostport
     - predeclared
     - reassign
+    - recvcheck
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
