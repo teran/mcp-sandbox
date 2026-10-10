@@ -1,0 +1,50 @@
+# Example operator profile: `golang`.
+#
+# Copy this into `SANDBOX_PROFILES_DIR` (default `~/.config/sandbox/profiles/`)
+# as `golang.yml` and fill in the <PLACEHOLDER> values. Profiles are read on
+# demand and are operator-authored; the model references one by name.
+#
+# NOTE: `sandbox_exec` commands run through the profile-configured shell
+# (default `bash`). The env block below defaults the Go build caches to the
+# writable+exec `/tmp` tmpfs so Go builds work out of the box (see
+# `sandbox://guidance/filesystem-mounts`). If the daemon forces `noexec` on
+# `/tmp` (e.g. Docker Desktop), point `GOTMPDIR` at a writable cwd subdir
+# instead; `GOCACHE` only needs to be writable, not exec.
+name: golang
+description: >-
+  Go 1.27.2 toolchain sandbox: compiles host sources with a writable cwd, a
+  shared writable Go module cache at /go/pkg/mod, read-only access to the
+  opencode data directory, and GOCACHE/GOTMPDIR defaulted to the executable
+  /tmp tmpfs; bridge network, 4 CPU / 8 GiB / 2048 pids, non-root, no sudo.
+image: golang:1.27.2
+cwd:
+  mode: rw
+env:
+  GOMODCACHE: /go/pkg/mod      # shared writable mount (below)
+  GOCACHE: /tmp/gocache        # writable; tmpfs avoids mmap-SIGBUS
+  GOTMPDIR: /tmp/gotmp         # writable + exec (built/-race binaries)
+
+  # Optional: a fixed git identity for git commands inside the sandbox.
+  GIT_AUTHOR_NAME: "<GIT_NAME>"
+  GIT_AUTHOR_EMAIL: "<GIT_EMAIL>"
+  GIT_COMMITTER_NAME: "<GIT_NAME>"
+  GIT_COMMITTER_EMAIL: "<GIT_EMAIL>"
+network:
+  mode: bridge
+cgroups:
+  cpu_cores: 4
+  memory_gb: 8
+  pids_limit: 2048
+mounts:
+  # Shared, persistent writable Go module cache (host path must be in ALLOW_DIRS).
+  - source: <HOST_GOMOD_CACHE_DIR>     # e.g. ~/.config/sandbox/cache/golang/gomod
+    target: /go/pkg/mod
+    read_only: false
+  # Read-only access to the opencode data directory (host path must be in ALLOW_DIRS).
+  - source: <HOST_OPENCODE_DATA_DIR>   # e.g. ~/.local/share/opencode
+    target: <HOST_OPENCODE_DATA_DIR>
+    read_only: true
+user:
+  uid: 1000
+  gid: 1000
+sudo: never
