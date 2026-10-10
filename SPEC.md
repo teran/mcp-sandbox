@@ -73,9 +73,9 @@ The server is launched by the model-host as a local child process. It
 communicates over **STDIO** — short-lived, no listener, no network surface. The
 consequences of *Local / stdio-only*:
 
-- **Launch mode (M06):** selected at startup by the **`-mode http|stdio`**
-  parameter; **default is `stdio`**. For a Local server the mode is effectively
-  fixed to `stdio`.
+- **Launch mode (M06):** the server always runs the **stdio** transport — there
+  is **no mode flag or parameter** to select a launch mode. For a Local server
+  the transport is fixed to `stdio`.
 - **Auth:** via **environment variables** (`ALLOW_DIRS`, `LOG_*`), never HTTP
   headers.
 - **Logging (L01/L02):** stdio → **file** (`LOG_FILENAME`), never stdout;
@@ -220,8 +220,8 @@ session and `sandbox_destroy_all` only when every sandbox must be torn down
 **human-confirmable/deniable**. There is **no automatic cascading** of
 destructive calls.
 
-Because the server is **Local / stdio-only** and has **no HTTP UI** (S12 /
-`-mode stdio`), HITL is implemented **client-side**: the model-host (opencode)
+Because the server is **Local / stdio-only** and has **no HTTP UI** (S12),
+HITL is implemented **client-side**: the model-host (opencode)
 presents the destructive action to the human operator and obtains
 **confirmation before the tool is invoked**. The server itself does not hold
 confirmation state; it relies on the client contract that destructive calls are
@@ -298,8 +298,8 @@ by **go-arch-lint** (C07GO). There is no concrete reason to restrict package
 visibility, so the top-level default is kept.
 
 ```
-cmd/mcp-sandbox/           composition root: flags (-mode), config load,
-                           logger, banner, layer composition, transport start
+cmd/mcp-sandbox/           composition root: config load, logger, banner,
+                           layer composition, stdio transport start
 domain/                    pure domain model, no infra dependencies
   sandbox/
     spec/                  typed SandboxSpec (Image, WorkingDir, Env, Mounts,
@@ -555,7 +555,6 @@ startup (local wiring only):
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `-mode` (flag) | `stdio` | Launch mode (**M06/A01**). Local server is fixed to stdio. |
 | `ALLOW_DIRS` | `[]` (none — deny by default) | Permitted host directories that may be mounted into sandboxes — gates the client-supplied `cwd` **and** every mount `source`, including those declared in profiles (**S04**). Empty ⇒ no host dirs mountable. **Still required in Phase 7** (§7.11). |
 | `ALLOW_SYMLINKS` | `false` | Symlink policy for host path resolution (**S04**). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
@@ -989,8 +988,8 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 - **Channel by transport (L01):** Local / stdio → logs go to a **file**
   (`LOG_FILENAME`, `chmod 600`), **never stdout**. (HTTP mode would write to
   stdout — not applicable here.)
-- **Mode-dependent enablement (L02):** in **stdio** mode (default), logging is
-  **enabled only when `LOG_LEVEL` is set**; unset ⇒ disabled.
+- **Mode-dependent enablement (L02):** logging is **enabled only when
+  `LOG_LEVEL` is set**; unset ⇒ disabled.
 - **`LOG_FILENAME` (L03)** overrides the path; **`LOG_FORMAT` (L04)** = `text`
   (default, full absolute timestamp) or `json`.
 - **No secrets in logs (L05):** redaction driven by `secret:true` annotations

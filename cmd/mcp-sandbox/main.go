@@ -45,7 +45,6 @@ func main() {
 func run(ctx context.Context, args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet(appName, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "stdio", "launch mode (stdio)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -78,12 +77,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 			Debug("config resolved")
 	}
 
-	switch *mode {
-	case "stdio":
-		return serve(ctx, logger, cfg, newStdioTransport())
-	default:
-		return fail(stderr, "%s: unsupported mode %q (only stdio is supported)\n", appName, *mode)
-	}
+	// mcp-sandbox is stdio-only (Local): always start the stdio transport.
+	return serve(ctx, logger, cfg, newStdioTransport())
 }
 
 // fail writes an error message to stderr and returns a failure exit code. The
@@ -94,8 +89,8 @@ func fail(stderr io.Writer, format string, args ...any) int {
 	return 1
 }
 
-// newStdioTransport returns the transport used in stdio mode. It is a variable
-// so tests can substitute a deterministic transport.
+// newStdioTransport returns the stdio transport. It is a variable so tests can
+// substitute a deterministic transport.
 var newStdioTransport = func() mcp.Transport { return &mcp.StdioTransport{} }
 
 // buildServer composes the sandbox service (lazy backend selection + session

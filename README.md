@@ -26,7 +26,7 @@ restrictive than the host, never less.
 
 - **MVP scope:** the **Docker** backend. Apple Container and other backends are
   designed for but not yet implemented.
-- **Deployment:** Local / **stdio-only** (`-mode stdio` default). No HTTP, no
+- **Deployment:** Local / **stdio-only**. No HTTP, no
   observability endpoint, no container image.
 
 ## Features
@@ -124,7 +124,6 @@ auth via environment, no HTTP headers).
 
 | Env | Default | Description |
 |-----|---------|-------------|
-| `-mode` (CLI flag) | `stdio` | Launch mode. Local server is fixed to `stdio`. |
 | `ALLOW_DIRS` | `[]` (none) | Permitted host directories for mounts — gates the session `cwd` **and** every profile mount `source`. Empty ⇒ deny all. **Still required** (Phase 7). |
 | `ALLOW_SYMLINKS` | `false` | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
@@ -145,7 +144,7 @@ Example:
 export ALLOW_DIRS="/Users/me/projects/myapp"
 export LOG_LEVEL=info
 export LOG_FILENAME=/tmp/mcp-sandbox.log
-./mcp-sandbox -mode stdio
+./mcp-sandbox
 ```
 
 ## Profiles (operator-authored)
@@ -275,7 +274,7 @@ server:
     "servers": {
       "mcp-sandbox": {
         "type": "local",
-        "command": ["mcp-sandbox", "-mode", "stdio"],
+        "command": ["mcp-sandbox"],
         "environment": {
           "ALLOW_DIRS": "{env:PWD}",
           "LOG_LEVEL": "info"

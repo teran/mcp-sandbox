@@ -174,8 +174,8 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
 
 ### Logging
 
-- **Enablement (L02):** `-mode stdio` (default) ⇒ logging **only when
-  `LOG_LEVEL` is set**; unset ⇒ disabled. (HTTP mode would always be on — not
+- **Enablement (L02):** logging is on **only when `LOG_LEVEL` is set**; unset
+  ⇒ disabled. (HTTP mode would always be on — not
   applicable here.)
 - **Channel (L01):** stdio → **file** (`LOG_FILENAME`, `chmod 600`), **never
   stdout** (N04GO).

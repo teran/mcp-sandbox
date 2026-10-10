@@ -6,7 +6,7 @@
 
 ## Phase 0 — Scaffold & foundation
 
-- [x] 0.1 Repo scaffold: `go.mod` (Go 1.27.1, go-sdk v1.8.0, logrus, docker SDK), `cmd/mcp-sandbox/main.go` (composition root, `-mode stdio`) — `C01GO C02GO M01 M06`
+- [x] 0.1 Repo scaffold: `go.mod` (Go 1.27.1, go-sdk v1.8.0, logrus, docker SDK), `cmd/mcp-sandbox/main.go` (composition root, stdio-only) — `C01GO C02GO M01 M06`
 - [x] 0.2 Makefile interface: `lint` / `test` / `build` (no `container-image`, no `e2e`) + `.PHONY` — `R07 N31`
 - [x] 0.3 CI (GitHub Actions): lint / test / build + hard-gate jobs (gremlins 80/80, gitleaks) — `C01 C02 C03 C08GO N36`
 - [x] 0.4 `.golangci.yml`, `.go-arch-lint.yml` (layers), `.goreleaser.yml` (ldflags) — `C03GO C07GO B01 B02`

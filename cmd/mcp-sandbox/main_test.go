@@ -57,14 +57,6 @@ func newBlockingStdioTransport() (mcp.Transport, func()) {
 	return &mcp.IOTransport{Reader: io.NopCloser(pr), Writer: discardWriteCloser{}}, func() { pw.Close() }
 }
 
-func TestRun_UnsupportedMode(t *testing.T) {
-	t.Setenv("LOG_LEVEL", "")
-	code := run(context.Background(), []string{"-mode", "http"}, &bytes.Buffer{})
-	if code != 1 {
-		t.Fatalf("code = %d, want 1", code)
-	}
-}
-
 func TestRun_FlagParseError(t *testing.T) {
 	code := run(context.Background(), []string{"-unknown-flag"}, &bytes.Buffer{})
 	if code != 2 {
@@ -77,7 +69,7 @@ func TestRun_InvalidAllowDir(t *testing.T) {
 	// config.Validate and the server refuses to start.
 	t.Setenv("ALLOW_DIRS", "/definitely/not/a/real/allowdir")
 	t.Setenv("LOG_LEVEL", "")
-	code := run(context.Background(), []string{"-mode", "stdio"}, &bytes.Buffer{})
+	code := run(context.Background(), nil, &bytes.Buffer{})
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
@@ -86,7 +78,7 @@ func TestRun_InvalidAllowDir(t *testing.T) {
 func TestRun_ConfigLoadError(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("SANDBOX_IDLE_TIMEOUT", "not-a-duration")
-	code := run(context.Background(), []string{"-mode", "stdio"}, &bytes.Buffer{})
+	code := run(context.Background(), nil, &bytes.Buffer{})
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
@@ -94,7 +86,7 @@ func TestRun_ConfigLoadError(t *testing.T) {
 
 func TestRun_InvalidLogLevel(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "banana")
-	code := run(context.Background(), []string{"-mode", "stdio"}, &bytes.Buffer{})
+	code := run(context.Background(), nil, &bytes.Buffer{})
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
@@ -115,7 +107,7 @@ func TestRun_StdioServesAndBanner(t *testing.T) {
 	defer cancel()
 
 	var errBuf bytes.Buffer
-	code := run(ctx, []string{"-mode", "stdio"}, &errBuf)
+	code := run(ctx, nil, &errBuf)
 	if code != 0 {
 		t.Fatalf("code = %d, want 0; stderr=%s", code, errBuf.String())
 	}
@@ -142,7 +134,7 @@ func TestRun_StdioDisabledLogging(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	code := run(ctx, []string{"-mode", "stdio"}, &bytes.Buffer{})
+	code := run(ctx, nil, &bytes.Buffer{})
 	if code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
