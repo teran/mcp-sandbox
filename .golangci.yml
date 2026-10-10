@@ -39,6 +39,7 @@ linters:
     - ineffassign
     - intrange
     - iotamixing
+    - maintidx
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
