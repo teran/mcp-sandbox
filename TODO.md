@@ -168,6 +168,129 @@ are removed only by explicit `sandbox_destroy`/`sandbox_destroy_all`. See
 - [ ] **Docs:** flip the "NOT WIRED / non-functional" callouts in `SPEC.md`
       `§6.6`, `README.md` "Sandbox lifecycle & GC", `AGENTS.md` once wired — `D01 D02`
 
+## Operator profile hot-reload (backlog — designed, not yet wired)
+
+Profiles are currently read **once at startup** (`application/profile` store loaded
+in `cmd/mcp-sandbox/main.go`); editing a `<name>.yml` in `SANDBOX_PROFILES_DIR`
+requires a full server-process restart (reconnecting the MCP client does **not**
+reload profiles). Plan: **SIGHUP** and/or **fsnotify** to reload the store, keeping
+it **read-only** (no create/update/delete tools). See `FEEDBACK.md`
+§Recommendations.
+
+- [ ] **Reload trigger:** wire a SIGHUP handler (and/or fsnotify watcher on
+      `SANDBOX_PROFILES_DIR`) to re-run `store.Load` and **atomically swap** the
+      in-memory profile map — `S04 X05`
+- [ ] **Fail-closed semantics:** a reload that hits an unparsable/invalid/duplicate
+      profile keeps the **last good** store and logs the error (never partially
+      applies); active sandboxes are unaffected — `S04 L05`
+- [ ] **Tests:** unit (reload success, fail-closed on bad file, SIGHUP/fsnotify
+      delivery, atomic swap under `-race`) — `C01 C04GO T01 X05`
+- [ ] **Docs:** document hot-reload in `SPEC.md` §7.11, `README.md`, `AGENTS.md`
+      (English, D01/D02); drop the "requires restart" note from `FEEDBACK.md`.
+
+## General MCP skill: "host shell restricted → sandbox MCP" (backlog — docs)
+
+When the host `shell` is restricted, an agent can misread the `permission denied`
+as a dead end instead of a redirect to a sandbox/execution MCP server. Lesson
+from `FEEDBACK.md` §1/§6: the manager's default toolset (core + task + memory)
+has **no executor**, so the sandbox MCP is the sanctioned way to run arbitrary
+commands. This generalizes to any MCP host.
+
+- [ ] **Write a general MCP skill** (`shell-restricted` / similar) capturing the
+      invariant: host `shell` blocked → discover a sandbox/execution MCP server
+      via the tool catalog (`search`) and run the command there (argument array,
+      no shell string); never treat the denial as a hard dead end — `D01 D02`
+- [ ] **Reference it** from `AGENTS.md` and the FEEDBACK §1/§6 entries once the
+      skill exists (keep the repo guidance pointing at the general skill).
+
+## Default GOCACHE/GOTMPDIR for Go builds (backlog — design open)
+
+Root cause from `FEEDBACK.md` §2/§3: the container fs is non-obvious — `/` is a
+**read-only overlay** (Go's default cache at `/.cache/go-build` fails), `/tmp` is
+tmpfs **rw but `noexec`** (built binaries fail to exec), `/go` is read-only; the
+only writable **and** executable path is the repo mount (virtiofs rw). Today Go
+builds need manual `GOCACHE`/`GOTMPDIR`/`GOMODCACHE` env pointing — fragile. This
+is ultimately a **profile-configuration** question: what defaults to set in the
+`golang` profile and whether to mount additional volumes.
+
+> Open design questions (see discussion): which writable+exec locations to
+> default `GOCACHE`/`GOTMPDIR` to; whether to add a dedicated build-cache
+> volume/mount to the profile (and how it interacts with `ALLOW_DIRS` + the
+> immutable ro-rootfs / noexec-tmpfs constraints); how to keep it working with
+> `go test -race` and the `crosscall1`/mmap quirks (§3/§7). Feasibility and exact
+> profile YAML to be decided — delegate design to `@architect`.
+
+- [ ] **Design:** propose profile YAML + optional mounts so Go builds work out of
+      the box without manual env (respecting ro rootfs / noexec tmpfs / virtiofs
+      rw matrix) — `@architect`, `D01 D02`
+- [ ] **Implement + tests:** apply to the `golang` profile (and any toolchain
+      profiles), verify `make build` / `make test` / `go test -race` from a clean
+      sandbox — `@developer`/`@qa`, `C01 C04GO T01`
+- [ ] **Docs:** fold into `SPEC.md`/`README.md` mount matrix and FEEDBACK §2/§3 —
+      English, `D01 D02`
+
+## Go tooling in the image (backlog — design open)
+
+From `FEEDBACK.md` §4/§8: the `golang` image ships **no** extra tooling
+(`golangci-lint`, `go-arch-lint`, `gosec`, `govulncheck`, `gitleaks`, `gremlins`).
+Installing them via `go install` is hampered by the link-time mmap quirk (§3) and
+by there being no clean writable+exec location besides the repo mount (which
+pollutes the working tree). Related: the writable-vs-executable mount matrix is
+not yet documented as a dedicated section (§Recommendations).
+
+- [ ] **Document the mount matrix** (ro overlay / noexec tmpfs / virtiofs rw) as a
+      dedicated `SPEC.md`/`README.md` section — English, `D01 D02`
+- [ ] **Decide tooling delivery:** vendor the linters into a writable+exec
+      location (repo-scoped `GOBIN` per FEEDBACK §9 recipe) vs. a custom tooling
+      image vs. host-run linters; pick one that survives the mmap/§3 quirk — `@devops`/`@architect`
+- [ ] **Wire it** so `make lint` (golangci, gosec, govulncheck, go-arch-lint,
+      gremlins, gitleaks) runs cleanly from the sandbox without polluting the
+      working tree — `@devops`/`@developer`, `C01 C03 C08GO`
+
+## `go test -race` link flakiness on arm64 (`crosscall1`) (backlog — investigate)
+
+From `FEEDBACK.md` §5: occasionally `go test -race` fails to **link** some test
+binaries on the linux/arm64 golang image with `undefined reference to
+crosscall1` (`runtime/cgo/gcc_arm64.S`) — under heavy parallel `-race` linking
+the symbol intermittently fails to land in the archive. Believed to be a
+**build-cache / parallel-link race**, not a code bug. Workaround today: retry
+(warm cache) or `go clean -cache`. Track as "understand it" before deciding
+whether/how to fix.
+
+- [ ] **Reproduce & diagnose:** capture the failing link (race/build-cache
+      interplay) on arm64; confirm root cause (`crosscall1` in `runtime/cgo`) —
+      `@developer`, `C04GO T01`
+- [ ] **Decide & fix:** pick an option — serialize/limit parallel `-race` linking,
+      pre-warm the cache, or pin a flag — so `make test` stops being flaky in the
+      sandbox; verify stable — `@developer`/`@qa`, `C01`
+- [ ] **Docs:** record the outcome (and drop/keep the FEEDBACK §5 note
+      accordingly) — English, `D01 D02`
+
+## Docker from inside the sandbox (backlog — design open)
+
+Running container-based e2e from **inside** a hardened sandbox (e.g.
+`go-docker-testsuite`) needs a working Docker client **and a live daemon** to
+drive. Today this is explicitly out of scope — the full tool-handler → Docker
+backend path is covered by unit tests + the coverage gate (Phase 4, `e2e` N/A).
+
+> **Design direction (decided):** the pragmatic route is an **operator profile
+> that mounts the host Docker socket** (`Mount.Source` gated by `ALLOW_DIRS`)
+> plus `Network.Mode = host` — no nested/rootless daemon, no custom image, no
+> `--privileged`, and no weakening of the immutable `Isolation`. The profile
+> model already supports this (mounts + host network are operator-authored).
+> Trade-off: a socket passthrough is **host-root equivalent** (broader than
+> inter-sandbox isolation), so this must be a **separate, opt-in,
+> operator-authored** lane — default sandboxes stay isolated; `@security`
+> review first. Middle path for partial isolation: a rootless Docker socket.
+
+- [ ] **Security review** of the socket-passthrough lane (host-root equivalence,
+      `ALLOW_DIRS` gating of the socket path, default sandboxes stay isolated) —
+      `@security` first, `S01 S11`
+- [ ] **Author the opt-in profile:** golang image + host socket mount + host
+      network; verify `go-docker-testsuite` drives the live daemon — `@devops`/`@developer`
+- [ ] **Docs:** update `AGENTS.md`/`TODO.md` Phase-4 N/A note and FEEDBACK if the
+      lane is adopted — English, `D01 D02`
+
 ## Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).
