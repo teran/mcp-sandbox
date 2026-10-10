@@ -55,6 +55,7 @@ linters:
     - recvcheck
     - rowserrcheck
     - sqlclosecheck
+    - staticcheck
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
