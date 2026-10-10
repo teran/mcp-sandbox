@@ -13,7 +13,6 @@ import (
 // MCP resources protocol. Unknown URIs return a not-found error.
 func registerResources(server *mcp.Server) {
 	for _, g := range guidance.All() {
-		g := g
 		server.AddResource(&mcp.Resource{
 			URI:         g.URI,
 			Name:        g.Name,

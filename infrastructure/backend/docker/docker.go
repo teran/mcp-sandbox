@@ -883,7 +883,6 @@ func toDockerUlimits(ul []spec.Ulimit) []*container.Ulimit {
 	}
 	out := make([]*container.Ulimit, 0, len(ul))
 	for _, u := range ul {
-		u := u
 		out = append(out, &container.Ulimit{
 			Name: u.Name,
 			Soft: clampUint64(u.Soft),

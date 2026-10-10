@@ -15,6 +15,7 @@ linters:
     - bodyclose
     - canonicalheader
     - contextcheck
+    - copyloopvar
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
