@@ -79,12 +79,8 @@ func TestNew_JSONFormat(t *testing.T) {
 }
 
 func TestNew_DefaultFilename(t *testing.T) {
-	old, _ := os.Getwd()
 	dir := t.TempDir()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(old)
+	t.Chdir(dir)
 
 	l, err := New(Options{Level: "info"})
 	if err != nil {

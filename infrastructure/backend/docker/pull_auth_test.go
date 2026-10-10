@@ -241,14 +241,10 @@ func TestRegistryAuth_ConfigEntryWithEmptyAuth(t *testing.T) {
 func TestDockerConfigDir_DefaultHomeDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// Ensure the default branch is reached regardless of the ambient env.
-	old, had := os.LookupEnv(dockerconfig.EnvOverrideConfigDir)
-	os.Unsetenv(dockerconfig.EnvOverrideConfigDir)
-	t.Cleanup(func() {
-		if had {
-			os.Setenv(dockerconfig.EnvOverrideConfigDir, old)
-		}
-	})
+	// Ensure the default branch is reached regardless of the ambient env:
+	// dockerConfigDir treats an empty DOCKER_CONFIG as unset, and t.Setenv
+	// restores the original value on cleanup.
+	t.Setenv(dockerconfig.EnvOverrideConfigDir, "")
 	got := dockerConfigDir()
 	want := filepath.Join(home, ".docker")
 	if got != want {

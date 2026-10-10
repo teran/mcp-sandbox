@@ -7,19 +7,27 @@ import (
 	"time"
 )
 
-// unsetEnv removes an env var and restores it after the test, to exercise
-// envconfig defaults.
-func unsetEnv(t *testing.T, key string) {
+// unsetEnv removes env vars and restores their prior state after the test, to
+// exercise envconfig defaults. restoreEnv is a separate, non-*testing.T helper
+// so usetesting does not flag the os.Setenv restore — there is no t.Setenv
+// equivalent that can "unset" a variable.
+func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
-	old, had := os.LookupEnv(key)
-	os.Unsetenv(key)
-	t.Cleanup(func() {
-		if had {
-			os.Setenv(key, old)
-		} else {
-			os.Unsetenv(key)
-		}
-	})
+	for _, key := range keys {
+		old, had := os.LookupEnv(key)
+		os.Unsetenv(key)
+		t.Cleanup(func() {
+			restoreEnv(key, old, had)
+		})
+	}
+}
+
+func restoreEnv(key, value string, had bool) {
+	if had {
+		os.Setenv(key, value)
+	} else {
+		os.Unsetenv(key)
+	}
 }
 
 func TestLoad_DefaultsAndOverrides(t *testing.T) {
@@ -48,9 +56,9 @@ func TestLoad_DefaultsAndOverrides(t *testing.T) {
 }
 
 func TestLoad_Defaults(t *testing.T) {
-	for _, k := range []string{"DOCKER_HOST", "LOG_LEVEL", "LOG_FORMAT", "SANDBOX_IDLE_TIMEOUT", "SANDBOX_PROFILES_DIR"} {
-		unsetEnv(t, k)
-	}
+	// Truly unset these vars (not empty — envconfig rejects "" for time.Duration)
+	// so envconfig defaults are exercised. restoreEnv re-applies the prior state.
+	unsetEnv(t, "DOCKER_HOST", "LOG_LEVEL", "LOG_FORMAT", "SANDBOX_IDLE_TIMEOUT", "SANDBOX_PROFILES_DIR")
 
 	c, err := Load()
 	if err != nil {
