@@ -43,6 +43,7 @@ linters:
     - makezero
     - mirror
     - misspell
+    - musttag
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
