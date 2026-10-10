@@ -35,6 +35,7 @@ linters:
     - govet
     - grouper
     - iface
+    - importas
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
