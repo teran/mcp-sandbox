@@ -211,7 +211,7 @@ func TestDestroy_BackendErrorKeepsSession(t *testing.T) {
 func TestDestroyAll(t *testing.T) {
 	life := newFakeLife()
 	m := NewManager(life)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +230,7 @@ func TestDestroyAll(t *testing.T) {
 func TestReap_IdleOnly(t *testing.T) {
 	life := newFakeLife()
 	m := NewManager(life)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatal(err)
 		}
@@ -290,7 +290,7 @@ func TestSessionAggregate(t *testing.T) {
 func TestSessionMutex(_ *testing.T) {
 	sess := domainsession.New("m", validSpec())
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -354,7 +354,7 @@ func TestReap_DestroyError(t *testing.T) {
 func TestDestroyAll_Error(t *testing.T) {
 	life := newFakeLife()
 	m := NewManager(life)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatal(err)
 		}

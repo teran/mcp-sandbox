@@ -186,7 +186,7 @@ func redactValue(v reflect.Value) any {
 	case reflect.Struct:
 		out := make(map[string]any, v.NumField())
 		t := v.Type()
-		for i := 0; i < v.NumField(); i++ {
+		for i := range v.NumField() {
 			f := t.Field(i)
 			if isSecret(f) {
 				out[fieldName(f)] = redactedMarker
@@ -209,7 +209,7 @@ func redactValue(v reflect.Value) any {
 		return redactValue(v.Elem())
 	case reflect.Slice, reflect.Array:
 		out := make([]any, v.Len())
-		for i := 0; i < v.Len(); i++ {
+		for i := range v.Len() {
 			out[i] = redactValue(v.Index(i))
 		}
 		return out

@@ -202,7 +202,7 @@ func TestGet_ConcurrentFullAndPrefix(t *testing.T) {
 	m, _ := newManagerWithIDs(t, id1, id3)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
