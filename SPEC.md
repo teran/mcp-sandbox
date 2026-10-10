@@ -910,9 +910,8 @@ cwd:                     # optional; controls the auto session-cwd mount (§7.2)
 network:
   mode: bridge           # bridge (default) | none | host (host only if operator authors it)
 cgroups:                 # limits; a missing value falls back to the server default (§7.1)
-  nano_cpus: 1000000000
-  memory: 536870912
-  memory_swap: 536870912
+  cpu_cores: 1           # human-readable: whole/virtual cores (1.0 = one core); raw nano_cpus takes precedence if both set
+  memory_gb: 1           # human-readable: whole GiB; raw memory/memory_swap take precedence if set; swap disabled ⇒ memory_swap = memory
   pids_limit: 256
   ulimits:
     - name: nofile

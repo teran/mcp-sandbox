@@ -177,9 +177,8 @@ cwd:
 network:
   mode: bridge # bridge (default) | none | host
 cgroups:
-  nano_cpus: 1000000000
-  memory: 536870912
-  memory_swap: 536870912
+  cpu_cores: 1        # human-readable: whole/virtual cores (1.0 = one core)
+  memory_gb: 1        # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory)
   pids_limit: 256
   ulimits:
     - name: nofile
