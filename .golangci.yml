@@ -23,6 +23,7 @@ linters:
     - errchkjson
     - errname
     - exptostd
+    - fatcontext
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
