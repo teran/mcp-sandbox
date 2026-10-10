@@ -123,7 +123,7 @@ func TestLineBatcher_PartialFlushAtThreshold(t *testing.T) {
 		t.Fatalf("after threshold flush events = %+v, want [abcde]", ev)
 	}
 
-	b.Flush()
+	b.Flush(context.Background())
 	ev = rec.got()
 	if len(ev) != 2 || ev[1].Message != "f" {
 		t.Fatalf("after Flush events = %+v, want trailing [f]", ev)
@@ -142,7 +142,7 @@ func TestLineBatcher_FlushOnEOF(t *testing.T) {
 		t.Fatalf("events before Flush = %+v, want none", got)
 	}
 
-	b.Flush()
+	b.Flush(context.Background())
 	ev := rec.got()
 	if len(ev) != 1 || ev[0].Message != "partial" {
 		t.Fatalf("after Flush events = %+v, want [partial]", ev)
@@ -155,8 +155,8 @@ func TestLineBatcher_FlushIdempotent(t *testing.T) {
 	if _, err := b.Write([]byte("x\ny")); err != nil {
 		t.Fatal(err)
 	}
-	b.Flush()
-	b.Flush() // second flush must not re-emit the buffered partial
+	b.Flush(context.Background())
+	b.Flush(context.Background()) // second flush must not re-emit the buffered partial
 	if ev := rec.got(); len(ev) != 2 {
 		t.Fatalf("events = %+v, want 2 (x then y once)", ev)
 	}
@@ -234,7 +234,7 @@ func TestLineBatcher_ZeroSinkNilSafe(t *testing.T) {
 	if _, err := b.Write([]byte("line\npartial")); err != nil {
 		t.Fatalf("Write with nil sink: %v", err)
 	}
-	b.Flush() // must not panic
+	b.Flush(context.Background()) // must not panic
 	if p := b.Progress(); p != int64(len("line\npartial")) {
 		t.Fatalf("Progress = %d", p)
 	}
@@ -257,7 +257,7 @@ func TestLineBatcher_MixedCompleteAndPartial(t *testing.T) {
 		t.Fatalf("after Write events = %+v, want [ab]", got)
 	}
 
-	b.Flush()
+	b.Flush(context.Background())
 	mu.Lock()
 	defer mu.Unlock()
 	if len(got) != 2 || got[1].Message != "cd" {

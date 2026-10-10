@@ -153,14 +153,14 @@ func (s *Service) Get(id string) (*domainsession.Session, error) {
 }
 
 // List returns every live session.
-func (s *Service) List() []*domainsession.Session {
+func (s *Service) List(ctx context.Context) []*domainsession.Session {
 	s.mu.Lock()
 	mgr := s.mgr
 	s.mu.Unlock()
 	if mgr == nil {
 		return nil
 	}
-	return mgr.List()
+	return mgr.List(ctx)
 }
 
 // Destroy tears down one session (idempotent, X02).

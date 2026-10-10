@@ -121,7 +121,7 @@ func TestService_GetListDestroyBeforeInit(t *testing.T) {
 	if _, err := svc.Get("x"); !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("Get err = %v", err)
 	}
-	if n := svc.List(); n != nil {
+	if n := svc.List(context.Background()); n != nil {
 		t.Fatalf("List = %v, want nil", n)
 	}
 	if err := svc.Destroy(context.Background(), "x"); err != nil {
@@ -146,8 +146,8 @@ func TestService_CreateThenQuery(t *testing.T) {
 	if got.ID() != sess.ID() {
 		t.Fatalf("id = %q", got.ID())
 	}
-	if len(svc.List()) != 1 {
-		t.Fatalf("List len = %d", len(svc.List()))
+	if len(svc.List(context.Background())) != 1 {
+		t.Fatalf("List len = %d", len(svc.List(context.Background())))
 	}
 }
 

@@ -72,7 +72,7 @@ func (f *fakeService) Get(id string) (*domainsession.Session, error) {
 	return domainsession.New(id, f.createdSpec), nil
 }
 
-func (f *fakeService) List() []*domainsession.Session {
+func (f *fakeService) List(_ context.Context) []*domainsession.Session {
 	if f.list != nil {
 		return f.list
 	}

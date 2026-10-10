@@ -130,7 +130,7 @@ func TestCreate_BackendError(t *testing.T) {
 	if _, err := m.Create(context.Background(), validSpec()); err == nil {
 		t.Fatal("expected backend error")
 	}
-	if len(m.List()) != 0 {
+	if len(m.List(context.Background())) != 0 {
 		t.Fatal("no session should be registered on backend failure")
 	}
 }
@@ -158,7 +158,7 @@ func TestList(t *testing.T) {
 	if _, err := m.Create(context.Background(), validSpec()); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.List(); len(got) != 2 {
+	if got := m.List(context.Background()); len(got) != 2 {
 		t.Fatalf("List len = %d", len(got))
 	}
 }
@@ -219,8 +219,8 @@ func TestDestroyAll(t *testing.T) {
 	if err := m.DestroyAll(context.Background()); err != nil {
 		t.Fatalf("DestroyAll: %v", err)
 	}
-	if len(m.List()) != 0 {
-		t.Fatalf("sessions remain after DestroyAll: %d", len(m.List()))
+	if len(m.List(context.Background())) != 0 {
+		t.Fatalf("sessions remain after DestroyAll: %d", len(m.List(context.Background())))
 	}
 	if len(life.destroyed) != 3 {
 		t.Fatalf("destroyed = %d, want 3", len(life.destroyed))
@@ -239,18 +239,18 @@ func TestReap_IdleOnly(t *testing.T) {
 	if err := m.Reap(context.Background(), 15*time.Minute, time.Now()); err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
-	if len(m.List()) != 2 {
-		t.Fatalf("List after fresh reap = %d, want 2", len(m.List()))
+	if len(m.List(context.Background())) != 2 {
+		t.Fatalf("List after fresh reap = %d, want 2", len(m.List(context.Background())))
 	}
 	// Age every session beyond the idle window.
-	for _, s := range m.List() {
+	for _, s := range m.List(context.Background()) {
 		s.Touch(time.Now().Add(-30 * time.Minute))
 	}
 	if err := m.Reap(context.Background(), 15*time.Minute, time.Now()); err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
-	if len(m.List()) != 0 {
-		t.Fatalf("List after aged reap = %d, want 0", len(m.List()))
+	if len(m.List(context.Background())) != 0 {
+		t.Fatalf("List after aged reap = %d, want 0", len(m.List(context.Background())))
 	}
 	if len(life.destroyed) != 2 {
 		t.Fatalf("destroyed = %d, want 2", len(life.destroyed))
@@ -343,7 +343,7 @@ func TestReap_DestroyError(t *testing.T) {
 		t.Fatal(err)
 	}
 	life.destroyErr = errors.New("fail")
-	for _, s := range m.List() {
+	for _, s := range m.List(context.Background()) {
 		s.Touch(time.Now().Add(-time.Hour))
 	}
 	if err := m.Reap(context.Background(), 15*time.Minute, time.Now()); err == nil {
@@ -371,7 +371,7 @@ func TestCreate_NewIDError(t *testing.T) {
 	if _, err := m.Create(context.Background(), validSpec()); err == nil {
 		t.Fatal("expected id generation error")
 	}
-	if len(m.List()) != 0 {
+	if len(m.List(context.Background())) != 0 {
 		t.Fatal("no session should be registered")
 	}
 }

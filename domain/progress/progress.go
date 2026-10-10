@@ -129,13 +129,13 @@ func (b *LineBatcher) Write(p []byte) (int, error) {
 	for _, c := range p {
 		b.counter++
 		if c == '\n' {
-			b.emit(string(b.buffer))
+			b.emit(context.Background(), string(b.buffer))
 			b.buffer = b.buffer[:0]
 			continue
 		}
 		b.buffer = append(b.buffer, c)
 		if len(b.buffer) >= b.flushThreshold {
-			b.emit(string(b.buffer[:b.flushThreshold]))
+			b.emit(context.Background(), string(b.buffer[:b.flushThreshold]))
 			b.buffer = b.buffer[b.flushThreshold:]
 		}
 	}
@@ -144,11 +144,11 @@ func (b *LineBatcher) Write(p []byte) (int, error) {
 
 // Flush emits any buffered partial bytes as a single event and clears the
 // buffer. It is idempotent: calling it when the buffer is empty is a no-op.
-func (b *LineBatcher) Flush() {
+func (b *LineBatcher) Flush(ctx context.Context) {
 	if len(b.buffer) == 0 {
 		return
 	}
-	b.emit(string(b.buffer))
+	b.emit(ctx, string(b.buffer))
 	b.buffer = b.buffer[:0]
 }
 
@@ -158,15 +158,15 @@ func (b *LineBatcher) Progress() int64 { return b.counter }
 // emit splits msg into capped segments (each at most maxMessageLen bytes) and
 // sends one Event per segment, carrying the current cumulative Progress.
 // Empty messages are dropped so a bare newline produces no spurious event.
-func (b *LineBatcher) emit(msg string) {
+func (b *LineBatcher) emit(ctx context.Context, msg string) {
 	if b.sink == nil {
 		return
 	}
 	for len(msg) > b.maxMessageLen {
-		b.sink(context.Background(), Event{Message: msg[:b.maxMessageLen], Progress: b.counter})
+		b.sink(ctx, Event{Message: msg[:b.maxMessageLen], Progress: b.counter})
 		msg = msg[b.maxMessageLen:]
 	}
 	if msg != "" {
-		b.sink(context.Background(), Event{Message: msg, Progress: b.counter})
+		b.sink(ctx, Event{Message: msg, Progress: b.counter})
 	}
 }

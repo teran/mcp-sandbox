@@ -120,7 +120,7 @@ type Manager interface {
 	// Get returns the session with the given id, or an error if it is unknown.
 	Get(id string) (*Session, error)
 	// List returns all known live sessions.
-	List() []*Session
+	List(ctx context.Context) []*Session
 	// Destroy tears down one session. Destroying an unknown id is a no-op
 	// (idempotent, X02).
 	Destroy(ctx context.Context, id string) error

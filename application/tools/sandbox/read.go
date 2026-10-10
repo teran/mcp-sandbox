@@ -23,8 +23,8 @@ func sandboxListDef(b builder) *def.ToolDef {
 		"Read-only. Never mutates any sandbox. Returns the current set of live sessions.",
 		obj(nil),
 		objectOutput(),
-		func(_ context.Context, _ json.RawMessage) (any, error) {
-			sessions := b.svc.List()
+		func(ctx context.Context, _ json.RawMessage) (any, error) {
+			sessions := b.svc.List(ctx)
 			out := ListOutput{Sessions: make([]SessionSummary, 0, len(sessions))}
 			for _, s := range sessions {
 				out.Sessions = append(out.Sessions, SessionSummary{

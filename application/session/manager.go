@@ -205,14 +205,14 @@ func (m *Manager) Get(id string) (*domainsession.Session, error) {
 }
 
 // List returns every live session.
-func (m *Manager) List() []*domainsession.Session {
+func (m *Manager) List(ctx context.Context) []*domainsession.Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]*domainsession.Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		out = append(out, s)
 	}
-	m.entryFor(context.Background(), "").WithField("operation", "list").WithField("count", len(out)).Trace("session: listed")
+	m.entryFor(ctx, "").WithField("operation", "list").WithField("count", len(out)).Trace("session: listed")
 	return out
 }
 
@@ -273,7 +273,7 @@ func (m *Manager) DestroyAll(ctx context.Context) error {
 // timeout (idle reaper).
 func (m *Manager) Reap(ctx context.Context, timeout time.Duration, now time.Time) error {
 	defer m.traceOp(ctx, "reap", "")()
-	sessions := m.List()
+	sessions := m.List(ctx)
 	for _, s := range sessions {
 		if !s.Expired(timeout, now) {
 			continue

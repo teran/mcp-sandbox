@@ -51,7 +51,7 @@ type Service interface {
 	// Get returns the session with the given id.
 	Get(id string) (*domainsession.Session, error)
 	// List returns every live session.
-	List() []*domainsession.Session
+	List(ctx context.Context) []*domainsession.Session
 	// Destroy tears down one session (idempotent, X02).
 	Destroy(ctx context.Context, id string) error
 	// DestroyAll tears down every session (idempotent).

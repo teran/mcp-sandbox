@@ -45,7 +45,7 @@ func sandboxDestroyAllDef(b builder) *def.ToolDef {
 		obj(nil),
 		objectOutput(),
 		func(ctx context.Context, _ json.RawMessage) (any, error) {
-			before := b.svc.List()
+			before := b.svc.List(ctx)
 			if err := b.svc.DestroyAll(ctx); err != nil {
 				return nil, err
 			}

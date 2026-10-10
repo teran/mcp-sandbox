@@ -604,10 +604,10 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	// Flush any trailing partial (non-newline-terminated) output so it is
 	// streamed too before the terminal events.
 	if outBatcher != nil {
-		outBatcher.Flush()
+		outBatcher.Flush(execCtx)
 	}
 	if errBatcher != nil {
-		errBatcher.Flush()
+		errBatcher.Flush(execCtx)
 	}
 
 	inspect, err := b.api.ContainerExecInspect(execCtx, execResp.ID)
