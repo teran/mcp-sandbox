@@ -83,7 +83,7 @@ in **[`SPEC.md`](SPEC.md)**. Agent working conventions are in
 Highlights:
 
 - **DDD / Clean architecture** with top-level packages
-  (`cmd/mcp-sandbox/`, `domain/`, `application/`, `infrastructure/`, `e2e/`) —
+  (`cmd/mcp-sandbox/`, `domain/`, `application/`, `infrastructure/`) —
   no `internal/`.
 - **Role-based backend interfaces** (`Backend`, `Lifecycle`, `Executable`,
   `Introspectable`) with capability dispatch via type-assertion
@@ -349,7 +349,7 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   implicitly.
 - tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, writable; some daemons like Docker Desktop force `noexec` on tmpfs, so runtime compilation uses the writable bind-mounted `cwd`); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
-  symlink-safe (EvalSymlinks + open-then-verify + `O_NOFOLLOW`); this gates the
+  symlink-safe (EvalSymlinks + open-then-verify); this gates the
   session `cwd` **and** every profile mount `source`; the session `cwd` is the
   sanctioned bind-mount (read-only default).
 - Single **redaction layer** hides `secret:true` fields from all output and
@@ -382,14 +382,15 @@ Tests are never weakened to make the implementation pass.
 - **Unit tests:** `make test` — `go test -race` + **coverage ≥ 95%** gate
   (fails below).
 - **Mutation testing:** gremlins as a hard gate (80/80) — dedicated CI job.
-- **e2e tests:** build-tagged (`//go:build e2e`), run via **`make e2e`** using
-  the **go-docker-testsuite** harness (requires Docker).
+- **e2e:** out of scope for this Local server (no e2e suite, no `make e2e` —
+  a real e2e would need Docker-in-Docker, conflicting with the immutable
+  sandbox hardening; the handler→backend path is covered by unit tests).
 
 ### Quality gates
 
 CI (GitHub Actions) binds to the **make interface** (R07) and enforces:
 `make lint` (golangci-lint, gosec, govulncheck, go-arch-lint), `make test`
-(race + coverage ≥ 95%), `make build` (goreleaser), `make e2e`, plus hard-gate
+(race + coverage ≥ 95%), `make build` (goreleaser), plus hard-gate
 jobs for **gremlins** (mutation) and **gitleaks** (secret scan). Findings are
 **fixed, not suppressed**. CI never mutates repository state.
 
