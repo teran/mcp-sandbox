@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,10 @@ import (
 
 // ErrSessionNotFound is returned by Get when no session has the given id.
 var ErrSessionNotFound = errors.New("session: not found")
+
+// ErrAmbiguousSessionID is returned by Get/Destroy when the given id is a
+// prefix of more than one live session and cannot be resolved uniquely (§6.6).
+var ErrAmbiguousSessionID = errors.New("session: ambiguous id prefix")
 
 // IDSizeBytes is the length of the opaque session id in bytes (§7.8). A 32-byte
 // id yields 64 hex characters.
@@ -155,15 +160,47 @@ func (m *Manager) Create(ctx context.Context, s spec.SandboxSpec) (*domainsessio
 	return sess, nil
 }
 
-// Get returns the session with the given id.
+// resolveID resolves a caller-supplied id to the full session id. It must be
+// called with m.mu held (RLock). An exact full id fast-paths O(1); otherwise
+// every live id is scanned for a unique prefix match (SPEC §6.6). Zero matches
+// returns ErrSessionNotFound, more than one match returns ErrAmbiguousSessionID.
+func (m *Manager) resolveID(prefix string) (string, error) {
+	// An empty prefix would match every id via HasPrefix, so it is never a
+	// valid resolution (a real session id is always non-empty, §7.8).
+	if prefix == "" {
+		return "", ErrSessionNotFound
+	}
+	if _, ok := m.sessions[prefix]; ok {
+		return prefix, nil
+	}
+
+	var match string
+	for id := range m.sessions {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		if match != "" {
+			return "", ErrAmbiguousSessionID
+		}
+		match = id
+	}
+	if match == "" {
+		return "", ErrSessionNotFound
+	}
+	return match, nil
+}
+
+// Get returns the session with the given id, resolving a unique prefix to the
+// full id (SPEC §6.6).
 func (m *Manager) Get(id string) (*domainsession.Session, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	s, ok := m.sessions[id]
-	if !ok {
-		return nil, ErrSessionNotFound
+	full, err := m.resolveID(id)
+	if err != nil {
+		return nil, err
 	}
-	m.entryFor(context.Background(), id).WithField("operation", "get").Trace("session: got")
+	s := m.sessions[full]
+	m.entryFor(context.Background(), full).WithField("operation", "get").Trace("session: got")
 	return s, nil
 }
 
@@ -185,24 +222,31 @@ func (m *Manager) List() []*domainsession.Session {
 func (m *Manager) Destroy(ctx context.Context, id string) error {
 	defer m.traceOp(ctx, "destroy", id)()
 	m.mu.RLock()
-	s, ok := m.sessions[id]
-	if !ok {
-		m.mu.RUnlock()
-		return nil
+	full, err := m.resolveID(id)
+	var s *domainsession.Session
+	if err == nil {
+		s = m.sessions[full]
 	}
 	m.mu.RUnlock()
+	if errors.Is(err, ErrSessionNotFound) {
+		// Idempotent no-op (X02): a zero-match id/prefix is not an error.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 
 	// Serialize the destroy with any in-flight per-session operation (X05).
 	s.Lock()
 	defer s.Unlock()
 
-	if err := m.life.Destroy(ctx, id); err != nil {
-		return fmt.Errorf("session: destroy %q: %w", id, err)
+	if err := m.life.Destroy(ctx, full); err != nil {
+		return fmt.Errorf("session: destroy %q: %w", full, err)
 	}
 	s.MarkDestroyed()
 
 	m.mu.Lock()
-	delete(m.sessions, id)
+	delete(m.sessions, full)
 	m.mu.Unlock()
 	return nil
 }

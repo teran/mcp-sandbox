@@ -87,10 +87,14 @@ func sandboxStatsDef(b builder) *def.ToolDef {
 			if err := json.Unmarshal(args, &in); err != nil {
 				return nil, fmt.Errorf("sandbox_stats: %w", err)
 			}
-			details, err := b.svc.Stats(ctx, in.ID)
+			sess, err := b.svc.Get(in.ID)
 			if err != nil {
 				return nil, err
 			}
-			return StatsOutput{ID: in.ID, Details: details}, nil
+			details, err := b.svc.Stats(ctx, sess.ID())
+			if err != nil {
+				return nil, err
+			}
+			return StatsOutput{ID: sess.ID(), Details: details}, nil
 		})
 }

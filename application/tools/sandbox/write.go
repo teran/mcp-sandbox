@@ -198,7 +198,7 @@ func sandboxExecDef(b builder) *def.ToolDef {
 				execCtx = progress.WithSink(ctx, wrapped)
 			}
 			res, err := b.svc.Exec(execCtx, exec.Request{
-				SandboxID:  in.ID,
+				SandboxID:  sess.ID(),
 				Command:    in.Command,
 				Env:        in.Env,
 				Argv:       wrapper,
@@ -215,7 +215,7 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			// redactor cannot see inside free-form text, so we replace the
 			// known secret values before returning the output.
 			return ExecOutput{
-				ID:       in.ID,
+				ID:       sess.ID(),
 				ExitCode: res.ExitCode,
 				Stdout:   redactSecrets(sanitizeANSI(string(res.Stdout)), secrets),
 				Stderr:   redactSecrets(sanitizeANSI(string(res.Stderr)), secrets),
