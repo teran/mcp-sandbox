@@ -188,7 +188,7 @@ it **read-only** (no create/update/delete tools). See `FEEDBACK.md`
 - [ ] **Docs:** document hot-reload in `SPEC.md` §7.11, `README.md`, `AGENTS.md`
       (English, D01/D02); drop the "requires restart" note from `FEEDBACK.md`.
 
-## General MCP skill: "host shell restricted → sandbox MCP" (backlog — docs)
+## General MCP skill: "host shell restricted → sandbox MCP" (backlog — design decided)
 
 When the host `shell` is restricted, an agent can misread the `permission denied`
 as a dead end instead of a redirect to a sandbox/execution MCP server. Lesson
@@ -196,12 +196,29 @@ from `FEEDBACK.md` §1/§6: the manager's default toolset (core + task + memory)
 has **no executor**, so the sandbox MCP is the sanctioned way to run arbitrary
 commands. This generalizes to any MCP host.
 
-- [ ] **Write a general MCP skill** (`shell-restricted` / similar) capturing the
-      invariant: host `shell` blocked → discover a sandbox/execution MCP server
-      via the tool catalog (`search`) and run the command there (argument array,
-      no shell string); never treat the denial as a hard dead end — `D01 D02`
-- [ ] **Reference it** from `AGENTS.md` and the FEEDBACK §1/§6 entries once the
-      skill exists (keep the repo guidance pointing at the general skill).
+> **Design decided (delivered via MCP, no files):** instead of a standalone skill
+> file (or AGENTS.md pointer), make `mcp-sandbox` a **self-describing server** —
+> the whole capability doc lives on the MCP wire:
+> - general working principle → MCP **`instructions`** (injected into context
+>   while connected ⇒ always applied, no fetch);
+> - each tool → detailed **tool descriptions** (visible in the catalog every step);
+> - expanded playbooks → MCP **resources**, named + described and pointed to from
+>   `instructions` (pull-on-demand depth).
+> The model learns what the server can do and how to use it automatically via the
+> MCP catalog/instructions — **no standalone skill file, no AGENTS.md pointer.**
+
+- [ ] **Server: add MCP `instructions`** stating the redirect invariant + listing
+      the available resources (incl. the `sandbox://guidance/*` playbooks) — `S02 S09`
+- [ ] **Server: enrich `sandbox_*` tool descriptions** so each tool is
+      self-explanatory and the redirect ("use this instead of the host shell when
+      restricted") is always in front of the model — `S02 S09`
+- [ ] **Server: add resources** `sandbox://guidance/*` with the expanded
+      descriptions/playbooks (secrets-safe, markdown), discoverable via catalog —
+      `S02 S09`
+- [ ] **Tests:** instructions/resources/tool-descriptions present, no secret
+      leakage, ANSI-safe — `@qa`, `S02 S09 C01`
+- [ ] **Docs:** fold into `SPEC.md`/`README.md` (self-describing-server principle),
+      English — `D01 D02`; no file-based skill created.
 
 ## Default GOCACHE/GOTMPDIR for Go builds (backlog — design open)
 
