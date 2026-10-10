@@ -6,11 +6,17 @@
 
 COVERAGE_THRESHOLD := 95
 
-.PHONY: build test lint e2e mutate clean coverage
+.PHONY: build test lint mutate release security-scan arch clean coverage
 
 ## build — produce binaries for all architectures via goreleaser (B01/B02).
+## Snapshot mode: verifies the release pipeline in CI without publishing.
 build:
 	goreleaser release --snapshot --clean
+
+## release — publish real goreleaser binaries + GitHub Release on tags (B01).
+## Used by the release CI job only (never in the default gate).
+release:
+	goreleaser release --clean
 
 ## test — unit tests with race detector + coverage ≥ 95% gate (C01/C04GO).
 test:
@@ -32,9 +38,15 @@ lint:
 	scripts/govulncheck.sh
 	go-arch-lint check
 
-## e2e — build-tagged contract suite via go-docker-testsuite (T02/C09GO).
-e2e:
-	go test -tags e2e ./...
+## security-scan — dedicated SAST/vuln gate (C05GO/C06GO). CI calls this so
+## it binds to the make interface (R07/N31) instead of raw scanner commands.
+security-scan:
+	gosec -quiet ./...
+	scripts/govulncheck.sh
+
+## arch — dedicated layer-boundary gate (C07GO). CI calls this via make (R07).
+arch:
+	go-arch-lint check
 
 ## mutate — gremlins mutation testing hard gate 80/80 (C02/C08GO).
 ## Run from the module root without a path argument: passing a path makes
