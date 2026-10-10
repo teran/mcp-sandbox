@@ -131,7 +131,7 @@ auth via environment, no HTTP headers).
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
 | `LOG_FORMAT` | `text` | `text` or `json`. |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
-| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
+| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). Read **on demand** on each profile lookup — edits take effect without restarting the server. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
 
 > **Removed in Phase 7:** `SANDBOX_CWD_MODE` (→ profile `cwd.mode`),
 > `SANDBOX_CGROUP_CPU_LIMIT_CORES` / `SANDBOX_CGROUP_MEMORY_LIMIT_GB`
@@ -151,7 +151,10 @@ export LOG_FILENAME=/tmp/mcp-sandbox.log
 
 Sandboxes are created from **operator-authored, read-only YAML profiles** — one
 `<name>.yml` per profile under `SANDBOX_PROFILES_DIR` (default
-`~/.config/sandbox/profiles`). A profile fully determines the sandbox runtime:
+`~/.config/sandbox/profiles`). Profiles are **read on demand** — the server
+scans `SANDBOX_PROFILES_DIR` on each profile lookup, so editing a `<name>.yml`
+takes effect immediately **without restarting the server**. A profile fully
+determines the sandbox runtime:
 image, env, mounts, network, cgroup limits, user and sudo. There are **no**
 profile create/update/delete tools; the model references a profile **by name**
 on `sandbox_create`, and `profile_list` enumerates what's available.

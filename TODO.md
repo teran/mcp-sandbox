@@ -168,16 +168,16 @@ are removed only by explicit `sandbox_destroy`/`sandbox_destroy_all`. See
 - [ ] **Docs:** flip the "NOT WIRED / non-functional" callouts in `SPEC.md`
       `§6.6`, `README.md` "Sandbox lifecycle & GC", `AGENTS.md` once wired — `D01 D02`
 
-## Operator profile changes picked up automatically (backlog — design decided)
+## Operator profile changes picked up automatically (implemented)
 
-Profiles are currently read **once at startup** (`application/profile` store loaded
-in `cmd/mcp-sandbox/main.go`); editing a `<name>.yml` in `SANDBOX_PROFILES_DIR`
-requires a full server-process restart. **Design decided:** instead of a
-watcher/SIGHUP + in-memory cache, **read profiles from disk on each use and keep
-no in-memory store** — profiles are small, structured YAML; at this scale parsing
-is trivial. `Get(name)` / `List` read + parse fresh from `SANDBOX_PROFILES_DIR`
-each time, so edits are picked up automatically with **no watcher, no atomic swap,
-no memory state**. Still read-only (no create/update/delete tools) and fail-closed
+Profiles are now read **on demand** (`application/profile` store reads + parses
+`SANDBOX_PROFILES_DIR` fresh on each `Get(name)` / `List()` call — **no** startup
+load, **no** in-memory store); editing a `<name>.yml` in `SANDBOX_PROFILES_DIR`
+takes effect immediately, **no server-process restart needed**. This replaces
+the previous once-at-startup load (which required a full restart to pick up an
+edit) with a disk-read-on-each-use model: no watcher/SIGHUP, no in-memory cache.
+Profiles are small, structured YAML; at this scale parsing is trivial. Still
+read-only (no create/update/delete tools) and fail-closed
 (S04): an unparsable/invalid profile surfaces as a clear error on use.
 
 - [x] **Store: read-on-demand** — `Get`/`List` parse fresh from
@@ -188,7 +188,7 @@ no memory state**. Still read-only (no create/update/delete tools) and fail-clos
 - [x] **Tests:** unit (fresh read reflects an edit, invalid file fail-closed,
       `List` sorted, duplicate/traversal rejected, no cross-call staleness under
       `-race`) — `@qa`, `C01 C04GO T01 X05`
-- [ ] **Docs:** document the read-on-demand behavior in `SPEC.md` §7.11,
+- [x] **Docs:** document the read-on-demand behavior in `SPEC.md` §7.11,
       `README.md`, `AGENTS.md` (English, D01/D02); drop the "requires restart"
       note.
 

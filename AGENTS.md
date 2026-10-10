@@ -87,7 +87,10 @@ See `SPEC.md` §7.
 - **Operator-authored profiles (Phase 7) — trust model:** sandboxes are created
   from **read-only** YAML profiles in `SANDBOX_PROFILES_DIR`. **Operators author,
   the model references read-only** (by `profile` name on `sandbox_create`); a
-  profile owns image/env/mounts/network/limits/user/sudo. The profile is the
+  profile owns image/env/mounts/network/limits/user/sudo. Profiles are **read on
+  demand** — there is **no in-memory store and no startup load**; each
+  `Get`/`List` reads `SANDBOX_PROFILES_DIR` fresh, so editing a `<name>.yml`
+  takes effect **without restarting the server** (§7.11). The profile is the
   trusted party for those fields, but it can **never** weaken the immutable
   `Isolation` block (§6.5/§7.11). **`ALLOW_DIRS` is retained and still required**
   — it gates the client-supplied `cwd` **and every profile mount `source`**

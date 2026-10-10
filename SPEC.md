@@ -320,9 +320,10 @@ domain/                    pure domain model, no infra dependencies
 application/               use-case orchestration
   config/                  env-driven Config (ALLOW_DIRS, SANDBOX_PROFILES_DIR,
                            LOG_*), validation
-  profile/                 profile store (Phase 7): scans SANDBOX_PROFILES_DIR,
-                           parses + validates each <name>.yml, Get/List
-                           (read-only — no create/update/delete)
+  profile/                 profile store (Phase 7): reads on demand — scans
+                           SANDBOX_PROFILES_DIR, parses + validates each
+                           <name>.yml, Get/List (read-only — no
+                           create/update/delete)
   sandbox/                 sandbox service: create/use/destroy, Backend select
   session/                 session manager: registry, lifecycle, reaper
   tools/                   declarative tool framework
@@ -562,7 +563,7 @@ startup (local wiring only):
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600` (**L01/L03**). |
 | `LOG_FORMAT` | `text` | `text` or `json` (**L04**). |
 | `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window (**not yet wired** — the reaper is designed but not running; see §6.6). |
-| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, READ-ONLY** YAML sandbox profiles — one `<name>.yml` per profile (**Phase 7**, §7.11). The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. There is **no** profile create/update/delete mechanism. |
+| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, READ-ONLY** YAML sandbox profiles — one `<name>.yml` per profile (**Phase 7**, §7.11). Read **on demand** on each `Get`/`List` (§7.11) — edits take effect without a restart. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. There is **no** profile create/update/delete mechanism. |
 
 > **Removed configuration (Phase 7).** The following env vars were **removed**;
 > their responsibility moved into the operator profile (§7.11) or the profile
@@ -927,17 +928,32 @@ Schema key reference (`domain/sandbox/profile.Profile`):
 
 #### Loader & store (read-only)
 
-- **`application/profile`** scans `SANDBOX_PROFILES_DIR`, parses each
-  `<name>.yml`, validates it and exposes `Get(name)` / `List()` (sorted by
-  name). It is **read-only by construction** — there are no create/update/delete
-  operations.
-- **Loading is fail-closed and traversal-safe:** a file that is unparsable YAML,
-  fails `Validate`, declares a duplicate `name`, or whose `name` attempts path
-  traversal (`..`, separators) makes `Load` **error** — the store does not
-  silently skip or serve a hostile profile. A missing directory yields an empty
-  store.
-- The profile's `name` (not the filename) is the authoritative store key; a
-  hostile name is rejected even when the filename itself is plain.
+- **`application/profile`** exposes `New(dir)`, `Get(name) (*Profile, error)`
+  and `List() ([]*Profile, error)`. It is **read-only by construction** — there
+  are no create/update/delete operations.
+- **Read-on-demand (no in-memory store, no startup load):** there is **no**
+  in-memory store and **nothing is loaded at startup**. Every `Get(name)` /
+  `List()` call **reads and parses `SANDBOX_PROFILES_DIR` fresh**, on demand.
+  `List()` returns profiles sorted by name. Consequently, editing a `<name>.yml`
+  takes effect immediately — **no server restart needed**.
+- **Fail-closed and traversal-safe:** a file that is unparsable YAML, fails
+  `Validate`, declares a duplicate `name`, or whose declared `name` attempts
+  path traversal (`..`, separators) surfaces a **wrapped error** from
+  `Get`/`List` — the store does not silently skip or serve a hostile profile. A
+  missing directory yields an empty set (`Get` → `ErrProfileNotFound`, `List` →
+  empty + nil).
+- **Error semantics:** `Get` on a missing/empty directory or an unknown name
+  returns `ErrProfileNotFound`; a malformed or traversal-attempting lookup
+  `name` returns `ErrInvalidName`. The lookup `name` is **never used as a
+  filesystem path**: the store scans the whole directory on each call and
+  matches the **declared** `name` fields (which also enables duplicate
+  detection). Traversal safety is enforced via `os.OpenRoot`.
+- The profile's declared `name` (not the filename) is the authoritative store
+  key; a hostile name is rejected even when the filename itself is plain.
+- **Transient torn-write window:** because each call reads the directory fresh,
+  an in-place/torn file write can surface a transient fail-closed error on that
+  single call only (it self-heals on the next call). **Prefer atomic writes** to
+  `<name>.yml`.
 
 #### `sandbox_create` in the profile model
 
