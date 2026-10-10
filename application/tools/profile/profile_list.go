@@ -17,7 +17,7 @@ import (
 
 // Lister is the read-only profile enumeration the tool depends on.
 type Lister interface {
-	List() []*domainprofile.Profile
+	List() ([]*domainprofile.Profile, error)
 }
 
 // Summary is one entry of profile_list output: name + description only
@@ -70,7 +70,10 @@ func profileListDef(l Lister) *def.ToolDef {
 		InputSchema:  objectSchema(),
 		OutputSchema: outputSchema(),
 		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
-			ps := l.List()
+			ps, err := l.List()
+			if err != nil {
+				return nil, err
+			}
 			out := ListOutput{Profiles: make([]Summary, 0, len(ps))}
 			for _, p := range ps {
 				out.Profiles = append(out.Profiles, Summary{Name: p.Name, Description: p.Description})

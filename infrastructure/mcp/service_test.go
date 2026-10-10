@@ -12,6 +12,7 @@ import (
 	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/session"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
@@ -269,7 +270,8 @@ func TestService_PolicyAndBackendName(t *testing.T) {
 
 // TestService_PolicyWithProfileStore pins Phase 7: once SetProfileStore is wired,
 // Policy exposes the store as the ProfileResolver so sandbox_create can resolve
-// operator-authored profiles by name.
+// operator-authored profiles by name on demand (fail-closed: unknown name →
+// ErrProfileNotFound).
 func TestService_PolicyWithProfileStore(t *testing.T) {
 	fb := &fakeBackend{}
 	svc := newTestService(t, fb)
@@ -277,16 +279,16 @@ func TestService_PolicyWithProfileStore(t *testing.T) {
 	if pol := svc.Policy(); pol.Profiles != nil {
 		t.Fatalf("Profiles = %v, want nil before SetProfileStore", pol.Profiles)
 	}
-	// After wiring a store, Policy must expose it as the resolver.
-	st := profile.Empty()
+	// After wiring an empty-dir store, Policy must expose it as the resolver.
+	st := profile.New(t.TempDir())
 	svc.SetProfileStore(st)
 	pol := svc.Policy()
 	if pol.Profiles == nil {
 		t.Fatal("Profiles = nil, want non-nil store after SetProfileStore")
 	}
-	// The wired store is actually used for resolution.
-	if _, ok := pol.Profiles.Get("anything"); ok {
-		t.Fatal("Get on empty store should report not-found")
+	// The wired store is actually used for resolution (fail-closed).
+	if _, err := pol.Profiles.Get("anything"); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+		t.Fatalf("Get(anything) err = %v, want ErrProfileNotFound", err)
 	}
 }
 

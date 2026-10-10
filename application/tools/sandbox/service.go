@@ -18,7 +18,7 @@ import (
 // ProfileResolver resolves an operator-authored profile by name. It is
 // satisfied by the application-layer profile store.
 type ProfileResolver interface {
-	Get(name string) (*domainprofile.Profile, bool)
+	Get(name string) (*domainprofile.Profile, error)
 }
 
 // Policy is the server-enforced sandbox policy exposed to the tools (SPEC

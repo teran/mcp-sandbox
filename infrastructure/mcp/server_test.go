@@ -110,13 +110,13 @@ func TestNewServer_RegistersTools(t *testing.T) {
 	}
 }
 
-// TestBuildTools_EmptyProfileStoreKeepsProfileList pins Fix 2: when the server
-// starts with a functional empty profile store (the Load-error fallback), the
-// profile_list tool must stay in the toolset. Regression: a nil store previously
-// dropped profile_list entirely.
-func TestBuildTools_EmptyProfileStoreKeepsProfileList(t *testing.T) {
+// TestBuildTools_EmptyDirStoreKeepsProfileList pins that when the server wires
+// a profile store rooted at an empty directory (the read-on-demand default),
+// the profile_list tool must stay in the toolset. Regression: a nil store
+// previously dropped profile_list entirely.
+func TestBuildTools_EmptyDirStoreKeepsProfileList(t *testing.T) {
 	svc := NewService(backend.NewRegistry(), backend.Config{})
-	svc.SetProfileStore(profile.Empty())
+	svc.SetProfileStore(profile.New(t.TempDir()))
 
 	hasProfileList := false
 	for _, d := range BuildTools(svc) {

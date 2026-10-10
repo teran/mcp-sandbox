@@ -148,14 +148,23 @@ func defaultProfile() *domainprofile.Profile {
 	}
 }
 
-// fakeResolver is a ProfileResolver double keyed by profile name.
+// fakeResolver is a ProfileResolver double keyed by profile name. It resolves
+// on demand (new API): missing names yield ErrProfileNotFound; an injected
+// err simulates a fail-closed store read error.
 type fakeResolver struct {
 	profiles map[string]*domainprofile.Profile
+	err      error
 }
 
-func (f fakeResolver) Get(name string) (*domainprofile.Profile, bool) {
+func (f fakeResolver) Get(name string) (*domainprofile.Profile, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	p, ok := f.profiles[name]
-	return p, ok
+	if !ok {
+		return nil, domainprofile.ErrProfileNotFound
+	}
+	return p, nil
 }
 
 func newFake() *fakeService {

@@ -94,9 +94,12 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 	if pol.Profiles == nil {
 		return spec.SandboxSpec{}, errors.New("sandbox_create: profile resolver is not configured")
 	}
-	p, ok := pol.Profiles.Get(in.Profile)
-	if !ok {
-		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: unknown profile %q", in.Profile)
+	p, err := pol.Profiles.Get(in.Profile)
+	if err != nil {
+		if errors.Is(err, domainprofile.ErrProfileNotFound) {
+			return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: unknown profile %q: %w", in.Profile, err)
+		}
+		return spec.SandboxSpec{}, err
 	}
 
 	secrets := make([]spec.SecretRef, 0, len(in.Secrets))

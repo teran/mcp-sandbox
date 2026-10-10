@@ -128,35 +128,41 @@ func (yp *yamlProfile) toDomain() *domainprofile.Profile {
 	return p
 }
 
-// Store is an immutable, in-memory view of the operator-authored profiles,
-// keyed by profile name. It is read-only by construction.
+// Store is a read-on-demand view of the operator-authored profiles directory.
+// It holds only the directory path and keeps NO in-memory state: every Get/List
+// call scans + parses + validates the directory fresh (no startup preload, no
+// shared mutable state, hence no mutex — X05). It is read-only by construction.
 type Store struct {
-	profiles map[string]*domainprofile.Profile
+	dir string
 }
 
-// Load scans the profiles directory for *.yml / *.yaml files, parses and
-// validates each and returns a Store. An empty or missing directory yields an
-// empty store. A duplicate profile name, an invalid profile, or unparsable YAML
-// is an error. The store is keyed by the validated profile name, which is
-// filesystem-safe (name regex), so a hostile file cannot escape the directory.
-func Load(dir string) (*Store, error) {
-	st := &Store{profiles: make(map[string]*domainprofile.Profile)}
+// New returns a read-on-demand profile store rooted at dir.
+func New(dir string) *Store {
+	return &Store{dir: dir}
+}
 
-	entries, err := os.ReadDir(dir)
+// scan reads, parses and validates every *.yml / *.yaml profile in the
+// directory fresh and returns the keyed result. An empty or missing directory
+// yields an empty map with a nil error; a duplicate name, an invalid profile,
+// an unparsable YAML or a traversal declared name is a wrapped error
+// (fail-closed, S04). Every file read is confined to dir via os.OpenRoot, so a
+// hostile file cannot escape regardless of the file name.
+func (s *Store) scan() (map[string]*domainprofile.Profile, error) {
+	profiles := make(map[string]*domainprofile.Profile)
+
+	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return st, nil
+			return profiles, nil
 		}
-		return nil, fmt.Errorf("profile: read dir %q: %w", dir, err)
+		return nil, fmt.Errorf("profile: read dir %q: %w", s.dir, err)
 	}
 
 	// Open the profiles directory once as a scoped root so that every file
-	// read below is structurally confined to dir — traversal out of it is
-	// impossible regardless of fname (which comes from ReadDir and is a bare
-	// base name, but os.Root enforces the boundary even against hostile input).
-	root, err := os.OpenRoot(dir)
+	// read below is structurally confined to dir.
+	root, err := os.OpenRoot(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("profile: open root %q: %w", dir, err)
+		return nil, fmt.Errorf("profile: open root %q: %w", s.dir, err)
 	}
 	defer func() { _ = root.Close() }()
 
@@ -182,42 +188,60 @@ func Load(dir string) (*Store, error) {
 			return nil, fmt.Errorf("profile: %s: parse: %w", fname, err)
 		}
 		p := yp.toDomain()
+		// Reject a declared name that is invalid / tries to traverse out of the
+		// profiles directory (fail-closed) before it could be used as a key.
+		if !domainprofile.ValidName(p.Name) {
+			return nil, fmt.Errorf("profile: %s: invalid name %q", fname, p.Name)
+		}
 		if err := p.Validate(); err != nil {
 			return nil, fmt.Errorf("profile: %s: %w", fname, err)
 		}
-		if _, exists := st.profiles[p.Name]; exists {
+		if _, exists := profiles[p.Name]; exists {
 			return nil, fmt.Errorf("profile: duplicate name %q", p.Name)
 		}
-		st.profiles[p.Name] = p
+		profiles[p.Name] = p
 	}
 
-	return st, nil
+	return profiles, nil
 }
 
-// Empty returns a functional empty store: Get always reports not-found and
-// List returns an empty slice. It is used to keep the server operational with a
-// non-nil store when profile loading fails (an operator mistake must not take
-// profile_list / sandbox_create down entirely).
-func Empty() *Store {
-	return &Store{profiles: make(map[string]*domainprofile.Profile)}
+// Get returns the profile with the given name. The lookup key is guarded
+// up-front (an invalid key returns ErrInvalidName without ever being used as a
+// path) and is then matched against the declared `name` of every scanned
+// profile — never against a file path. An unknown name or a missing/empty
+// directory returns ErrProfileNotFound; any scan error is propagated verbatim
+// (fail-closed).
+func (s *Store) Get(name string) (*domainprofile.Profile, error) {
+	if !domainprofile.ValidName(name) {
+		return nil, domainprofile.ErrInvalidName
+	}
+	profiles, err := s.scan()
+	if err != nil {
+		return nil, err
+	}
+	p, ok := profiles[name]
+	if !ok {
+		return nil, domainprofile.ErrProfileNotFound
+	}
+	return p, nil
 }
 
-// Get returns the profile with the given name.
-func (s *Store) Get(name string) (*domainprofile.Profile, bool) {
-	p, ok := s.profiles[name]
-	return p, ok
-}
-
-// List returns every profile sorted by name.
-func (s *Store) List() []*domainprofile.Profile {
-	names := make([]string, 0, len(s.profiles))
-	for n := range s.profiles {
+// List returns every profile sorted by name, parsed fresh from the directory.
+// An empty or missing directory yields an empty slice with a nil error; any
+// scan error is propagated verbatim (fail-closed).
+func (s *Store) List() ([]*domainprofile.Profile, error) {
+	profiles, err := s.scan()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(profiles))
+	for n := range profiles {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	out := make([]*domainprofile.Profile, 0, len(names))
 	for _, n := range names {
-		out = append(out, s.profiles[n])
+		out = append(out, profiles[n])
 	}
-	return out
+	return out, nil
 }

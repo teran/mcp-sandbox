@@ -703,11 +703,23 @@ func TestBuildSpec_ProfileUser(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_UnknownProfile(t *testing.T) {
+func TestBuildSpec_UnknownProfile_ErrProfileNotFound(t *testing.T) {
 	svc := newFake()
 	b := builder{svc: svc}
-	if _, err := buildSpec(b, createInput{Profile: "nope", Cwd: "/c", SessionID: "s"}); err == nil {
-		t.Fatal("expected unknown-profile error")
+	if _, err := buildSpec(b, createInput{Profile: "nope", Cwd: "/c", SessionID: "s"}); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+		t.Fatalf("err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// TestBuildSpec_ProfileGetError_Propagates pins fail-closed resolution: a store
+// read error must propagate out of buildSpec (and thus sandbox_create) rather
+// than being swallowed or substituted.
+func TestBuildSpec_ProfileGetError_Propagates(t *testing.T) {
+	svc := newFake()
+	svc.policy.Profiles = fakeResolver{err: errFake}
+	b := builder{svc: svc}
+	if _, err := buildSpec(b, createInput{Profile: "default", Cwd: "/c", SessionID: "s"}); !errors.Is(err, errFake) {
+		t.Fatalf("err = %v, want resolver error to propagate", err)
 	}
 }
 

@@ -6,6 +6,7 @@ package profile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
@@ -14,12 +15,20 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
-// fakeLister returns a fixed set of profiles for the tool to enumerate.
+// fakeLister returns a fixed set of profiles (or an injected error) for the
+// tool to enumerate. It matches the new Lister contract: List returns an error
+// that the handler must propagate (fail-closed).
 type fakeLister struct {
 	profiles []*domainprofile.Profile
+	err      error
 }
 
-func (f fakeLister) List() []*domainprofile.Profile { return f.profiles }
+func (f fakeLister) List() ([]*domainprofile.Profile, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.profiles, nil
+}
 
 func testProfiles() []*domainprofile.Profile {
 	return []*domainprofile.Profile{
@@ -129,6 +138,17 @@ func jsonHas(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestList_Error_Propagates pins fail-closed enumeration: a Lister error must
+// be propagated out of the profile_list handler rather than swallowed (the tool
+// must never emit a partial/empty list when the store is broken).
+func TestList_Error_Propagates(t *testing.T) {
+	errSentinel := errors.New("boom")
+	d := toolDef(t, fakeLister{err: errSentinel})
+	if _, err := d.Handler(context.Background(), json.RawMessage(`{}`)); !errors.Is(err, errSentinel) {
+		t.Fatalf("err = %v, want lister error to propagate", err)
+	}
 }
 
 // TestProfileList_RegistryValid asserts profile_list is a valid ToolDef under

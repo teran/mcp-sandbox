@@ -108,18 +108,12 @@ func buildServer(cfg *config.Config, logger *logging.Logger) *mcp.Server {
 		AllowDirs:     cfg.AllowDirs,
 		AllowSymlinks: cfg.AllowSymlinks,
 	})
-	// Load the operator-authored, read-only profiles (Phase 7). A missing or
-	// empty directory yields an empty store; a load error (invalid profile)
-	// is surfaced so an operator mistake is not silently ignored. Either way the
-	// server gets a functional (never-nil) store: on error we substitute an
-	// empty store so profile_list stays available and sandbox_create reports
-	// "unknown profile" instead of "profile resolver is not configured".
-	st, err := applicationprofile.Load(cfg.SandboxProfilesDir)
-	if err != nil {
-		logger.WithField("error", err).Warn("failed to load sandbox profiles; starting with an empty profile set")
-		st = applicationprofile.Empty()
-	}
-	svc.SetProfileStore(st)
+	// Wire the read-on-demand operator-authored profile store (Phase 7). The
+	// store reads + parses + validates the profiles directory fresh on every
+	// Get/List call, so there is NO startup preload here (A02/N35): even a
+	// broken/unparsable profiles dir composes a working server, and errors
+	// surface lazily on the first profile tool call.
+	svc.SetProfileStore(applicationprofile.New(cfg.SandboxProfilesDir))
 	deps := mcpserver.HandlerDependencies(logger)
 	return mcpserver.NewServer(
 		&mcp.Implementation{Name: appName, Version: appVersion},

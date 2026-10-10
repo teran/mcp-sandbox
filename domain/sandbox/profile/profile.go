@@ -6,6 +6,7 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -16,10 +17,32 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
+// Sentinel errors returned by the profile store (fail-closed, S04).
+var (
+	// ErrProfileNotFound reports that no operator-authored profile with the
+	// requested name exists in the profiles directory.
+	ErrProfileNotFound = errors.New("profile: not found")
+	// ErrInvalidName reports that a profile LOOKUP name is not a valid profile
+	// key. It is returned before any filesystem access, so the lookup key is
+	// never used as a path.
+	ErrInvalidName = errors.New("profile: invalid name")
+)
+
 // namePattern is the allowed profile-name character set. It mirrors the
 // filesystem-safe key used by the store: lowercase alphanumerics plus . _ -
 // (and excludes "." and "..", checked separately).
 var namePattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
+
+// ValidName reports whether name is a valid profile key (the same rule as
+// Validate's name check). It is used by the store both as the up-front lookup
+// guard (returning ErrInvalidName) and to reject a traversal/invalid declared
+// name when scanning the profiles directory.
+func ValidName(name string) bool {
+	if name == "." || name == ".." {
+		return false
+	}
+	return namePattern.MatchString(name)
+}
 
 // Mount is an operator-authored host-to-container mount. The source is gated
 // by ALLOW_DIRS at the backend (S04); the profile is the trusted party for the

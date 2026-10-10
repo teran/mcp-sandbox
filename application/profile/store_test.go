@@ -1,14 +1,19 @@
-// Package profile_test covers the application-layer profile store: it scans an
-// operator-authored, READ-ONLY profiles directory, parses each YAML file,
-// validates it and exposes Get/List to the tools (Phase 7). There are no
-// create/update/delete operations — the store is read-only by construction.
+// Package profile_test covers the application-layer profile store (Phase 7,
+// read-on-demand): it reads + parses fresh from the operator-authored READ-ONLY
+// profiles directory on EVERY Get/List call (no startup preload, no in-memory
+// map). It is read-only by construction and fail-closed (S04). There are no
+// create/update/delete operations.
 package profile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 )
 
 // writeProfile writes a profile file into dir and returns its path.
@@ -52,21 +57,102 @@ user:
 sudo: never
 `
 
-func TestLoad_ScansAndParsesYAML(t *testing.T) {
+// --- Get ---
+
+func TestGet_ReturnsProfile(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "default.yml", validYAML)
+	st := New(dir)
+
+	p, err := st.Get("default")
+	if err != nil {
+		t.Fatalf("Get(default): %v", err)
+	}
+	if p == nil || p.Name != "default" {
+		t.Fatalf("Get(default) = %+v, want profile named default", p)
+	}
+	if p.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q", p.Image)
+	}
+	if len(p.Mounts) != 1 || p.Mounts[0].Source != "/data" {
+		t.Fatalf("Mounts = %+v", p.Mounts)
+	}
+	if p.User == nil || p.User.UID != 1000 {
+		t.Fatalf("User = %+v, want 1000", p.User)
+	}
+}
+
+func TestGet_UnknownProfile_ErrProfileNotFound(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "default.yml", validYAML)
+	st := New(dir)
+
+	if _, err := st.Get("missing"); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+		t.Fatalf("Get(missing) err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+func TestGet_EmptyDir_ErrProfileNotFound(t *testing.T) {
+	st := New(t.TempDir())
+	if _, err := st.Get("x"); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+		t.Fatalf("Get err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+func TestGet_MissingDir_ErrProfileNotFound(t *testing.T) {
+	st := New(filepath.Join(t.TempDir(), "does-not-exist"))
+	if _, err := st.Get("x"); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+		t.Fatalf("Get err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// TestGet_ReadsOnDemand_ReflectsEdits pins the core read-on-demand contract: a
+// single Store reflects filesystem edits on the NEXT call — no restart, no
+// in-memory snapshot. Overwrite → new value; add → appears; delete → not found.
+func TestGet_ReadsOnDemand_ReflectsEdits(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "default.yml", validYAML)
+	st := New(dir)
+
+	// Overwrite → new value on the next call.
+	writeProfile(t, dir, "default.yml", strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/other:v2", 1))
+	p, err := st.Get("default")
+	if err != nil {
+		t.Fatalf("Get after overwrite: %v", err)
+	}
+	if p.Image != "ghcr.io/org/other:v2" {
+		t.Fatalf("Image = %q, want ghcr.io/org/other:v2 (overwrite must be visible on-demand)", p.Image)
+	}
+
+	// Add → appears.
+	writeProfile(t, dir, "extra.yaml", strings.Replace(validYAML, "name: default", "name: extra", 1))
+	if _, err := st.Get("extra"); err != nil {
+		t.Fatalf("Get(extra) after add: %v", err)
+	}
+
+	// Delete → not found.
+	if err := os.Remove(filepath.Join(dir, "extra.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Get("extra"); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+		t.Fatalf("Get(extra) after delete err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// --- List ---
+
+func TestList_ScansAndParsesYAML_Sorted(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "default.yml", validYAML)
 	writeProfile(t, dir, "extra.yaml", strings.Replace(validYAML, "name: default", "name: extra", 1))
 	// A non-profile file must be ignored.
 	writeProfile(t, dir, "README.txt", "not a profile")
 
-	st, err := Load(dir)
+	st := New(dir)
+	list, err := st.List()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	if st == nil {
-		t.Fatal("nil store")
-	}
-	list := st.List()
 	if len(list) != 2 {
 		t.Fatalf("List() = %d profiles, want 2", len(list))
 	}
@@ -77,127 +163,143 @@ func TestLoad_ScansAndParsesYAML(t *testing.T) {
 	if list[0].Image != "docker.io/library/alpine:3.20" {
 		t.Fatalf("Image = %q", list[0].Image)
 	}
-	if len(list[0].Mounts) != 1 || list[0].Mounts[0].Source != "/data" {
-		t.Fatalf("Mounts = %+v", list[0].Mounts)
-	}
-	if list[0].User == nil || list[0].User.UID != 1000 {
-		t.Fatalf("User = %+v, want 1000", list[0].User)
-	}
 }
 
-func TestLoad_Get(t *testing.T) {
-	dir := t.TempDir()
-	writeProfile(t, dir, "a.yml", validYAML)
-	st, err := Load(dir)
+func TestList_EmptyDir_Empty(t *testing.T) {
+	st := New(t.TempDir())
+	list, err := st.List()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	p, ok := st.Get("default")
-	if !ok {
-		t.Fatal("Get(default) = not found")
-	}
-	if p.Name != "default" {
-		t.Fatalf("name = %q", p.Name)
-	}
-	if _, ok := st.Get("missing"); ok {
-		t.Fatal("Get(missing) should not be found")
+	if len(list) != 0 {
+		t.Fatalf("List() = %v, want empty", list)
 	}
 }
 
-func TestLoad_DuplicateName_Error(t *testing.T) {
+func TestList_MissingDir_Empty(t *testing.T) {
+	st := New(filepath.Join(t.TempDir(), "does-not-exist"))
+	list, err := st.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("List() = %v, want empty", list)
+	}
+}
+
+// --- Error taxonomy (fail-closed, S04) ---
+
+func TestGet_DuplicateName_Error(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "a.yml", validYAML)
 	writeProfile(t, dir, "b.yml", strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/app:v1", 1)) // same name "default"
-	if _, err := Load(dir); err == nil {
+	st := New(dir)
+	if _, err := st.Get("default"); err == nil {
 		t.Fatal("expected duplicate-name error")
 	} else if !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestLoad_InvalidFile_Error(t *testing.T) {
+func TestList_DuplicateName_Error(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "a.yml", validYAML)
+	writeProfile(t, dir, "b.yml", strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/app:v1", 1)) // same name "default"
+	st := New(dir)
+	if _, err := st.List(); err == nil {
+		t.Fatal("expected duplicate-name error")
+	} else if !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGet_InvalidFile_Error(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "bad.yml", "name: broken\nimage: ::::::\n")
-	if _, err := Load(dir); err == nil {
+	st := New(dir)
+	if _, err := st.Get("default"); err == nil {
 		t.Fatal("expected error for invalid profile file")
 	}
 }
 
-func TestLoad_UnparsableYAML_Error(t *testing.T) {
+func TestList_UnparsableYAML_Error(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "broken.yml", "name: [unclosed\n")
-	if _, err := Load(dir); err == nil {
+	st := New(dir)
+	if _, err := st.List(); err == nil {
 		t.Fatal("expected error for unparsable YAML")
 	}
 }
 
-func TestLoad_EmptyDir_EmptyStore(t *testing.T) {
+// TestGet_RejectsTraversalName pins the loader hardening: a profile whose
+// declared `name` attempts to traverse out of the profiles directory is
+// rejected when scanned (fail-closed), so a hostile file cannot escape.
+func TestGet_RejectsTraversalName(t *testing.T) {
 	dir := t.TempDir()
-	st, err := Load(dir)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(st.List()) != 0 {
-		t.Fatalf("List() = %v, want empty", st.List())
-	}
-}
-
-func TestLoad_MissingDir_EmptyStore(t *testing.T) {
-	st, err := Load(filepath.Join(t.TempDir(), "does-not-exist"))
-	if err != nil {
-		t.Fatalf("Load of missing dir should be empty, got: %v", err)
-	}
-	if len(st.List()) != 0 {
-		t.Fatalf("List() = %v, want empty", st.List())
-	}
-}
-
-// TestLoad_RejectsPathTraversalName pins the loader-hardening requirement: a
-// profile whose `name` (or filename) attempts to traverse out of the profiles
-// directory is rejected, so a hostile file cannot escape the read-only store.
-func TestLoad_RejectsPathTraversalName(t *testing.T) {
-	dir := t.TempDir()
-	// A name containing path separators / ".." is a traversal attempt.
 	writeProfile(t, dir, "evil.yml", strings.Replace(validYAML, "name: default", "name: ../../etc/passwd", 1))
-	if _, err := Load(dir); err == nil {
+	st := New(dir)
+	if _, err := st.Get("default"); err == nil {
 		t.Fatal("expected error for path-traversal profile name")
 	} else if !strings.Contains(err.Error(), "name") && !strings.Contains(err.Error(), "travers") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-// TestLoad_RejectsTraversalFilename pins that a profile whose declared name
-// attempts to escape the profiles directory is never loadable, regardless of
-// the file it came from. Defense in depth: the name (used as the store key) is
-// the authoritative identity, so a hostile name is rejected even when the
-// filename itself is a plain <name>.yml.
-func TestLoad_RejectsTraversalFilename(t *testing.T) {
-	dir := t.TempDir()
-	// A plain filename but a hostile declared name must still be rejected.
-	writeProfile(t, dir, "evil.yml", strings.Replace(validYAML, "name: default", "name: ../etc/passwd", 1))
-	if _, err := Load(dir); err == nil {
-		t.Fatal("expected error for traversal profile name")
+// TestGet_RejectsInvalidLookupName pins the up-front validName guard: a
+// malformed/traversal LOOKUP name is rejected with ErrInvalidName WITHOUT ever
+// being used as a filesystem path (the lookup key is never a path).
+func TestGet_RejectsInvalidLookupName(t *testing.T) {
+	st := New(t.TempDir())
+	for _, name := range []string{"../../etc/passwd", "../x", "a/b", "a\\b", ".", "..", "UPPER", "with space"} {
+		if _, err := st.Get(name); !errors.Is(err, domainprofile.ErrInvalidName) {
+			t.Fatalf("Get(%q) err = %v, want ErrInvalidName", name, err)
+		}
 	}
 }
 
-func TestStore_GetReturnsProfile(t *testing.T) {
-	dir := t.TempDir()
-	writeProfile(t, dir, "a.yml", validYAML)
-	st, err := Load(dir)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+// TestReadDirOnFile_Error pins the non-NotExist ReadDir failure branch: when
+// the profile path is a regular file (not a directory), os.ReadDir returns an
+// error that is not IsNotExist, so Get/List must surface it (fail-closed)
+// rather than treat it as empty/not-found.
+func TestReadDirOnFile_Error(t *testing.T) {
+	file := writeProfile(t, t.TempDir(), "x.txt", "hello")
+	st := New(file)
+	if _, err := st.Get("x"); err == nil {
+		t.Fatal("Get on a regular file path should return an error")
 	}
-	p, ok := st.Get("default")
-	if !ok {
-		t.Fatal("expected profile")
+	if _, err := st.List(); err == nil {
+		t.Fatal("List on a regular file path should return an error")
 	}
-	_ = p // Get returns a *domainprofile.Profile
 }
 
-// TestLoad_FriendlyCgroupsUnits pins the friendly-unit translation (SPEC §7.11):
-// an operator profile using cpu_cores/memory_gb must load successfully and yield
-// correct NanoCPUs/Memory/MemorySwap, with swap defaulted to Memory.
-func TestLoad_FriendlyCgroupsUnits(t *testing.T) {
+// TestConcurrent_GetList_RaceSafe pins the concurrency contract (X05): the
+// read-on-demand store keeps no shared mutable state and no mutex, so
+// concurrent Get+List must stay clean under -race.
+func TestConcurrent_GetList_RaceSafe(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "default.yml", validYAML)
+	writeProfile(t, dir, "extra.yaml", strings.Replace(validYAML, "name: default", "name: extra", 1))
+	st := New(dir)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := st.Get("default"); err != nil {
+				t.Errorf("Get: %v", err)
+			}
+			if _, err := st.List(); err != nil {
+				t.Errorf("List: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// --- Friendly cgroups unit translation (SPEC §7.11) ---
+
+func TestGet_FriendlyCgroupsUnits(t *testing.T) {
 	const yaml = `name: friendly
 description: friendly units profile
 image: docker.io/library/alpine:3.20
@@ -212,13 +314,10 @@ sudo: never
 	dir := t.TempDir()
 	writeProfile(t, dir, "friendly.yml", yaml)
 
-	st, err := Load(dir)
+	st := New(dir)
+	p, err := st.Get("friendly")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	p, ok := st.Get("friendly")
-	if !ok {
-		t.Fatal("Get(friendly) = not found")
+		t.Fatalf("Get: %v", err)
 	}
 	if got := p.Cgroups.NanoCPUs; got != int64(4*1_000_000_000) {
 		t.Fatalf("NanoCPUs = %d, want %d", got, int64(4*1_000_000_000))
@@ -234,9 +333,7 @@ sudo: never
 	}
 }
 
-// TestLoad_FriendlyUnits_RawTakePrecedence pins that explicit raw values win
-// over friendly units when both are present.
-func TestLoad_FriendlyUnits_RawTakePrecedence(t *testing.T) {
+func TestGet_FriendlyUnits_RawTakePrecedence(t *testing.T) {
 	const yaml = `name: raw-wins
 description: raw precedence profile
 image: docker.io/library/alpine:3.20
@@ -253,13 +350,10 @@ sudo: never
 	dir := t.TempDir()
 	writeProfile(t, dir, "raw.yml", yaml)
 
-	st, err := Load(dir)
+	st := New(dir)
+	p, err := st.Get("raw-wins")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	p, ok := st.Get("raw-wins")
-	if !ok {
-		t.Fatal("Get(raw-wins) = not found")
+		t.Fatalf("Get: %v", err)
 	}
 	if got := p.Cgroups.NanoCPUs; got != int64(2_000_000_000) {
 		t.Fatalf("NanoCPUs = %d, want %d (raw precedence)", got, int64(2_000_000_000))
@@ -272,23 +366,6 @@ sudo: never
 	}
 }
 
-// TestEmpty_IsFunctional pins that Empty() yields a functional, non-nil store:
-// Get reports not-found and List returns an empty slice.
-func TestEmpty_IsFunctional(t *testing.T) {
-	st := Empty()
-	if st == nil {
-		t.Fatal("Empty() returned nil store")
-	}
-	if _, ok := st.Get("anything"); ok {
-		t.Fatal("Get on empty store should report not-found")
-	}
-	if list := st.List(); len(list) != 0 {
-		t.Fatalf("List() = %v, want empty", list)
-	}
-}
-
-// TestCgroupsToDomain_MemorySwapPreserved pins that an explicitly-set
-// memory_swap is never overwritten by the memory==swap defaulting (SPEC §7.11).
 func TestCgroupsToDomain_MemorySwapPreserved(t *testing.T) {
 	cg := (yamlCgroups{
 		NanoCPUs:   0,
@@ -321,9 +398,6 @@ func TestCgroupsToDomain_MemorySwapPreserved(t *testing.T) {
 	}
 }
 
-// TestCgroupsToDomain_OnlyCPUCores pins the partial-friendly-unit case where
-// only cpu_cores is set (no memory): NanoCPUs is translated, Memory stays 0 and
-// MemorySwap is not defaulted.
 func TestCgroupsToDomain_OnlyCPUCores(t *testing.T) {
 	cg := (yamlCgroups{CPUCores: 3}).toDomain()
 	if got := cg.NanoCPUs; got != int64(3*1_000_000_000) {
@@ -337,9 +411,6 @@ func TestCgroupsToDomain_OnlyCPUCores(t *testing.T) {
 	}
 }
 
-// TestCgroupsToDomain_RawAndFriendlyMixed pins that friendly units fill only the
-// gaps: cpu_cores fills NanoCPUs while a raw memory wins, and the swap default
-// keys off the resolved memory.
 func TestCgroupsToDomain_RawAndFriendlyMixed(t *testing.T) {
 	cg := (yamlCgroups{
 		NanoCPUs: 0,
@@ -355,16 +426,5 @@ func TestCgroupsToDomain_RawAndFriendlyMixed(t *testing.T) {
 	}
 	if cg.MemorySwap != cg.Memory {
 		t.Fatalf("MemorySwap = %d, want defaulted to raw Memory %d", cg.MemorySwap, cg.Memory)
-	}
-}
-
-// TestLoad_ReadDirOnFile_Error pins the non-NotExist ReadDir failure branch:
-// when the profile path is a regular file (not a directory), os.ReadDir returns
-// an error that is not IsNotExist, so Load must surface it rather than treat it
-// as an empty store.
-func TestLoad_ReadDirOnFile_Error(t *testing.T) {
-	file := writeProfile(t, t.TempDir(), "x.txt", "hello")
-	if _, err := Load(file); err == nil {
-		t.Fatal("Load on a regular file should return an error (not an empty store)")
 	}
 }
