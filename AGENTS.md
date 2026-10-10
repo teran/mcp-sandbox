@@ -138,7 +138,10 @@ See `SPEC.md` §7.
   (N05GO) — resty is not suited to the unix-socket transport. If a future
   backend requires genuine remote HTTP, use `resty.dev/v3` (L02GO).
 - **No retry/backoff** — set an explicit timeout/context and **return the error
-  to the model** (X03/L02GO).
+  to the model** (X03/L02GO). For `sandbox_exec`, the optional `req.Timeout`
+  (seconds) is applied as a `context.WithTimeout` cancellation that reaches the
+  Docker API calls and the progress sink (SPEC §6.10; `timeout == 0` ⇒ no
+  deadline).
 
 ### No implicit startup actions (A02/N35)
 

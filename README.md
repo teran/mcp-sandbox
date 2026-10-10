@@ -51,6 +51,10 @@ restrictive than the host, never less.
   emit `notifications/progress` so the model-host sees command output and the
   call parameters as they run — additive, redacted and ANSI-sanitized (see
   `SPEC.md` §5.1).
+- **Per-command timeout**: `sandbox_exec` accepts an optional `timeout` (in
+  seconds); it is applied as a `context.WithTimeout` cancellation that reaches
+  both the Docker API calls and the streaming progress channel (`timeout == 0`
+  means no deadline, `SPEC.md` §6.10).
 - Human-in-the-loop confirmation for destructive tools (client-side, see below).
 
 ## Security model
@@ -312,7 +316,9 @@ Grouped **read → write → delete** (S03):
   as a container label for traceability, and `cwd`; optional `secrets`; session
   `cwd` mounted 1:1 read-only by default per the profile's `cwd.mode`),
   `sandbox_exec` (write-classified; ANSI-sanitized; redacted argv; streams live
-  output via `notifications/progress` when a progress token is passed, §5.1).
+  output via `notifications/progress` when a progress token is passed, §5.1;
+  optional `timeout` in seconds applied as a `context.WithTimeout` cancellation,
+  §6.10).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
 
 > **Files come from the image, the host, or the runtime — never via MCP

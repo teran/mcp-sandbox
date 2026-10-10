@@ -152,7 +152,7 @@ profile create/update/delete tools, §7.11).
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
 | `sandbox_create` | `false` | `false` | `false` | Create a sandbox from an **operator-authored profile** (**Phase 7**, §7.11). Takes **required** `profile` (the name of a profile in the read-only store), `session_id` (the OpenCode client session id, recorded as a container label for traceability, §7.8) and `cwd` (the model-host's session working directory, mounted per the profile's `cwd` config — 1:1 at the same absolute path by default). Optional `secrets` are delivered as tmpfs `0600` files. All per-request knobs that used to exist — `image`, `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`, `sudo` — are **removed**; they now come **from the profile** (§7.11). Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
-| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). |
+| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). Optional `timeout` (seconds) is applied via `context.WithTimeout` and becomes a cancellation that reaches the Docker calls and the progress sink (§6.10). |
 
 > **Files come from the image, the host, or the runtime — never via MCP file-write
 > tools.** The session `cwd` is mounted 1:1, so the model-host writes files on the
@@ -182,6 +182,9 @@ a shell string; output is ANSI-sanitized; runs under the sandbox user with
 `user: root` / sudo-classed exec runs as uid 0 per the sandbox's `SudoPolicy`
 (§7.10) — never `--privileged`. Note: `argv` is recorded as-is in the
 access-log and is **not** a channel for secrets (see §7.3 S02 disclaimer).
+Optional `timeout` (seconds) is honored as a `context.WithTimeout`
+cancellation that also reaches the Docker API calls and any progress stream
+(§6.10); `timeout == 0` means no deadline.
 
 > **⚠ Phase 7 — breaking change to `sandbox_create`.** The request shape changed
 > incompatibly. Callers that passed `image`, `env`, `mounts`, `nano_cpus`,
@@ -524,6 +527,8 @@ create → use (exec/read/write/copy/install) → destroy
   Concurrency is exercised with `go test -race` (C04GO).
 - **No silent retry (X03):** failures on Docker API calls are returned to the
   model and **logged** (no secrets); there is no silent retry/backoff (L02GO).
+  For `sandbox_exec`, `req.Timeout` is applied as a `context.WithTimeout`
+  cancellation that reaches the Docker calls and the progress sink (§6.10).
 
 ### 6.7 Error handling
 
@@ -567,6 +572,30 @@ startup (local wiring only):
 > - `TRUSTED_REGISTRIES` — the registry allowlist is **gone**; the image comes
 >   from the operator-authored profile and **digest-pinning is the recommended
 >   operator convention** (§7.9/§7.11).
+
+### 6.10 Command timeout (`req.Timeout`) — applied as a cancellation
+
+`sandbox_exec` accepts an optional `timeout` parameter (integer seconds, see
+`domain/sandbox/exec.Request.Timeout` and the tool input schema in §4.2). When
+`timeout > 0`, the Docker backend's `Exec` (the `Executable` role, §6.2) wraps
+the execution context with `context.WithTimeout(ctx,
+time.Duration(timeout)*time.Second)` and hands that **cancellable** context to
+**every** Docker API call in the exec path (create / attach / inspect / the
+streaming read loop). The command timeout therefore becomes a **cancellation**
+that propagates down to the Docker daemon and to the progress sink:
+
+- **`timeout == 0` (default):** no deadline is applied — the original context is
+  used as-is and the command runs until it completes or the caller's own context
+  is cancelled.
+- **`timeout > 0`:** after `timeout` seconds the context deadline fires, the
+  running Docker exec is cancelled, and — when a progress sink is present — a
+  terminal **`cancelled`** event is emitted (see §5.1) before the cancellation
+  error is returned to the model. The error is **returned and logged (no
+  secrets)** with **no silent retry/backoff** (X03).
+
+The timeout is applied at the **backend** layer, so it works uniformly for the
+Docker API calls and the streaming progress channel, independent of whether the
+client supplied a progress token. Criteria: **X03**.
 
 ---
 
@@ -939,8 +968,11 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
   `idempotentHint:
   true` is declared only where such a mechanism exists.
 - **Upstream connection & limits (X03):** every Docker API call carries an
-  explicit timeout/context; on failure the error is **returned to the model and
-  logged** (no secrets) — **no silent retry/backoff**.
+  explicit timeout/context — for `sandbox_exec` the optional `req.Timeout`
+  (seconds) is applied as a `context.WithTimeout` deadline so the command
+  timeout becomes a **cancellation** reaching both the Docker API calls and the
+  progress sink (§6.10; `timeout == 0` ⇒ no deadline). On failure the error is
+  **returned to the model and logged** (no secrets) — **no silent retry/backoff**.
 - **Concurrency (X05):** per-session mutex serializes reads/writes; no
   partial/corrupt state; verified with `go test -race`.
 
