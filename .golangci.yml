@@ -30,6 +30,7 @@ linters:
     - gocritic
     - gocyclo
     - godox
+    - gomoddirectives
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
