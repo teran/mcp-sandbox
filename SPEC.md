@@ -152,7 +152,7 @@ profile create/update/delete tools, §7.11).
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | Description |
 |------|----------------|-------------------|------------------|-------------|
 | `sandbox_create` | `false` | `false` | `false` | Create a sandbox from an **operator-authored profile** (**Phase 7**, §7.11). Takes **required** `profile` (the name of a profile in the read-only store), `session_id` (the OpenCode client session id, recorded as a container label for traceability, §7.8) and `cwd` (the model-host's session working directory, mounted per the profile's `cwd` config — 1:1 at the same absolute path by default). Optional `secrets` are delivered as tmpfs `0600` files. All per-request knobs that used to exist — `image`, `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`, `sudo` — are **removed**; they now come **from the profile** (§7.11). Idempotency hint `false`: creation is a distinct side-effect; duplicate creation is surfaced as an error (search-before-create still applies, X02). |
-| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). Optional `timeout` (seconds) is applied via `context.WithTimeout` and becomes a cancellation that reaches the Docker calls and the progress sink (§6.10). |
+| `sandbox_exec` | `false` | `false` | `false` | Execute a command **inside** the sandbox via an argument array (no shell). **Classified as write** (the container filesystem may be modified by the command). Takes **required** `id`, `argv` and `summary` — the last a short human-readable description of the command (e.g. "run unit tests"), purely presentational: it is **not** passed to `exec.Request` and has no effect on execution; MCP clients use it to display the command in the tool-call header (only scalar primitives are rendered, `argv` is a discarded array). Runs under the sandbox's **unprivileged user** by default; a scoped `user`/`sudo` option runs as uid 0 per `SudoPolicy` (§7.10). ANSI sanitized on output (**S09**); paths/argv redacted (**S02**). Optional `timeout` (seconds) is applied via `context.WithTimeout` and becomes a cancellation that reaches the Docker calls and the progress sink (§6.10). |
 
 > **Files come from the image, the host, or the runtime — never via MCP file-write
 > tools.** The session `cwd` is mounted 1:1, so the model-host writes files on the
@@ -182,9 +182,13 @@ a shell string; output is ANSI-sanitized; runs under the sandbox user with
 `user: root` / sudo-classed exec runs as uid 0 per the sandbox's `SudoPolicy`
 (§7.10) — never `--privileged`. Note: `argv` is recorded as-is in the
 access-log and is **not** a channel for secrets (see §7.3 S02 disclaimer).
-Optional `timeout` (seconds) is honored as a `context.WithTimeout`
-cancellation that also reaches the Docker API calls and any progress stream
-(§6.10); `timeout == 0` means no deadline.
+`summary` is **required** and holds a short human-readable description of the
+command (e.g. "run unit tests"); it is purely presentational — not passed to
+`exec.Request` and without effect on execution — so MCP clients can render the
+command in the tool-call header (only scalar primitives are displayed; the
+`argv` array is discarded). Optional `timeout` (seconds) is honored as a
+`context.WithTimeout` cancellation that also reaches the Docker API calls and
+any progress stream (§6.10); `timeout == 0` means no deadline.
 
 > **⚠ Phase 7 — breaking change to `sandbox_create`.** The request shape changed
 > incompatibly. Callers that passed `image`, `env`, `mounts`, `nano_cpus`,

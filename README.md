@@ -315,10 +315,13 @@ Grouped **read → write → delete** (S03):
   `SANDBOX_PROFILES_DIR`, `session_id` — the OpenCode client session id recorded
   as a container label for traceability, and `cwd`; optional `secrets`; session
   `cwd` mounted 1:1 read-only by default per the profile's `cwd.mode`),
-  `sandbox_exec` (write-classified; ANSI-sanitized; redacted argv; streams live
-  output via `notifications/progress` when a progress token is passed, §5.1;
-  optional `timeout` in seconds applied as a `context.WithTimeout` cancellation,
-  §6.10).
+  `sandbox_exec` (requires `id`, `argv` and `summary` — the last a short
+  human-readable description of the command, e.g. "run unit tests", used to
+  display the command in the tool-call header by MCP clients; purely
+  presentational and not passed to execution; write-classified; ANSI-sanitized;
+  redacted argv; streams live output via `notifications/progress` when a
+  progress token is passed, §5.1; optional `timeout` in seconds applied as a
+  `context.WithTimeout` cancellation, §6.10).
 - **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
 
 > **Files come from the image, the host, or the runtime — never via MCP

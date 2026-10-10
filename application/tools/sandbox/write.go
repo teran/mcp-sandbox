@@ -116,6 +116,7 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 type execInput struct {
 	ID         string   `json:"id"`
 	Argv       []string `json:"argv"`
+	Summary    string   `json:"summary"`
 	WorkingDir string   `json:"working_dir"`
 	Timeout    uint64   `json:"timeout"`
 	User       string   `json:"user"`
@@ -125,14 +126,15 @@ type execInput struct {
 func sandboxExecDef(b builder) *def.ToolDef {
 	return writeTool(b, "sandbox_exec", "Execute a command in a sandbox",
 		"Execute a command inside the sandbox as an argument array (no shell). Runs under the sandbox user by default; user=root runs as scoped uid 0 per the sudo policy. Output is ANSI-sanitized.",
-		"Pass the command and arguments as an array, never a shell string. Do not put secrets in argv. Output is ANSI-sanitized before returning.",
+		"Pass the command and arguments as an array, never a shell string, and fill `summary` with a short human-readable description of the command (one or two words). Do not put secrets in argv. Output is ANSI-sanitized before returning.",
 		obj(map[string]*jsonschema.Schema{
 			"id":          strP("Sandbox session id"),
 			"argv":        arrP("Command and arguments as an array (no shell)", strP("Argument")),
+			"summary":     strP("Short human-readable description of the command (e.g. \"run unit tests\")"),
 			"working_dir": strP("Optional working directory"),
 			"timeout":     intP("Command timeout in seconds"),
 			"user":        strEnumP("Run as user", "default", "root"),
-		}, "id", "argv"),
+		}, "id", "argv", "summary"),
 		objectOutput(),
 		nil, // no secret fields: argv is not sensitive and is kept visible in access logs
 		func(ctx context.Context, args json.RawMessage) (any, error) {
