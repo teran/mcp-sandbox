@@ -20,9 +20,10 @@ A **Local (stdio-only) MCP server** that gives a model-host client (such as
 Instead of letting the model use the host shell directly, the model drives
 **mcp-sandbox**: for each session it provisions a **per-session, isolated Docker
 container** with the required directories mounted in, executes arbitrary
-commands **inside** that container, and destroys it **when the session ends**
-(ephemeral). **Security is the top priority** — the sandbox is *more*
-restrictive than the host, never less.
+commands **inside** that container, and destroys it via explicit
+`sandbox_destroy` / `sandbox_destroy_all` (per-session and ephemeral, but
+**cleanup is explicit** — there is no automatic GC). **Security is the top
+priority** — the sandbox is *more* restrictive than the host, never less.
 
 - **MVP scope:** the **Docker** backend. Apple Container and other backends are
   designed for but not yet implemented.
@@ -76,8 +77,9 @@ shell capability inside the sandbox**:
 - The container is hardened (read-only rootfs, drop-all capabilities,
   no-new-privileges, seccomp, non-root user, resource limits) and **cannot be
   weakened by a caller** (immutable `Isolation`).
-- Everything is **ephemeral**: the sandbox is **destroyed when the session
-  ends**.
+- Everything is **ephemeral** and per-session. **Cleanup is explicit:** a sandbox
+  is destroyed **only** by `sandbox_destroy` / `sandbox_destroy_all` — there is
+  **no automatic GC** (see [Sandbox lifecycle](#sandbox-lifecycle)).
 
 The practical effect: the model can run **any** command it needs, safely
 confined — so the model-host no longer needs a host shell at all.
@@ -102,9 +104,9 @@ Highlights:
   instructions, input/output schema and a redaction contract, wrapped by a
   shared handler pipeline (validate → access-log → dispatch → redact →
   structured output).
-- **Session lifecycle**: `create → use → destroy`, immutable mounts, shutdown
-  `DestroyAll`. See [Sandbox lifecycle & GC](#sandbox-lifecycle--gc) — automatic
-  idle-reaping and orphan cleanup are **designed but not yet wired**.
+- **Session lifecycle**: `create → use → destroy`, immutable mounts. Cleanup is
+  **explicit only** — see [Sandbox lifecycle](#sandbox-lifecycle). Automatic
+  idle-reaping and orphan cleanup are **future work** (not implemented today).
 
 ## Requirements
 
@@ -134,7 +136,7 @@ auth via environment, no HTTP headers).
 | `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level. stdio logging is **on only when set**. |
 | `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
 | `LOG_FORMAT` | `text` | `text` or `json`. |
-| `SANDBOX_IDLE_TIMEOUT` | `15m` | Idle reaper window. |
+| `SANDBOX_IDLE_TIMEOUT` | `15m` | Accepted but **not yet effective** — the idle reaper is not wired into the running server, so this has no effect today (future work). |
 | `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). Read **on demand** on each profile lookup — edits take effect without restarting the server. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
 
 > **Removed in Phase 7:** `SANDBOX_CWD_MODE` (→ profile `cwd.mode`),
@@ -231,29 +233,20 @@ both **required** (with `session_id`). To migrate:
   listener, so there is no in-server TLS surface. If the server is ever placed
   behind a network-facing gateway, TLS termination is the reverse proxy's job.
 
-## Sandbox lifecycle & GC
+## Sandbox lifecycle
 
-Sandbox lifecycles follow `create → use → destroy`.
+Sandboxes follow `create → use → destroy`:
 
-> **Known limitation (non-functional today):** sandboxes persist until they are
-> **explicitly destroyed** with `sandbox_destroy` / `sandbox_destroy_all`. The
-> **automatic** idle reaper (`SANDBOX_IDLE_TIMEOUT`) and orphan cleanup are
-> **designed but not yet wired** into the running server — no background
-> goroutine calls `Manager.Reap`, and no tool call updates the idle marker. This
-> is documented future work (see `SPEC.md` §6.6 and `TODO.md`).
+- `sandbox_create` provisions a per-session container.
+- `sandbox_exec` and the read tools operate on it.
+- `sandbox_destroy` destroys one sandbox; `sandbox_destroy_all` destroys every
+  sandbox.
 
-Planned (not yet implemented):
-
-- **Idle reaper (in-process):** a per-process background loop that destroys
-  sessions idle beyond `SANDBOX_IDLE_TIMEOUT` (default `15m`), skipping any
-  session with a running `exec`.
-- **Orphan reclamation (process death):** when a process exits, its running
-  containers become orphaned (`AutoRemove` fires on container stop, not process
-  death). Graceful shutdown is intended to `DestroyAll()` its own sessions, and
-  an orphan-GC would destroy labeled `mcp-sandbox` containers whose session id
-  is no longer live.
-
-**Today, GC is non-functional:** only explicit destroy removes sandboxes.
+**Cleanup is explicit only — there is no automatic GC.** A sandbox is removed
+**only** when the model-host calls `sandbox_destroy` / `sandbox_destroy_all`;
+otherwise it persists until then. There is no idle reaper and no orphan
+reclamation. An automatic idle reaper and orphan cleanup are **future work**
+(see `TODO.md`).
 
 ## OpenCode setup
 

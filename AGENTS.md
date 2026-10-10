@@ -8,8 +8,9 @@ Guidance for AI agents working in this repository. `AGENTS.md`, like
 
 - An **MCP server** that provides a safe, isolated Docker **sandbox** so a
   model-host client (opencode) can run arbitrary commands **without using the
-  host shell** — per-session ephemeral containers that are destroyed when the
-  session ends.
+  host shell** — per-session, isolated containers. Cleanup is **explicit**: a
+  container is removed only by `sandbox_destroy` / `sandbox_destroy_all` (no
+  automatic GC; see `SPEC.md` §6.6).
 - Implementation language: **Go 1.27.2** (see `go.mod` / `GO_VERSION` in CI)
   (**C02GO/C01GO**).
 - See **[`SPEC.md`](SPEC.md)** for the application-level architecture and the
@@ -116,13 +117,12 @@ See `SPEC.md` §7.
   default. `ALLOW_SYMLINKS=false` by default — canonicalize with
   `EvalSymlinks`, open-then-verify; reject anything escaping the
   allowed roots. Hardlinks are an OS-level concern, not the path check's.
-  Prefer `copy_in`/`copy_out`; write only into tmpfs.
+  Write only into tmpfs.
 - **No shell/SQL/URL concatenation (S11/N21):** **no shell-string
   concatenation/interpolation** — `sandbox_exec` takes a scalar `command`
   through a **fixed** `[<shell>,"-c",command]` wrapper (shell from the profile,
   default `bash`); no user string is interpolated into a shell string.
-  `sandbox_install_package` uses a **fixed** apt/dnf invocation — never
-  interpolate into a shell string.
+  The only other `sh -c` is the server-authored fixed secret-writer script.
 - **HITL (S12):** destructive tools (`sandbox_destroy`, `sandbox_destroy_all`)
   require **human confirmation**, realized **client-side** by the model-host
   (stdio server has no HTTP UI).
@@ -168,17 +168,15 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
   No persistence, no DB, no encryption-at-rest, no migration (X04 N/A).
   Each `mcp-sandbox` process tracks **only its own** sessions; concurrent copies
   do not coordinate.
-- **Session lifecycle / GC (designed, NOT YET WIRED):** the idle reaper
-  (`Manager.Reap`, `Session.Touch`/`Expired`, `SANDBOX_IDLE_TIMEOUT`) and the
-  orphan-GC are **designed but non-functional today** — no goroutine calls
-  `Reap`, no tool calls `Touch`, and there is no orphan sweep. Sandboxes are
-  removed **only** by explicit `sandbox_destroy`/`sandbox_destroy_all`. Any
-  change touching session lifecycle/GC should treat these as open work (see
-  `SPEC.md` §6.6 and `TODO.md`).
+- **Session cleanup (explicit only; reaper/orphan-GC are future work):**
+  sandboxes are removed **only** by explicit `sandbox_destroy` /
+  `sandbox_destroy_all`. There is **no automatic GC** — the idle reaper
+  (`Manager.Reap` / `Session.Touch` / `SANDBOX_IDLE_TIMEOUT`) and the orphan-GC
+  are **designed but not wired**: no production code path calls `Reap` or
+  `Touch`. Treat wiring them as open work (see `SPEC.md` §6.6 and `TODO.md`).
 - **Idempotency (X02):** `sandbox_create` = search-before-create;
-  `sandbox_destroy`/`destroy_all` = naturally idempotent; `write_file`/
-  `copy_*` = natural-key upsert. Declare `idempotentHint:true` only where a real
-  mechanism exists (N25).
+  `sandbox_destroy`/`destroy_all` = naturally idempotent (no-op on missing).
+  Declare `idempotentHint:true` only where a real mechanism exists (N25).
 - **Concurrency (X05):** per-session mutex; no partial/corrupt state; verified
   with `go test -race`.
 
@@ -206,8 +204,8 @@ Layered DDD/Clean with **top-level named packages** — **no `internal/`**
 `domain/`; `infrastructure/` → `domain/`. `domain/` must **not** import
 infrastructure.
 
-- Backend roles (`Backend`, `Lifecycle`, `Executable`, `Filesystem`,
-  `Introspectable`) are dispatched by **type-assertion**; unsupported
+- Backend roles (`Backend`, `Lifecycle`, `Executable`, `Introspectable`) are
+  dispatched by **type-assertion**; unsupported
   capabilities return **`ErrCapabilityNotSupported`** — **no stubs**.
 - Tools are declared as **`ToolDef`s** and must go through the shared
   handler-wrapper (validate → access-log → dispatch → redact → structured
