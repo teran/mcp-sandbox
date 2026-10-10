@@ -45,6 +45,7 @@ func (fakeConn) SetWriteDeadline(time.Time) error { return nil }
 // delivery, §7.3).
 type recordingConn struct {
 	fakeConn
+
 	dst *[]byte
 }
 

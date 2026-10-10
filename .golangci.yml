@@ -18,6 +18,7 @@ linters:
     - copyloopvar
     - decorder
     - durationcheck
+    - embeddedstructfieldcheck
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
