@@ -239,7 +239,7 @@ func TestCall_InvalidArguments(t *testing.T) {
 	called := false
 	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) {
 		called = true
-		return nil, nil
+		return map[string]any{}, nil
 	})
 	// Missing required "path".
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{})}}
@@ -264,7 +264,7 @@ func TestCall_InvalidArguments(t *testing.T) {
 
 func TestCall_RejectsAdditionalProperties(t *testing.T) {
 	al := &fakeAccessLogger{}
-	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil })
+	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) { return map[string]any{}, nil })
 	// "extra" is not in the schema.
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{"path": "/x", "extra": 1})}}
 	res, err := Call(context.Background(), newDeps(al, nil), d, req)
@@ -344,7 +344,7 @@ func TestCall_EmptyArguments(t *testing.T) {
 
 func TestCall_InvalidJSON(t *testing.T) {
 	al := &fakeAccessLogger{}
-	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil })
+	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) { return map[string]any{}, nil })
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(`{invalid`)}}
 	res, err := Call(context.Background(), newDeps(al, nil), d, req)
 	if err != nil {

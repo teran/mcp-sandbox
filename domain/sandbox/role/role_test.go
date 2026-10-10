@@ -44,8 +44,8 @@ func (f *fullBackend) Destroy(context.Context, string) error                    
 func (f *fullBackend) Exec(context.Context, string, exec.Request) (*exec.Result, error) {
 	return &exec.Result{}, nil
 }
-func (f *fullBackend) Info(context.Context, string) (any, error)  { return nil, nil }
-func (f *fullBackend) Stats(context.Context, string) (any, error) { return nil, nil }
+func (f *fullBackend) Info(context.Context, string) (any, error)  { return map[string]any{}, nil }
+func (f *fullBackend) Stats(context.Context, string) (any, error) { return map[string]any{}, nil }
 
 func TestRoleInterfaces(_ *testing.T) {
 	b := &fullBackend{}
