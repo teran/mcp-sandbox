@@ -38,6 +38,7 @@ linters:
     - importas
     - ineffassign
     - intrange
+    - iotamixing
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
