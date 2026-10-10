@@ -10,7 +10,7 @@ Guidance for AI agents working in this repository. `AGENTS.md`, like
   model-host client (opencode) can run arbitrary commands **without using the
   host shell** — per-session ephemeral containers that are destroyed when the
   session ends.
-- Implementation language: **Go 1.27.1** (see `go.mod` / `GO_VERSION` in CI)
+- Implementation language: **Go 1.27.2** (see `go.mod` / `GO_VERSION` in CI)
   (**C02GO/C01GO**).
 - See **[`SPEC.md`](SPEC.md)** for the application-level architecture and the
   security / data / logging contracts that **every change must respect**.

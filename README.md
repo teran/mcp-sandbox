@@ -104,7 +104,7 @@ Highlights:
 
 ## Requirements
 
-- **Go 1.27.1+**
+- **Go 1.27.2+**
 - A **Docker daemon** (see [Security note](#security) on socket access).
 
 ## Installation
