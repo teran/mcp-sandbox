@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/distribution/reference"
 	dockerconfig "github.com/docker/cli/cli/config"
@@ -514,9 +515,20 @@ func (b *Backend) writeSecret(ctx context.Context, cid, name, value string) erro
 // (S11). The user is taken from the request (resolved by the session manager
 // from the sandbox UIDGID and SudoPolicy, §7.10). --privileged is never used.
 func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.Result, error) {
-	entry := b.entryFor(ctx, id)
+	// Apply req.Timeout (seconds) as a context.WithTimeout deadline on the ctx
+	// handed to every Docker API call in this function, so the timeout turns
+	// into a cancellation (SPEC §6.10). When req.Timeout == 0 the original ctx
+	// is used as-is (no deadline).
+	execCtx := ctx
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Second)
+		defer cancel()
+	}
+
+	entry := b.entryFor(execCtx, id)
 	entry.Trace("docker: exec create")
-	cid, err := b.containerIDBySession(ctx, id)
+	cid, err := b.containerIDBySession(execCtx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -530,13 +542,13 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		Tty:          false,
 		Privileged:   false, // never --privileged (N21)
 	}
-	execResp, err := b.api.ContainerExecCreate(ctx, cid, opts)
+	execResp, err := b.api.ContainerExecCreate(execCtx, cid, opts)
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec create: %w", err)
 	}
 
 	entry.Trace("docker: exec attach")
-	hijacked, err := b.api.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	hijacked, err := b.api.ContainerExecAttach(execCtx, execResp.ID, container.ExecAttachOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec attach: %w", err)
 	}
@@ -549,7 +561,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	// terminal `cancelled` event on context cancellation. Progress is a single
 	// monotonic counter shared across both streams. Without a real sink the
 	// no-op discards everything and the Result is byte-for-byte unchanged.
-	sink := progress.SinkFromContext(ctx)
+	sink := progress.SinkFromContext(execCtx)
 
 	// A single shared, monotonically increasing Progress counter across the
 	// whole stream (start, both stdout/stderr chunks, done, cancelled) so the
@@ -564,7 +576,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		seq++
 		p := seq
 		mu.Unlock()
-		sink(ctx, progress.Event{Message: msg, Progress: p, Total: total})
+		sink(execCtx, progress.Event{Message: msg, Progress: p, Total: total})
 	}
 	batcherSink := func(_ context.Context, e progress.Event) { emit(e.Message, e.Total) }
 
@@ -591,7 +603,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		errBatcher.Flush()
 	}
 
-	inspect, err := b.api.ContainerExecInspect(ctx, execResp.ID)
+	inspect, err := b.api.ContainerExecInspect(execCtx, execResp.ID)
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec inspect: %w", err)
 	}
@@ -600,13 +612,13 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 
 	if sink != nil {
 		emit(fmt.Sprintf("done: exit code %d", inspect.ExitCode), int64(len(res.Stdout)+len(res.Stderr)))
-		if ctx.Err() != nil {
+		if execCtx.Err() != nil {
 			// The command ran (the fake ignores cancellation); surface the
 			// cancellation as a terminal event before returning the result.
 			emit("cancelled", 0)
 		}
 	}
-	b.entryFor(ctx, id).WithField("exit_code", inspect.ExitCode).Trace("docker: exec done")
+	b.entryFor(execCtx, id).WithField("exit_code", inspect.ExitCode).Trace("docker: exec done")
 	return res, nil
 }
 

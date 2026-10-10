@@ -122,6 +122,12 @@ type fakeClient struct {
 	execStdin          [][]byte
 	inspects           []string
 	statsCalls         []string
+
+	// execCtxDeadlines records the deadline of the context seen by each exec
+	// API call (create/attach/inspect) in order. A zero time.Time means the
+	// context carried no deadline. Lets tests assert that req.Timeout is
+	// applied as a context.WithTimeout deadline on the ctx passed to Docker.
+	execCtxDeadlines []time.Time
 }
 
 // newFakeClient returns an initialized fake client.
@@ -279,23 +285,25 @@ func (f *fakeClient) ContainerStats(_ context.Context, containerID string, _ boo
 	return container.StatsResponseReader{Body: io.NopCloser(bytes.NewBufferString(body)), OSType: "linux"}, nil
 }
 
-func (f *fakeClient) ContainerExecCreate(_ context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error) {
+func (f *fakeClient) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.execErr != nil {
 		return container.ExecCreateResponse{}, f.execErr
 	}
 	f.execCreates = append(f.execCreates, options)
+	f.execCtxDeadlines = append(f.execCtxDeadlines, execDeadlineFromContext(ctx))
 	return container.ExecCreateResponse{ID: "exec-" + containerID}, nil
 }
 
-func (f *fakeClient) ContainerExecAttach(_ context.Context, execID string, _ container.ExecAttachOptions) (types.HijackedResponse, error) {
+func (f *fakeClient) ContainerExecAttach(ctx context.Context, execID string, _ container.ExecAttachOptions) (types.HijackedResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.execAttachErr != nil {
 		return types.HijackedResponse{}, f.execAttachErr
 	}
 	f.execAttaches = append(f.execAttaches, execID)
+	f.execCtxDeadlines = append(f.execCtxDeadlines, execDeadlineFromContext(ctx))
 	// Capture bytes written to the exec's stdin (secrets are delivered this
 	// way) so tests can assert the value landed on stdin, not argv.
 	f.execStdin = append(f.execStdin, nil)
@@ -319,12 +327,13 @@ func (f *fakeClient) ContainerExecAttach(_ context.Context, execID string, _ con
 	return types.HijackedResponse{Conn: &recordingConn{dst: &f.execStdin[idx]}, Reader: bufio.NewReader(&buf)}, nil
 }
 
-func (f *fakeClient) ContainerExecInspect(_ context.Context, _ string) (container.ExecInspect, error) {
+func (f *fakeClient) ContainerExecInspect(ctx context.Context, _ string) (container.ExecInspect, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.execInspectErr != nil {
 		return container.ExecInspect{}, f.execInspectErr
 	}
+	f.execCtxDeadlines = append(f.execCtxDeadlines, execDeadlineFromContext(ctx))
 	if f.execExitCode != 0 {
 		return container.ExecInspect{ExitCode: f.execExitCode}, nil
 	}
@@ -365,4 +374,22 @@ func (f *fakeClient) lastConfig() *container.Config {
 		return nil
 	}
 	return f.createdConfigs[len(f.createdConfigs)-1]
+}
+
+// execDeadlineFromContext returns the deadline carried by ctx, or the zero
+// time.Time when ctx has no deadline.
+func execDeadlineFromContext(ctx context.Context) time.Time {
+	d, _ := ctx.Deadline()
+	return d
+}
+
+// lastExecDeadline returns the deadline the most recent exec API call saw, or
+// the zero time.Time when no exec call recorded a deadline (or there was none).
+func (f *fakeClient) lastExecDeadline() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.execCtxDeadlines) == 0 {
+		return time.Time{}
+	}
+	return f.execCtxDeadlines[len(f.execCtxDeadlines)-1]
 }

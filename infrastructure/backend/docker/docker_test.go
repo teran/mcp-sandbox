@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -439,6 +440,61 @@ func TestExec_ArgumentArrayAndResult(t *testing.T) {
 	}
 	if opts.Privileged {
 		t.Error("--privileged must never be used")
+	}
+}
+
+// TestExec_TimeoutIsAppliedAsContextCancellation verifies that req.Timeout
+// (seconds) is applied as a context.WithTimeout deadline on the ctx handed to
+// the Docker exec API calls, so the timeout turns into a cancellation. The fake
+// client records the deadline of the ctx each exec call receives; the recorded
+// deadline must land at (time of the call) + req.Timeout seconds.
+func TestExec_TimeoutIsAppliedAsContextCancellation(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-to")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const timeout uint64 = 42
+	before := time.Now()
+	if _, err := b.Exec(context.Background(), "sess-to", exec.Request{Argv: []string{"echo", "hi"}, Timeout: timeout}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	after := time.Now()
+
+	dl := api.lastExecDeadline()
+	if dl.IsZero() {
+		t.Fatal("expected a context deadline derived from req.Timeout, got none")
+	}
+	// The deadline is set inside Exec to (now at exec time) + timeout. The exec
+	// ran between before and after, so the deadline must fall within
+	// [before+timeout, after+timeout].
+	wantMin := before.Add(time.Duration(timeout) * time.Second)
+	wantMax := after.Add(time.Duration(timeout) * time.Second)
+	if dl.Before(wantMin) || dl.After(wantMax) {
+		t.Fatalf("deadline = %v, want within [%v, %v] (= now + %ds)", dl, wantMin, wantMax, timeout)
+	}
+}
+
+// TestExec_TimeoutZeroNoDeadline verifies the edge case: with req.Timeout == 0
+// no context.WithTimeout deadline is applied, so the ctx passed to the Docker
+// exec API carries no deadline.
+func TestExec_TimeoutZeroNoDeadline(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{exitCode: 0}}
+	b := newBackendForDirs(api)
+	ctx := domainsession.WithSessionID(context.Background(), "sess-t0")
+	if _, err := b.Create(ctx, baseSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := b.Exec(context.Background(), "sess-t0", exec.Request{Argv: []string{"echo", "hi"}}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if dl := api.lastExecDeadline(); !dl.IsZero() {
+		t.Fatalf("deadline = %v, want none when req.Timeout == 0", dl)
 	}
 }
 
