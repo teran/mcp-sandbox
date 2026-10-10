@@ -14,6 +14,10 @@ Guidance for AI agents working in this repository. `AGENTS.md`, like
   (**C02GO/C01GO**).
 - See **[`SPEC.md`](SPEC.md)** for the application-level architecture and the
   security / data / logging contracts that **every change must respect**.
+- The server is **self-describing** over the MCP protocol (server-level
+  `Instructions` + `sandbox://guidance/*` resources + enriched tool
+  descriptions, `SPEC.md` §5.2) — there is **no standalone skill file** and no
+  AGENTS.md pointer; a model-host discovers usage directly over the protocol.
 
 ## Working agents
 

@@ -51,6 +51,10 @@ restrictive than the host, never less.
   emit `notifications/progress` so the model-host sees command output and the
   call parameters as they run — additive, redacted and ANSI-sanitized (see
   `SPEC.md` §5.1).
+- **Self-describing over MCP**: server-level `Instructions`, discoverable
+  `sandbox://guidance/*` playbooks (resources) and enriched tool descriptions
+  teach a model-host how to use the server directly over the protocol — no
+  standalone skill file or AGENTS.md pointer needed (see below).
 - **Per-command timeout**: `sandbox_exec` accepts an optional `timeout` (in
   seconds); it is applied as a `context.WithTimeout` cancellation that reaches
   both the Docker API calls and the streaming progress channel (`timeout == 0`
@@ -347,6 +351,31 @@ instructions (`SPEC.md` §4).
 > **Local / stdio-only** server with no HTTP UI (S12), destructive confirmation
 > is implemented **client-side** — the model-host (opencode) obtains human
 > confirmation before invoking `sandbox_destroy` / `sandbox_destroy_all`.
+
+## Self-describing MCP server
+
+mcp-sandbox is **self-describing** over the MCP protocol: a model-host client
+can discover everything it needs without any external file (`SPEC.md` §5.2).
+
+- **Server-level `Instructions`** — a short paragraph carrying the redirect
+  invariant ("The host shell is restricted — route commands through this
+  sandbox server."), tool grouping (read → write → delete), a secrets warning
+  (never put secrets in a command or env — use tmpfs `0600` secret files on
+  `sandbox_create`), and an index of the guidance resources.
+- **`resources` capability** — six read-only **markdown** playbooks are
+  registered under `sandbox://guidance/*` and appear in the MCP catalog:
+  `overview`, `shell-restricted-redirect`, `sandbox-create`, `sandbox-exec`,
+  `filesystem-mounts` (incl. the **GOCACHE/GOTMPDIR** recipe for compile-in-
+  sandbox), and `security`. This is the **only** use of `resources` — file I/O
+  still never goes through MCP resources (files come from the image, the host,
+  or the runtime via `mount + exec`).
+- **Enriched tool descriptions** — `sandbox_create` / `sandbox_exec` carry a
+  redirect note and a pointer to the relevant guidance resource, directing the
+  model away from the host shell exactly where those tools are invoked.
+
+There is **no standalone skill file** and **no AGENTS.md pointer** — the
+self-description travels with the server over the protocol, so it stays in sync
+with the implementation automatically.
 
 ## Security
 

@@ -10,6 +10,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/application/tools/guidance"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -49,7 +50,8 @@ type createInput struct {
 func sandboxCreateDef(b builder) *def.ToolDef {
 	return writeTool(b, "sandbox_create", "Create a sandbox",
 		"Create a sandbox from an operator-authored profile. The profile fully determines image, env, mounts, network, resources, user and sudo; the session cwd is mounted 1:1 at the same absolute path (read-only unless the profile sets cwd.mode=rw). Isolation is server-enforced and cannot be weakened.",
-		"Pass the profile name and session cwd. Secrets are delivered as tmpfs 0600 files, never in argv or image. Creating a duplicate is surfaced as an error.",
+		"Pass the profile name and session cwd. Secrets are delivered as tmpfs 0600 files, never in argv or image. Creating a duplicate is surfaced as an error.\n\n"+
+			guidance.RedirectNote+"\n\nSee "+guidance.URIRedirect+" and "+guidance.URICreate+" for details.",
 		obj(map[string]*jsonschema.Schema{
 			"profile":    strP("Operator-authored profile name (see profile_list); determines image, env, mounts, network, resources, user and sudo"),
 			"cwd":        strP("Session working directory, mounted 1:1 at the same absolute path"),
@@ -134,7 +136,8 @@ type execInput struct {
 func sandboxExecDef(b builder) *def.ToolDef {
 	return writeTool(b, "sandbox_exec", "Execute a command in a sandbox",
 		"Execute a command inside the sandbox via its configured shell. Runs under the sandbox user by default; user=root runs as scoped uid 0 per the sudo policy. Output is ANSI-sanitized.",
-		"Pass the command as a single string, never a shell string (it is executed via the sandbox's fixed shell wrapper). Fill `summary` with a short human-readable description of the command (one or two words). Do not put secrets in the command or env. Output is ANSI-sanitized before returning.",
+		"Pass the command as a single string, never a shell string (it is executed via the sandbox's fixed shell wrapper). Fill `summary` with a short human-readable description of the command (one or two words). Do not put secrets in the command or env. Output is ANSI-sanitized before returning.\n\n"+
+			guidance.RedirectNote+"\n\nSee "+guidance.URIExec+" for details.",
 		obj(map[string]*jsonschema.Schema{
 			"id":          strP("Sandbox session id"),
 			"command":     strP("The command to run, executed via the sandbox's configured shell"),

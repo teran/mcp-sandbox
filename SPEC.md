@@ -245,13 +245,49 @@ official **go-sdk v1.8.0** (**M01**).
 |----------------|-------------|-------|
 | **tools** | ✅ | The entire sandbox surface (§4). |
 | prompts | ❌ | Out of scope. |
-| resources | ❌ | Out of scope. Files are read/written via tools, not MCP resources. |
+| resources | ✅ | **Used for `sandbox://guidance/*` self-describing playbooks only** (§5.2). File I/O **never** goes through MCP resources — files come from the image, the host, or the runtime via tools (§4.2). Unknown URIs return not-found. |
 | sampling | ❌ | Out of scope. |
 | roots | ❌ | Out of scope — the sandbox scope is configured by `ALLOW_DIRS`, not MCP roots. |
 | logging | ❌ (as MCP logging) | The SDK logger is wired to the server's logrus logger (L07); MCP-client-visible logging is not used. |
 
 Per-tool **Instructions** are preferred over server-level instructions and are
 exposed per tool (M04).
+
+### 5.2 Self-describing server
+
+The server is **self-describing** over the MCP protocol so a model-host client
+can discover how to use it without external files (**M04/M12**):
+
+- **Server-level `Instructions`** — a short paragraph exposing the redirect
+  invariant (**"The host shell is restricted — route commands through this
+  sandbox server."**), tool grouping (read → write → delete), a secrets warning
+  (never place secrets in a command or env — use tmpfs `0600` secret files on
+  `sandbox_create`), and an index of the guidance resources below. This text is
+  produced by the pure application-layer `application/tools/guidance` package
+  (`guidance.Instructions()`), which must **not** import the go-sdk.
+- **`resources` capability (`sandbox://guidance/*`)** — six read-only,
+  **markdown** playbooks registered as MCP resources and served via the
+  `resources/read` handler; unknown URIs return **not-found**:
+
+  | URI | Title |
+  |-----|-------|
+  | `sandbox://guidance/overview` | mcp-sandbox overview (tool grouping, annotations, HITL) |
+  | `sandbox://guidance/shell-restricted-redirect` | Host shell restricted — route commands through the sandbox |
+  | `sandbox://guidance/sandbox-create` | Creating a sandbox |
+  | `sandbox://guidance/sandbox-exec` | Executing commands in a sandbox |
+  | `sandbox://guidance/filesystem-mounts` | Filesystem layout and mounts (incl. the GOCACHE/GOTMPDIR recipe) |
+  | `sandbox://guidance/security` | Security model |
+
+  Resource content is **secrets-safe (S02)** and **ANSI-safe (S09)**. This is
+  the **only** use of the `resources` capability — file I/O is **never** routed
+  through MCP resources; it goes through tools (`mount + exec`, §4.2).
+- **Enriched tool descriptions** — `sandbox_create` / `sandbox_exec` carry a
+  redirect note (see `guidance.RedirectNote`) plus a pointer to the relevant
+  guidance resource, so the model-host is directed away from the host shell
+  right where the tools are invoked.
+
+There is **no standalone skill file** and no AGENTS.md pointer required — the
+self-description travels with the server over the protocol.
 
 ### 5.1 Streaming output via `notifications/progress`
 

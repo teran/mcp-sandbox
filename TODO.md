@@ -211,18 +211,28 @@ commands. This generalizes to any MCP host.
 > The model learns what the server can do and how to use it automatically via the
 > MCP catalog/instructions — **no standalone skill file, no AGENTS.md pointer.**
 
-- [ ] **Server: add MCP `instructions`** stating the redirect invariant + listing
+- [x] **Server: add MCP `instructions`** stating the redirect invariant + listing
       the available resources (incl. the `sandbox://guidance/*` playbooks) — `S02 S09`
-- [ ] **Server: enrich `sandbox_*` tool descriptions** so each tool is
+- [x] **Server: enrich `sandbox_*` tool descriptions** so each tool is
       self-explanatory and the redirect ("use this instead of the host shell when
       restricted") is always in front of the model — `S02 S09`
-- [ ] **Server: add resources** `sandbox://guidance/*` with the expanded
+- [x] **Server: add resources** `sandbox://guidance/*` with the expanded
       descriptions/playbooks (secrets-safe, markdown), discoverable via catalog —
       `S02 S09`
-- [ ] **Tests:** instructions/resources/tool-descriptions present, no secret
+- [x] **Tests:** instructions/resources/tool-descriptions present, no secret
       leakage, ANSI-safe — `@qa`, `S02 S09 C01`
 - [ ] **Docs:** fold into `SPEC.md`/`README.md` (self-describing-server principle),
       English — `D01 D02`; no file-based skill created.
+
+**Implementation decisions (architect):** new leaf package
+`application/tools/guidance` (no go-sdk import) holding `Instructions()` +
+resource registry; content via **`//go:embed *.md`**; go-sdk `ServerOptions.Instructions`
++ `AddResource`/`ReadResource` wired in `infrastructure/mcp/resources.go`;
+enrich `sandbox_create`/`sandbox_exec` `Instructions` with `guidance.RedirectNote`
++ resource pointers. **6 resources**: overview, shell-restricted-redirect,
+sandbox-create, sandbox-exec, filesystem-mounts (incl. GOCACHE/GOTMPDIR recipe),
+security. SPEC §5 capability table: `resources` ❌→✅ (guidance-only; still no
+file I/O via resources); replace the stale top-level `serverInstructions` text.
 
 ## Default GOCACHE/GOTMPDIR for Go builds (backlog — design open)
 

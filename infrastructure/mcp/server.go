@@ -6,27 +6,25 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/application/tools/guidance"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
 	profiletool "github.com/teran/mcp-sandbox/application/tools/profile"
 	sandboxtool "github.com/teran/mcp-sandbox/application/tools/sandbox"
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
-// serverInstructions are the server-level instructions shown to the model-host
-// (SPEC §5). Per-tool instructions (M04) are exposed on each tool; this is the
-// shared, top-level guidance.
-const serverInstructions = "mcp-sandbox is an isolated Docker sandbox for running arbitrary commands without the host shell. Tools are grouped read → write → delete. Commands are passed as argument arrays, never shell strings. Destructive tools require human confirmation."
-
 // NewServer builds the go-sdk MCP server (SPEC §5) with the SDK slog logger
-// wired into logrus (L07/L03GO), server-level instructions, and every ToolDef
-// registered through the shared handler-wrapper. Tool errors are returned as
-// tool-error results (not protocol errors) so the model-host can read and
-// self-correct.
+// wired into logrus (L07/L03GO), server-level instructions, every ToolDef
+// registered through the shared handler-wrapper, and the self-describing
+// guidance resources. Tool errors are returned as tool-error results (not
+// protocol errors) so the model-host can read and self-correct.
 func NewServer(impl *mcp.Implementation, logger *logging.Logger, tools []*def.ToolDef, deps handler.Dependencies) *mcp.Server {
 	server := mcp.NewServer(impl, &mcp.ServerOptions{
 		Logger:       logging.NewSlogLogger(logger.Logger()),
-		Instructions: serverInstructions,
+		Instructions: guidance.Instructions(),
 	})
+
+	registerResources(server)
 
 	for _, tool := range tools {
 		tt := tool

@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	"github.com/teran/mcp-sandbox/application/tools/guidance"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/application/tools/registry"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -154,6 +155,35 @@ func TestAnnotations_WriteTools(t *testing.T) {
 		if d.Annotations.DestructiveHint {
 			t.Fatalf("%s: DestructiveHint must be false", name)
 		}
+	}
+}
+
+// TestSandboxCreate_InstructionsIncludeRedirectAndResource pins that the
+// sandbox_create instructions carry the shell-redirect note (which names the
+// host shell as forbidden) and a pointer to a `sandbox://guidance/` resource so
+// the model-host can self-describe.
+func TestSandboxCreate_InstructionsIncludeRedirectAndResource(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_create")
+	if guidance.RedirectNote == "" {
+		t.Fatal("guidance.RedirectNote must be non-empty")
+	}
+	if !strings.Contains(d.Instructions, guidance.RedirectNote) {
+		t.Fatalf("sandbox_create instructions must include guidance.RedirectNote")
+	}
+	if !strings.Contains(d.Instructions, "host shell") {
+		t.Fatalf("sandbox_create instructions must mention the forbidden host shell")
+	}
+	if !strings.Contains(d.Instructions, "sandbox://guidance/") {
+		t.Fatalf("sandbox_create instructions must reference a sandbox://guidance/ resource")
+	}
+}
+
+// TestSandboxExec_InstructionsIncludeRedirectAndResource pins that the
+// sandbox_exec instructions reference a `sandbox://guidance/` resource.
+func TestSandboxExec_InstructionsIncludeRedirectAndResource(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_exec")
+	if !strings.Contains(d.Instructions, "sandbox://guidance/") {
+		t.Fatalf("sandbox_exec instructions must reference a sandbox://guidance/ resource")
 	}
 }
 
