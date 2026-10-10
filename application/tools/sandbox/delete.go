@@ -8,6 +8,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
 // deleteTool builds a destructive tool definition (S03/S12). Destructive tools
@@ -33,7 +34,7 @@ func sandboxDestroyDef(b builder) *def.ToolDef {
 			if err := b.svc.Destroy(ctx, in.ID); err != nil {
 				return nil, err
 			}
-			return DestroyOutput{Destroyed: 1, IDs: []string{in.ID}}, nil
+			return DestroyOutput{Destroyed: 1, IDs: []string{domainsession.ShortID(in.ID)}}, nil
 		})
 }
 
@@ -51,7 +52,7 @@ func sandboxDestroyAllDef(b builder) *def.ToolDef {
 			}
 			ids := make([]string, 0, len(before))
 			for _, s := range before {
-				ids = append(ids, s.ID())
+				ids = append(ids, domainsession.ShortID(s.ID()))
 			}
 			return DestroyOutput{Destroyed: len(ids), IDs: ids}, nil
 		})

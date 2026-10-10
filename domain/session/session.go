@@ -11,6 +11,23 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
+// ShortIDLength is the number of hex characters a client sees as the short,
+// docker-style display id (SPEC §6.6). A full id is 64 hex characters; only
+// the first ShortIDLength are returned on tool output. The full id remains the
+// internal storage key.
+const ShortIDLength = 12
+
+// ShortID returns the short display id for a full session id: the first
+// ShortIDLength hex characters (docker-style, SPEC §6.6). It never panics — an
+// empty or shorter id is returned as-is, and the result is always at most
+// ShortIDLength characters.
+func ShortID(full string) string {
+	if len(full) > ShortIDLength {
+		return full[:ShortIDLength]
+	}
+	return full
+}
+
 type sessionIDKey struct{}
 
 // WithSessionID returns a context carrying the given session id. The session

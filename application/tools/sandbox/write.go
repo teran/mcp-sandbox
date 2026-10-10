@@ -16,6 +16,7 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
+	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
 // redactedMarker replaces secret values found in exec output (S02). It matches
@@ -82,7 +83,7 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			return CreateOutput{ID: s.ID()}, nil
+			return CreateOutput{ID: domainsession.ShortID(s.ID())}, nil
 		})
 }
 
@@ -215,7 +216,7 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			// redactor cannot see inside free-form text, so we replace the
 			// known secret values before returning the output.
 			return ExecOutput{
-				ID:       sess.ID(),
+				ID:       domainsession.ShortID(sess.ID()),
 				ExitCode: res.ExitCode,
 				Stdout:   redactSecrets(sanitizeANSI(string(res.Stdout)), secrets),
 				Stderr:   redactSecrets(sanitizeANSI(string(res.Stderr)), secrets),

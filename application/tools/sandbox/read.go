@@ -9,6 +9,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
+	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
 // readTool builds a read-only tool definition (S03).
@@ -28,7 +29,7 @@ func sandboxListDef(b builder) *def.ToolDef {
 			out := ListOutput{Sessions: make([]SessionSummary, 0, len(sessions))}
 			for _, s := range sessions {
 				out.Sessions = append(out.Sessions, SessionSummary{
-					ID:      s.ID(),
+					ID:      domainsession.ShortID(s.ID()),
 					Backend: b.svc.BackendName(),
 					Image:   s.Spec().Image,
 					Created: s.Created().Format(time.RFC3339),
@@ -63,7 +64,7 @@ func sandboxInfoDef(b builder) *def.ToolDef {
 				secrets = append(secrets, SecretSummary{Name: sec.Name})
 			}
 			return InfoOutput{
-				ID:         s.ID(),
+				ID:         domainsession.ShortID(s.ID()),
 				Image:      sp.Image,
 				WorkingDir: sp.WorkingDir,
 				State:      string(s.State()),
@@ -95,6 +96,6 @@ func sandboxStatsDef(b builder) *def.ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			return StatsOutput{ID: sess.ID(), Details: details}, nil
+			return StatsOutput{ID: domainsession.ShortID(sess.ID()), Details: details}, nil
 		})
 }

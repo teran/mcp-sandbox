@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -22,6 +23,11 @@ type fakeService struct {
 	createErr   error
 	createdSpec spec.SandboxSpec
 	session     *domainsession.Session
+
+	// sessions, when set, backs Get/List with prefix resolution mirroring the
+	// real session manager (SPEC §6.6): a unique prefix resolves to the full
+	// id, an ambiguous prefix errors, an unknown one reports not-found.
+	sessions map[string]*domainsession.Session
 
 	getErr error
 	list   []*domainsession.Session
@@ -66,6 +72,13 @@ func (f *fakeService) Get(id string) (*domainsession.Session, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
+	if f.sessions != nil {
+		full, err := resolveFakePrefix(f.sessions, id)
+		if err != nil {
+			return nil, err
+		}
+		return f.sessions[full], nil
+	}
 	if f.session != nil {
 		return f.session, nil
 	}
@@ -76,7 +89,41 @@ func (f *fakeService) List(_ context.Context) []*domainsession.Session {
 	if f.list != nil {
 		return f.list
 	}
+	if f.sessions != nil {
+		out := make([]*domainsession.Session, 0, len(f.sessions))
+		for _, s := range f.sessions {
+			out = append(out, s)
+		}
+		return out
+	}
 	return nil
+}
+
+// resolveFakePrefix resolves a caller-supplied id to the full session id,
+// mirroring Manager.resolveID (SPEC §6.6): an exact full id wins, otherwise a
+// unique prefix is scanned for. Zero matches and empty input report not-found;
+// more than one match reports ambiguous.
+func resolveFakePrefix(sessions map[string]*domainsession.Session, prefix string) (string, error) {
+	if prefix == "" {
+		return "", errFakeNotFound
+	}
+	if _, ok := sessions[prefix]; ok {
+		return prefix, nil
+	}
+	var match string
+	for id := range sessions {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		if match != "" {
+			return "", errFakeAmbiguous
+		}
+		match = id
+	}
+	if match == "" {
+		return "", errFakeNotFound
+	}
+	return match, nil
 }
 
 func (f *fakeService) Destroy(_ context.Context, _ string) error { return f.destroyErr }
@@ -100,6 +147,13 @@ func (f *fakeService) Stats(_ context.Context, _ string) (any, error) {
 
 // errFake is a sentinel for error-path tests.
 var errFake = errors.New("boom")
+
+// errFakeNotFound / errFakeAmbiguous are the fake's prefix-resolution errors,
+// mirroring the real manager (ErrSessionNotFound / ErrAmbiguousSessionID).
+var (
+	errFakeNotFound  = errors.New("fake: session not found")
+	errFakeAmbiguous = errors.New("fake: ambiguous session id")
+)
 
 // policy returns a server-enforced policy whose Isolation satisfies
 // spec.Validate (non-root user, network bridge, bounded resources, tmpfs,

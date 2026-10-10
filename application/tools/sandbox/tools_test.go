@@ -343,6 +343,105 @@ func TestSandboxCreate_Handler(t *testing.T) {
 	}
 }
 
+// TestSandboxCreate_OutputShortID pins that sandbox_create returns the short
+// 12-hex display id (the docker-style prefix of the full id) on output, not the
+// full 64-hex id.
+func TestSandboxCreate_OutputShortID(t *testing.T) {
+	full := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	svc := newFake()
+	svc.session = runningSession(full, spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
+	d := toolByName(t, svc, "sandbox_create")
+	co, err := callHandler(t, d, svc, map[string]any{"profile": "default", "cwd": "/c", "session_id": "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := co.(CreateOutput).ID
+	want := domainsession.ShortID(full)
+	if got != want {
+		t.Fatalf("create output ID = %q, want short %q", got, want)
+	}
+	if len(got) != 12 {
+		t.Fatalf("create output ID length = %d, want 12", len(got))
+	}
+}
+
+// TestShortID_RoundTripViaPrefix proves that a 12-char prefix id returned on
+// output round-trips back through the tool path: info / exec / destroy all
+// resolve the short prefix to the full session id (SPEC §6.6), exactly what a
+// caller does after reading the short id from a create/list output.
+func TestShortID_RoundTripViaPrefix(t *testing.T) {
+	full := strings.Repeat("a", 62) + "bc" // 64 hex chars, unique
+	short := domainsession.ShortID(full)
+	if len(short) != 12 || !strings.HasPrefix(full, short) {
+		t.Fatalf("short %q must be the 12-char prefix of full %q", short, full)
+	}
+
+	svc := newFake()
+	svc.sessions = map[string]*domainsession.Session{
+		full: runningSession(full, spec.SandboxSpec{
+			UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+			Isolation: defaultPolicy().Isolation,
+		}),
+	}
+	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
+
+	// sandbox_info by short id resolves to the full session and echoes short.
+	info := toolByName(t, svc, "sandbox_info")
+	o, err := callHandler(t, info, svc, map[string]any{"id": short})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if io := o.(InfoOutput); io.ID != short {
+		t.Fatalf("info ID = %q, want short %q", io.ID, short)
+	}
+
+	// sandbox_exec by short id must reach the FULL id as the backend sandbox id.
+	exe := toolByName(t, svc, "sandbox_exec")
+	eo, err := callHandler(t, exe, svc, map[string]any{"id": short, "command": "echo hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.execReq.SandboxID != full {
+		t.Fatalf("exec resolved to sandbox %q, want full %q", svc.execReq.SandboxID, full)
+	}
+	if eo.(ExecOutput).ID != short {
+		t.Fatalf("exec output ID = %q, want short %q", eo.(ExecOutput).ID, short)
+	}
+
+	// sandbox_destroy by short id echoes the short id.
+	des := toolByName(t, svc, "sandbox_destroy")
+	dd, err := callHandler(t, des, svc, map[string]any{"id": short})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if do := dd.(DestroyOutput); len(do.IDs) != 1 || do.IDs[0] != short {
+		t.Fatalf("destroy IDs = %v, want [%q]", do.IDs, short)
+	}
+}
+
+// TestShortID_PrefixAmbiguousAndNotFound pins that the fake's prefix resolution
+// (and thus the tool path that relies on svc.Get) surfaces ambiguity and
+// not-found rather than silently resolving to the wrong session.
+func TestShortID_PrefixAmbiguousAndNotFound(t *testing.T) {
+	full1 := strings.Repeat("a", 64)
+	full2 := "aa" + strings.Repeat("b", 62)
+	svc := newFake()
+	svc.sessions = map[string]*domainsession.Session{
+		full1: runningSession(full1, spec.SandboxSpec{Isolation: defaultPolicy().Isolation}),
+		full2: runningSession(full2, spec.SandboxSpec{Isolation: defaultPolicy().Isolation}),
+	}
+
+	// "aa" is ambiguous.
+	info := toolByName(t, svc, "sandbox_info")
+	if _, err := callHandler(t, info, svc, map[string]any{"id": "aa"}); err == nil {
+		t.Fatal("expected ambiguous-prefix error for sandbox_info")
+	}
+	// "zz" matches nothing.
+	if _, err := callHandler(t, info, svc, map[string]any{"id": "zz"}); err == nil {
+		t.Fatal("expected not-found error for sandbox_info")
+	}
+}
+
 func TestSandboxCreate_ProfileDrivenIsolation(t *testing.T) {
 	svc := newFake()
 	// The profile fully determines network + user; the request can no longer

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,33 @@ func TestSessionMutex(_ *testing.T) {
 	s.Lock()
 	_ = s.State() // do work inside the critical section
 	s.Unlock()
+}
+
+// TestShortID verifies the docker-style short display id derivation: the first
+// 12 hex chars of the full id, never panicking on empty/short input and always
+// returning at most 12 characters.
+func TestShortID(t *testing.T) {
+	full := strings.Repeat("a", 64)
+	if got := ShortID(full); got != strings.Repeat("a", 12) {
+		t.Fatalf("ShortID(64-hex) = %q, want 12 'a'", got)
+	}
+	if got := ShortID(""); got != "" {
+		t.Fatalf("ShortID(\"\") = %q, want empty", got)
+	}
+	if got := ShortID("abc"); got != "abc" {
+		t.Fatalf("ShortID(short) = %q, want unchanged", got)
+	}
+	// Exactly 13 chars truncates to the first 12.
+	if got := ShortID("1234567890abc"); got != "1234567890ab" {
+		t.Fatalf("ShortID(13) = %q, want first 12", got)
+	}
+	if len(ShortID(full)) > ShortIDLength {
+		t.Fatal("ShortID result must be at most 12 chars")
+	}
+	// Must never panic across a range of inputs.
+	for _, s := range []string{"", "x", "abcdef", full} {
+		_ = ShortID(s)
+	}
 }
 
 func TestSessionContextID(t *testing.T) {
