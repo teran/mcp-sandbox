@@ -166,11 +166,22 @@ profile create/update/delete tools, §7.11).
 > gone — resource limits are owned by the operator profile (§7.11) — and
 > Docker-in-Docker is deferred (see TODO "Deferred").
 
+**Instructions — `sandbox_create`:** reference an **operator-authored profile**
+by `profile` name (from `SANDBOX_PROFILES_DIR`) — the image, env, mounts,
+network, cgroup limits, user and sudo all come from the profile (§7.11); pass
+the OpenCode `session_id` (recorded as a container label) and the `cwd` to
+mount 1:1 (read-only by default, per the profile's `cwd.mode`). Optional
+`secrets` are delivered as tmpfs `0600` files — never in `argv`. This is a
+distinct side-effect (not idempotent): a duplicate `session_id` is surfaced as
+an error. The immutable `Isolation` hardening block is applied automatically and
+cannot be weakened by the caller.
+
 **Instructions — `sandbox_exec`:** pass command and args as an **array**, never
-a shell string; do **not** log the argv in full (redact paths/values); output
-is ANSI-sanitized; runs under the sandbox user with `no-new-privileges`; only
-allowed capabilities are available. A scoped `user: root` / sudo-classed exec
-runs as uid 0 per the sandbox's `SudoPolicy` (§7.10) — never `--privileged`.
+a shell string; output is ANSI-sanitized; runs under the sandbox user with
+`no-new-privileges`; only allowed capabilities are available. A scoped
+`user: root` / sudo-classed exec runs as uid 0 per the sandbox's `SudoPolicy`
+(§7.10) — never `--privileged`. Note: `argv` is recorded as-is in the
+access-log and is **not** a channel for secrets (see §7.3 S02 disclaimer).
 
 > **⚠ Phase 7 — breaking change to `sandbox_create`.** The request shape changed
 > incompatibly. Callers that passed `image`, `env`, `mounts`, `nano_cpus`,
@@ -188,6 +199,13 @@ runs as uid 0 per the sandbox's `SudoPolicy` (§7.10) — never `--privileged`.
 |------|----------------|-------------------|------------------|-------------|
 | `sandbox_destroy` | `false` | `true` | `true` | Destroy one sandbox (idempotent — destroying a non-existent session is a no-op, X02). |
 | `sandbox_destroy_all` | `false` | `true` | `true` | Destroy all sandbox sessions (idempotent). |
+
+**Instructions — DELETE tools:** both are **destructive** and require **human
+confirmation before invocation** (HITL, §4.4, realized client-side for this
+Local stdio server). They are **idempotent** — destroying a missing session is a
+no-op. Never call them automatically/cascading; use `sandbox_destroy` for one
+session and `sandbox_destroy_all` only when every sandbox must be torn down
+(e.g. server shutdown).
 
 ### 4.4 Human-in-the-loop for destructive tools (S12)
 
@@ -315,7 +333,6 @@ infrastructure/            adapters
     docker/                Docker backend (official docker SDK, unix socket)
   mcp/                     MCP server wiring (go-sdk), SDK slog→logrus logger
   logging/                 logrus setup, channel routing, redaction
-e2e/                       contract suite + docker harness (go-docker-testsuite)
 ```
 
 ### 6.2 Role interfaces (ISP) — capability dispatch
@@ -606,7 +623,7 @@ itself can **never** be weakened (by profile or caller).
   - `false` (safe default): every host path is canonicalized with
     `filepath.EvalSymlinks`, then **open-then-verify** (open the fd, `fstat`,
     compare the resolved real path against the allowed roots); reject if it
-    escapes `ALLOW_DIRS`. `O_NOFOLLOW` is used on the final component.
+    escapes `ALLOW_DIRS`.
   - `true`: following symlinks is accepted (operator explicitly opts in).
   - **Hardlinks** cannot be prevented by a path check (a hardlink is another
     name for the same inode); this is mitigated at the OS level (Linux
@@ -647,12 +664,24 @@ itself can **never** be weakened (by profile or caller).
   `/run/sandbox` (a subdir of the sandbox-user-owned `/run` tmpfs, §7.1) —
   **never** in argv, never baked into the image, never in environment exposed to
   `exec`.
-- **Do not log the full `argv`** of `sandbox_exec` — redact paths/values while
-  keeping the access-log shape (L08).
 - **No secret leakage** in any output or log (**N02/L05**).
 - **Streaming output is redacted too** (§5.1): the same redaction layer applies
   to the `notifications/progress` chunks emitted while a command runs, so no
   secret leaks through the live-streaming channel.
+
+> **⚠ argv is logged as-is (S02 disclaimer).** The access-log line (L08) records
+> the `sandbox_exec` `argv` **as passed** — the access-log path is **not** run
+> through secret-value redaction. This is a **deliberate design choice**: the
+> secret model is struct-annotation-based, and `argv` is a free-form command
+> line for which **no** secret values are known in advance, so they **cannot** be
+> reliably masked if one ever appeared there. **Contract / expectation:** `argv`
+> is **not** a channel for secrets — secrets are delivered as tmpfs `0600` files
+> (§7.3) and must never be placed in `argv`. Operators who may pass sensitive
+> values in a command line should note that:
+> - the access log is written to `LOG_FILENAME` (`chmod 600`, operator-owned); and
+> - logging is **opt-in** — it is enabled **only when `LOG_LEVEL` is set**
+>   (L02); with `LOG_LEVEL` unset no log file is written and no argv is
+>   persisted at all.
 
 ### 7.4 Strict input & output validation (S08/S09)
 
@@ -972,12 +1001,12 @@ exposes:
 | Target | Purpose |
 |--------|---------|
 | `build` | Produce binary artifacts for all intended architectures (via goreleaser, **B01/B02**). |
+| `release` | Publish real goreleaser binaries + GitHub Release on `v*` tags (**B01**) — used by the release CI job only. |
 | `test` | Unit tests (`go test -race`, **C04GO**) + **coverage ≥ 95% gate** (**C01**). |
 | `lint` | golangci-lint (`golangci-lint run ./...`, **C03GO**), gosec (**C05GO**), govulncheck (**C06GO**), go-arch-lint (**C07GO**). |
-| `e2e` | `go test -tags e2e ./...` via the **go-docker-testsuite** harness (**C09GO**) — declared because e2e exists. |
 | `container-image` | **NOT declared** — Local stdio-only server produces no image (**B03/R01/N31/N17**). |
 
-The 4-stage pipeline shape (linters → build → tests → release artifacts) is
+The pipeline shape (linters → build → tests → release artifacts) is
 provider-agnostic; here it is realized in GitHub Actions:
 
 - **linters** stage: `make lint` (golangci-lint, gofmt/gofumpt, gosec,
@@ -985,16 +1014,24 @@ provider-agnostic; here it is realized in GitHub Actions:
 - **tests** stage: `make test` (race + coverage ≥ 95%), plus the **hard-gate**
   jobs: **gremlins** mutation testing `--threshold-efficacy=80
   --threshold-mcover=80` (C02/C08GO) and **gitleaks** secret scan over git
-  history (C03/N28). These are dedicated hard-gate jobs, not part of the 5-target
-  make interface.
-- **build** stage: `make build` (goreleaser → single binary per platform,
-  ldflags-embedded build metadata **B02**).
-- **e2e** stage: **dedicated `e2e` CI job** running `make e2e` (C04/T02/C09GO).
-  e2e tests are **build-tagged** (`//go:build e2e`) so they are **excluded from
-  the default unit pass** (T02/N30).
+  history (C03/N28). These are dedicated hard-gate jobs, not part of the make
+  interface.
+- **build** stage: **dedicated `build` CI job** running `make build` (goreleaser
+  snapshot → single binary per platform, ldflags-embedded build metadata **B02**).
 - **release artifacts:** for a Local stdio-only server there is **no container
-  image** to publish (B03/R01); goreleaser publishes binary release artifacts on
-  tags (**B01**).
+  image** to publish (B03/R01); a **dedicated `release` CI job** runs `make
+  release` on every `v*` tag to publish binary release artifacts via goreleaser
+  (**B01/B02**).
+
+> **e2e (C09GO / N07GO / T02 / C04) is N/A — declared out of scope.** There is
+> **no e2e test suite** and no `make e2e` target. Reasoning: a meaningful e2e
+> would have to drive the real Docker daemon from inside a sandbox, which
+> conflicts with the immutable `Isolation` hardening (Docker-in-Docker needs a
+> nested/rootless daemon or socket access and is not part of the MVP). The
+> full tool-handler → Docker-backend path is covered by unit tests (coverage
+> gate C01 ≥ 95%) and the `go-docker-testsuite` harness is **not** a dependency.
+> No e2e CI job exists; **N30 is not violated** because there are no e2e tests
+> to run or tag.
 
 **Coverage gate (C01):** ≥ 95%, fails the build below.
 **Mutation gate (C02/C08GO):** gremlins hard gate at 80/80.
@@ -1008,15 +1045,14 @@ binaries on GitHub Release). For this Local server there are no registry image
 publications.
 
 **Go / dependency currency (C05/N33):** pinned to latest stable — **Go 1.27.1**,
-**go-sdk v1.8.0**, **logrus v1.10.2**, **go-docker-testsuite latest** (see
-`reference/versions.md`). **resty.dev/v3** is **not** a current dependency: the
-server performs no outbound HTTP (L02GO applies only when genuine remote HTTP is
-introduced), and resty would be added only for a future backend that requires it.
+**go-sdk v1.8.0**, **logrus v1.10.2** (see `reference/versions.md`).
+**resty.dev/v3** is **not** a current dependency: the server performs no
+outbound HTTP (L02GO applies only when genuine remote HTTP is introduced), and
+resty would be added only for a future backend that requires it.
 
 **TDD workflow (T01):** all fixes/features are done TDD-style — **@qa** writes
 tests first (isolated context), **@developer** writes the implementation
-(isolated context). e2e tests verify the full tool-handler → Docker-backend path
-(T02/C09GO).
+(isolated context).
 
 ### 11.1 Outbound-HTTP / Docker client choice (L02GO)
 
@@ -1047,7 +1083,7 @@ socket**, accessed through the **official `github.com/docker/docker` SDK**.
 
 ## 13. Conformance summary (MUST / MUST-NOT)
 
-**MUST satisfied:** M01–M07, C01, C02, C04, C05, C01GO–C09GO, T01, T02, S01–S12,
+**MUST satisfied:** M01–M07, C01, C02, C05, C01GO–C08GO, T01, S01–S12,
 R02, R05, R06, R07, B01, B02, B05, L01–L09,
 L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 
@@ -1057,6 +1093,9 @@ L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 - **R01/R03/R04/B03/B04/N14/N17/N18** — no container image for a Local server.
 - **M03 OAuth2** — no upstream HTTP API to authorize against (justified).
 - **X04** — stateful-but-in-memory; no persistence/migration.
+- **C04/T02/C09GO/N07GO/N30** — e2e is declared out of scope (no e2e tests, no
+  `make e2e`, no e2e CI job); the full tool-handler → backend path is covered by
+  unit tests + the C01 coverage gate (§11).
 - **S06/S07/S10/S13** — not applicable: public GitHub.com repo (S06); every
   tool is a closed-world `openWorldHint:false` tool (S07/S10); Go is not a
   high-risk TS/JS ecosystem (S13).
