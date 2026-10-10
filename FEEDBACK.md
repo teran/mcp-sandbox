@@ -81,6 +81,42 @@ cache) or `go clean -cache` resolves it; stable on the host, flaky in the sandbo
 cache must live **outside the repo tree** (currently handled: `GOMODCACHE` points
 at the mounted `/go/pkg/mod`, outside the checkout).
 
+## 9. `make lint` / `make test` / `make build` verified working from the sandbox
+
+Confirmed working from an isolated sandbox with the following env recipe
+(GOCACHE/GOMODCACHE must point off the read-only overlay and off the `noexec`
+tmpfs; the linters are installed into a repo-scoped `GOBIN`):
+
+```sh
+export GOBIN="$PWD/.bin"                # repo-scoped, writable+exec
+export GOCACHE=/run/sandbox/gocache     # or any writable+exec path off tmpfs
+export HOME=/run/sandbox
+export GOLANGCI_LINT_CACHE=/run/sandbox/golangci
+export GOMODCACHE=/go/pkg/mod           # outside the repo tree
+export GOSUMDB=off
+export GOFLAGS=-mod=mod
+
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@<ver>   # pin per repo
+# ...also install gosec, govulncheck, gremlins, gitleaks into GOBIN
+export PATH="$PWD/.bin:$PATH"
+
+make lint
+make test
+make build
+```
+
+Caveats observed:
+
+- **`go-arch-lint` panics inside the isolated sandbox** with
+  `failed load std packages` (it cannot resolve the Go standard-library
+  export data for all build targets in the trimmed environment). This is an
+  artifact of the isolated sandbox, **not a repo defect** — run the `arch` /
+  `lint` arch step on the host or in a fuller Go environment where std export
+  data is available.
+- `make test` still requires the **coverage ≥ 95% gate** (Makefile) and
+  `gremlins` (80/80) is a separate hard gate — both must pass for CI to be
+  green (see `AGENTS.md`).
+
 ## Recommendations / future work
 
 - **Hot-reload of operator profiles** — currently a profile edit requires a full

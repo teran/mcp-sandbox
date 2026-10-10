@@ -6,30 +6,30 @@
 
 ## Phase 0 — Scaffold & foundation
 
-- [ ] 0.1 Repo scaffold: `go.mod` (Go 1.27.1, go-sdk v1.8.0, logrus, docker SDK), `cmd/mcp-sandbox/main.go` (composition root, `-mode stdio`) — `C01GO C02GO M01 M06`
-- [ ] 0.2 Makefile interface: `lint` / `test` / `build` (no `container-image`, no `e2e`) + `.PHONY` — `R07 N31`
-- [ ] 0.3 CI (GitHub Actions): lint / test / build + hard-gate jobs (gremlins 80/80, gitleaks) — `C01 C02 C03 C08GO N36`
-- [ ] 0.4 `.golangci.yml`, `.go-arch-lint.yml` (layers), `.goreleaser.yml` (ldflags) — `C03GO C07GO B01 B02`
-- [ ] 0.5 Config (envconfig) + `ALLOW_DIRS`/`ALLOW_SYMLINKS` validation — `S04`
-- [ ] 0.6 Logging: logrus, stdio→file channel, enablement by `LOG_LEVEL`, banner, SDK slog wiring, access-log at info, request_id — `L01–L09 L01GO–L04GO B05`
+- [x] 0.1 Repo scaffold: `go.mod` (Go 1.27.1, go-sdk v1.8.0, logrus, docker SDK), `cmd/mcp-sandbox/main.go` (composition root, `-mode stdio`) — `C01GO C02GO M01 M06`
+- [x] 0.2 Makefile interface: `lint` / `test` / `build` (no `container-image`, no `e2e`) + `.PHONY` — `R07 N31`
+- [x] 0.3 CI (GitHub Actions): lint / test / build + hard-gate jobs (gremlins 80/80, gitleaks) — `C01 C02 C03 C08GO N36`
+- [x] 0.4 `.golangci.yml`, `.go-arch-lint.yml` (layers), `.goreleaser.yml` (ldflags) — `C03GO C07GO B01 B02`
+- [x] 0.5 Config (envconfig) + `ALLOW_DIRS`/`ALLOW_SYMLINKS` validation — `S04`
+- [x] 0.6 Logging: logrus, stdio→file channel, enablement by `LOG_LEVEL`, banner, SDK slog wiring, access-log at info, request_id — `L01–L09 L01GO–L04GO B05`
 
 ## Phase 1 — Domain model & ISP role interfaces
 
-- [ ] 1.1 `domain/sandbox`: typed `SandboxSpec` (+ immutable `Isolation`) — `A01 S08`
-- [ ] 1.2 Role interfaces: `Backend`, `Lifecycle`, `Executable`, `Filesystem`, `Introspectable` + capability set + `ErrCapabilityNotSupported` — `A01 M07`
-- [ ] 1.3 `domain/session`: Session aggregate + Manager interface, `crypto/rand` id, per-session mutex — `X01 X05`
-- [ ] 1.4 Domain unit tests (mocks, race) — `C01 C04GO T01`
+- [x] 1.1 `domain/sandbox`: typed `SandboxSpec` (+ immutable `Isolation`) — `A01 S08`
+- [x] 1.2 Role interfaces: `Backend`, `Lifecycle`, `Executable`, `Filesystem`, `Introspectable` + capability set + `ErrCapabilityNotSupported` — `A01 M07`
+- [x] 1.3 `domain/session`: Session aggregate + Manager interface, `crypto/rand` id, per-session mutex — `X01 X05`
+- [x] 1.4 Domain unit tests (mocks, race) — `C01 C04GO T01`
 
 ## Phase 2 — Docker backend
 
-- [ ] 2.1 Backend registry + capability select; `init()`-registration of docker; lazy `Available()` — `A02/N35 M06`
-- [ ] 2.2 Docker implementation of roles via official docker SDK (unix socket) — `L02GO N05GO`
-- [ ] 2.3 Isolation: read-only root, cap-drop ALL, no-new-privileges, seccomp (default), non-root user, pids/mem/cpu/ulimits, network bridge (host forbidden), tmpfs mounts (`/run` noexec + `/tmp` writable/executable), AutoRemove — `§7.1` (server-enforced, immutable)
-- [ ] 2.4 Mounts/`ALLOW_DIRS`: EvalSymlinks + open-then-verify, read-only default, minimize bind-mounts (`copy_in`/`copy_out`); **session `cwd` mounted 1:1 at the same absolute path** (read-only default) — `S04 N03 §7.2`
-- [ ] 2.5 Secrets → tmpfs `0600`, redactor at output boundary (incl. Docker errors) — `S02 N02 L05`
-- [ ] 2.6 Session: reaper (idle), `DestroyAll`, label ownership, idempotent destroy — `X01 X02 X05`
-- [ ] 2.7 Docker unit tests (fake client) — `C01 C04GO`
-- [ ] 2.8 Privilege model: default non-root + scoped root (`exec -u 0`); base image with known non-root user + writable/executable `/tmp` (and `/run` for secrets); `SudoPolicy` gating — `§7.10 S11`
+- [x] 2.1 Backend registry + capability select; `init()`-registration of docker; lazy `Available()` — `A02/N35 M06`
+- [x] 2.2 Docker implementation of roles via official docker SDK (unix socket) — `L02GO N05GO`
+- [x] 2.3 Isolation: read-only root, cap-drop ALL, no-new-privileges, seccomp (default), non-root user, pids/mem/cpu/ulimits, network bridge (host forbidden), tmpfs mounts (`/run` noexec + `/tmp` writable/executable), AutoRemove — `§7.1` (server-enforced, immutable)
+- [x] 2.4 Mounts/`ALLOW_DIRS`: EvalSymlinks + open-then-verify, read-only default, minimize bind-mounts (`copy_in`/`copy_out`); **session `cwd` mounted 1:1 at the same absolute path** (read-only default) — `S04 N03 §7.2`
+- [x] 2.5 Secrets → tmpfs `0600`, redactor at output boundary (incl. Docker errors) — `S02 N02 L05`
+- [x] 2.6 Session: reaper (idle), `DestroyAll`, label ownership, idempotent destroy — `X01 X02 X05`
+- [x] 2.7 Docker unit tests (fake client) — `C01 C04GO`
+- [x] 2.8 Privilege model: default non-root + scoped root (`exec -u 0`); base image with known non-root user + writable/executable `/tmp` (and `/run` for secrets); `SudoPolicy` gating — `§7.10 S11`
 
 ## Phase 3 — Declarative tool framework + MCP surface
 
@@ -86,9 +86,20 @@ env vars into **read-only, operator-authored YAML profiles** under
 host-path gate for `cwd` + every profile mount source; the immutable
 `Isolation` block is never weakened. See `SPEC.md` §6.5/§7.9/§7.11.
 
-Status: **@qa has written the Phase 7 tests first** (TDD) for the domain
-profile model, the application store and the `profile_list` tool; the
-**implementation is pending @developer**.
+Status: **implemented and wired** (TDD — `@qa` wrote the tests first, `@developer`
+landed the implementation). Verified against the code:
+
+- `domain/sandbox/profile` — `Profile`, `Validate`, `BuildSpec` (`profile_test.go`).
+- `application/profile` — read-only `Load`/`Get`/`List` store (`store_test.go`),
+  wired into `application/config` as `SANDBOX_PROFILES_DIR` and loaded in
+  `cmd/mcp-sandbox/main.go` (fallback to an empty store on load error).
+- `application/tools/profile` — `profile_list` tool (`profile_list_test.go`),
+  registered in `infrastructure/mcp/server.go`.
+- `application/tools/sandbox/write.go` — `sandbox_create` rework: input is
+  `{profile, cwd, session_id, secrets}`; resolves profile → `BuildSpec`;
+  unknown profile ⇒ error. The removed envs (`TRUSTED_REGISTRIES`,
+  `SANDBOX_CWD_MODE`, `SANDBOX_CGROUP_*`, `ALLOW_NETWORK_MODES`) are **gone**
+  from `application/config` and pinned as inert by `config_test.go`.
 
 - [x] 7.1 `domain/sandbox/profile`: typed `Profile` (Name, Description, Image,
       Env, Mounts, CwdConfig, Network, Cgroups, User, Sudo), `Validate`
@@ -97,42 +108,41 @@ profile model, the application store and the `profile_list` tool; the
       `BuildSpec(isolation, Params{Cwd, Secrets, ClientSessionID})`
       (profile → `SandboxSpec`; cwd always mounted 1:1 read-only default;
       profile-owned fields override policy; hardening never overridden) —
-      **tests landed** — `A01 S04 §6.5 §7.11`
-- [ ] 7.2 `domain/sandbox/profile` implementation: `Profile`, `Mount`,
+      `A01 S04 §6.5 §7.11`
+- [x] 7.2 `domain/sandbox/profile` implementation: `Profile`, `Mount`,
       `CwdConfig`, `Network`, `Cgroups`, `User`, `Sudo`, `Validate`,
       `BuildSpec` — `A01 S04`
 - [x] 7.3 `application/profile` store: scan `SANDBOX_PROFILES_DIR`, parse +
       validate each `<name>.yml`, `Get`/`List` (sorted); **read-only** (no
       create/update/delete); fail-closed on unparsable/invalid/duplicate/
-      traversal `name`; missing dir ⇒ empty store — **tests landed** — `S04`
-- [ ] 7.4 `application/profile` store implementation: `Load`, `Get`, `List`,
+      traversal `name`; missing dir ⇒ empty store — `S04`
+- [x] 7.4 `application/profile` store implementation: `Load`, `Get`, `List`,
       `SANDBOX_PROFILES_DIR` wiring in `application/config` — `S04`
 - [x] 7.5 `application/tools/profile`: read-only `profile_list` tool
       (annotations: read-only/idempotent/non-destructive/open-world false;
       output `{profiles:[{name,description}]}` with **no leakage** of
-      env/mounts/image/user/sudo — S02) — **tests landed** — `M05 M07 S02 S03`
-- [ ] 7.6 `application/tools/profile` implementation + register `profile_list`
+      env/mounts/image/user/sudo — S02) — `M05 M07 S02 S03`
+- [x] 7.6 `application/tools/profile` implementation + register `profile_list`
       in the shared registry — `M05 M07 S03`
-- [ ] 7.7 **`sandbox_create` rework**: input becomes `profile` (req),
+- [x] 7.7 **`sandbox_create` rework**: input becomes `profile` (req),
       `session_id` (req), `cwd` (req), `secrets` (opt); **remove** `image`,
       `env`, `mounts`, `nano_cpus`, `memory`, `pids_limit`, `uid`, `gid`,
       `sudo`; resolve profile → `BuildSpec`; error "not found" for unknown
       profile — `M05 S08 X02`
-- [ ] 7.8 Backend/config/spec changes: drop `validateImageRef` registry
+- [x] 7.8 Backend/config/spec changes: drop `validateImageRef` registry
       allowlist (parse-only); remove `TRUSTED_REGISTRIES`, `SANDBOX_CWD_MODE`,
       `SANDBOX_CGROUP_CPU_LIMIT_CORES`, `SANDBOX_CGROUP_MEMORY_LIMIT_GB`,
       `ALLOW_NETWORK_MODES`; network from profile (host valid when
       operator-authored); limits from profile `cgroups`; defaults from server —
       `§7.1 §7.9 §7.11`
-- [ ] 7.9 Allowlist removals cleanup: delete `DefaultTrustedRegistries`,
+- [x] 7.9 Allowlist removals cleanup: delete `DefaultTrustedRegistries`,
       `DefaultNetworkModes` gating of host (host allowed via profile), and the
       `TRUSTED_REGISTRIES`/`SANDBOX_CWD_MODE`/`SANDBOX_CGROUP_*` config paths —
       `S04 §7.9`
-- [ ] 7.10 Tests: unit (domain build/validate, store, tool) + e2e
-      (`sandbox_create` with profile, unknown-profile error, profile_list,
-      profile-owned network/limits respected, ALLOW_DIRS gate on profile
-      mounts) — `C01 C04GO T01 T02 C09GO`
-- [ ] 7.11 Docs: SPEC/README/AGENTS — profiles schema + trust model,
+- [x] 7.10 Tests: unit (domain build/validate, store, tool, sandbox_create
+      build-spec + unknown-profile) — `C01 C04GO T01`. (e2e sub-part is **N/A**
+      — the repo has no e2e suite, consistent with Phase 4.)
+- [x] 7.11 Docs: SPEC/README/AGENTS — profiles schema + trust model,
       `SANDBOX_PROFILES_DIR`, `profile_list`, removed envs, breaking
       `sandbox_create` migration note, digest-pinning convention — `D01 D02`
 
