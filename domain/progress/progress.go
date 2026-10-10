@@ -1,6 +1,6 @@
 // Package progress provides a small pure-domain mechanism for streaming
 // progress notifications from long-running tools (Phase 6, SPEC §7.x /
-// TODO.md 6.x). It is transport-agnostic: a Sink is stashed into a context and
+// roadmap item 6.x). It is transport-agnostic: a Sink is stashed into a context and
 // retrieved by the layers that produce output, so the application and
 // infrastructure layers can emit progress without depending on MCP or any
 // infrastructure. The package imports only the standard library and never

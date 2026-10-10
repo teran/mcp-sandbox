@@ -29,6 +29,7 @@ linters:
     - gocognit
     - gocritic
     - gocyclo
+    - godox
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
