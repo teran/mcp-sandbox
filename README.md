@@ -194,6 +194,13 @@ user:
 sudo: never
 ```
 
+> The example above is a minimal schema illustration. For a complete,
+> real-world profile, see **`examples/profiles/golang.yml`** — copy it into
+> `SANDBOX_PROFILES_DIR` as `golang.yml` and fill in the `<PLACEHOLDER>` values
+> (git identity, host paths). It defaults Go's build caches
+> (`GOCACHE`/`GOTMPDIR`/`GOMODCACHE`) so `go build`/`go test` work out of the
+> box inside the sandbox.
+
 - `ALLOW_DIRS` still **gates every host path** — both the session `cwd` and
   every profile `mounts.source` must be inside it (§7.2).
 - `profile_list` returns only `name`/`description` — env, mounts, image, user
