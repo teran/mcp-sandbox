@@ -27,6 +27,7 @@ linters:
     - gocheckcompilerdirectives
     - gochecksumtype
     - gocognit
+    - gocritic
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.

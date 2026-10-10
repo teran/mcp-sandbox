@@ -70,7 +70,7 @@ func TestProfileValidate_Valid(t *testing.T) {
 }
 
 func TestProfileValidate_Errors(t *testing.T) {
-	valid := func() *Profile { return validProfile() }
+	valid := validProfile
 
 	tests := []struct {
 		name string
