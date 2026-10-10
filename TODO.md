@@ -251,14 +251,20 @@ is ultimately a **profile-configuration** question: what defaults to set in the
 > `go test -race` and the `crosscall1`/mmap quirks (§3/§7). Feasibility and exact
 > profile YAML to be decided — delegate design to `@architect`.
 
-- [ ] **Design:** propose profile YAML + optional mounts so Go builds work out of
+- [x] **Design:** propose profile YAML + optional mounts so Go builds work out of
       the box without manual env (respecting ro rootfs / noexec tmpfs / virtiofs
       rw matrix) — `@architect`, `D01 D02`
-- [ ] **Implement + tests:** apply to the `golang` profile (and any toolchain
-      profiles), verify `make build` / `make test` / `go test -race` from a clean
-      sandbox — `@developer`/`@qa`, `C01 C04GO T01`
-- [ ] **Docs:** fold into `SPEC.md`/`README.md` mount matrix and FEEDBACK §2/§3 —
-      English, `D01 D02`
+      **Decided:** pure profile `env` — `GOCACHE=/tmp/.gocache`, `GOTMPDIR=/tmp`
+      (`/tmp` is writable+exec), `GOMODCACHE=/go/pkg/mod` (existing writable
+      mount). **No new mount, no schema change.** Docker Desktop may force
+      `noexec` on `/tmp` → documented fallback `GOTMPDIR` to a writable cwd
+      subdir. **Verified** in a golang sandbox: `go build` + `go test` (binary
+      exec from `/tmp`) both work with the recipe.
+- [ ] **Apply to the `golang` profile:** operator action — add the `env:` block
+      above to `~/.config/sandbox/profiles/golang.yml` (external, outside
+      `ALLOW_DIRS`; cannot be edited from the sandbox/host-read).
+- [x] **Docs:** recipe folded into the `sandbox://guidance/filesystem-mounts`
+      resource and SPEC/README mount matrix — `D01 D02`.
 
 ## Go tooling in the image (backlog — design open)
 
