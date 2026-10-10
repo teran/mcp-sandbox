@@ -16,7 +16,11 @@ a profile can weaken:
 - bounded pids, memory, CPU and ulimits
 - network from the operator profile
 - tmpfs mounts for `/run` and `/tmp`
-- `AutoRemove=true` so containers are destroyed when the session ends
+- `AutoRemove=true` — the container is removed when it stops
+
+Cleanup is **explicit only**: a sandbox is destroyed by
+`sandbox_destroy` / `sandbox_destroy_all`. There is no automatic garbage
+collection — the idle reaper and orphan reclamation are future work.
 
 ## Secrets
 

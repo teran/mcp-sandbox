@@ -39,14 +39,14 @@ func IsValidNetworkMode(m NetworkMode) bool {
 	return false
 }
 
-// SudoPolicy controls whether sandbox_install_package may use privilege
-// escalation (via sudo).
+// SudoPolicy controls whether commands run inside the sandbox (via
+// sandbox_exec) may use privilege escalation (via sudo).
 type SudoPolicy string
 
 const (
 	// SudoNever forbids any privilege escalation inside the sandbox.
 	SudoNever SudoPolicy = "never"
-	// SudoRequire runs package installation under sudo.
+	// SudoRequire runs sandbox_exec commands under sudo.
 	SudoRequire SudoPolicy = "require"
 )
 
