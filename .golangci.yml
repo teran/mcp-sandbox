@@ -72,6 +72,7 @@ linters:
     - mnd
     - nlreturn
     - varnamelen
+    - godoclint
   settings:
     ireturn:
       allow:
@@ -150,6 +151,14 @@ linters:
         - dl
         - cf
         - be
+    godoclint:
+      # The codebase is AI-generated with extensive godoc; the only noise is the
+      # `single-pkg-doc` rule flagging the conventional pattern of a package
+      # comment in every file of a package. Keep the value-adding rules
+      # (require-doc, start-with-name, max-len, no-unused-link, deprecated,
+      # require-stdlib-doclink) and disable that one via config, not mass edits.
+      disable:
+        - single-pkg-doc
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
