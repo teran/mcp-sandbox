@@ -66,6 +66,7 @@ linters:
     - interfacebloat
     - godot
     - dupword
+    - nakedret
   settings:
     ireturn:
       allow:
@@ -76,6 +77,8 @@ linters:
         - ^github\.com/teran/mcp-sandbox/application/tools/handler\.TraceLogger$
         - ^github\.com/modelcontextprotocol/go-sdk/mcp\.Transport$
         - ^github\.com/teran/mcp-sandbox/domain/sandbox/role\.Backend$
+    nakedret:
+      max-func-lines: 30
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
