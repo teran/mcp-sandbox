@@ -62,6 +62,17 @@ linters:
     - usetesting
     - wastedassign
     - modernize
+    - ireturn
+  settings:
+    ireturn:
+      allow:
+        - error
+        - empty
+        - stdlib
+        - anon
+        - ^github\.com/teran/mcp-sandbox/application/tools/handler\.TraceLogger$
+        - ^github\.com/modelcontextprotocol/go-sdk/mcp\.Transport$
+        - ^github\.com/teran/mcp-sandbox/domain/sandbox/role\.Backend$
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
