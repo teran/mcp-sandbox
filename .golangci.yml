@@ -71,6 +71,7 @@ linters:
     - funlen
     - mnd
     - nlreturn
+    - varnamelen
   settings:
     ireturn:
       allow:
@@ -88,6 +89,67 @@ linters:
     funlen:
       lines: 60
       statements: 40
+    varnamelen:
+      # This is a test-heavy, AI-generated codebase where short idiomatic Go
+      # names (table-test vars, logger/event/repo receivers) are pervasive and
+      # conventional. Scope the linter to genuinely unclear long-scope names:
+      # flag nothing below 3 chars, never complain about return values, and
+      # allowlist the idiomatic short identifiers below.
+      min-name-length: 3
+      check-return: false
+      ignore-names:
+        - ctx
+        - id
+        - ok
+        - err
+        - t
+        - tt
+        - w
+        - wg
+        - fd
+        - db
+        - ch
+        - in
+        - out
+        - b
+        - i
+        - j
+        - k
+        - n
+        - m
+        - x
+        - y
+        - c
+        - d
+        - e
+        - v
+        - s
+        - p
+        - r
+        - f
+        - o
+        - a
+        - g
+        - l
+        - h
+        - w
+        - mu
+        - ev
+        - eo
+        - al
+        - tl
+        - sp
+        - cs
+        - fb
+        - hc
+        - cg
+        - st
+        - tm
+        - ps
+        - lo
+        - dl
+        - cf
+        - be
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
