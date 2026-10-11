@@ -75,6 +75,7 @@ linters:
     - godoclint
     - containedctx
     - forcetypeassert
+    - nilerr
   settings:
     ireturn:
       allow:
