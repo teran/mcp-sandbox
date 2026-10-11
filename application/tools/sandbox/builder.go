@@ -15,7 +15,13 @@ type builder struct {
 
 // tool assembles a ToolDef with the given annotations, schemas, redaction
 // contract and handler.
-func (b builder) tool(name, title, desc, instructions string, ann def.Annotations, in, out *jsonschema.Schema, redact []def.RedactionField, h def.ToolHandler) *def.ToolDef {
+func (b builder) tool(
+	name, title, desc, instructions string,
+	ann def.Annotations,
+	in, out *jsonschema.Schema,
+	redact []def.RedactionField,
+	h def.ToolHandler,
+) *def.ToolDef {
 	return &def.ToolDef{
 		Name:              name,
 		Title:             title,

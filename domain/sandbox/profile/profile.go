@@ -214,11 +214,17 @@ func (p *Profile) BuildSpec(pol spec.Isolation, params Params) spec.SandboxSpec 
 	}
 
 	return spec.SandboxSpec{
-		Image:           p.Image,
-		WorkingDir:      cwdTarget,
-		Env:             p.Env,
-		Mounts:          mounts,
-		Resources:       spec.Resources{NanoCPUs: iso.NanoCPUs, Memory: iso.Memory, MemorySwap: iso.MemorySwap, PidsLimit: iso.PidsLimit, Ulimits: iso.Ulimits},
+		Image:      p.Image,
+		WorkingDir: cwdTarget,
+		Env:        p.Env,
+		Mounts:     mounts,
+		Resources: spec.Resources{
+			NanoCPUs:   iso.NanoCPUs,
+			Memory:     iso.Memory,
+			MemorySwap: iso.MemorySwap,
+			PidsLimit:  iso.PidsLimit,
+			Ulimits:    iso.Ulimits,
+		},
 		Network:         spec.Network{Mode: iso.NetworkMode},
 		UIDGID:          uidgid,
 		Sudo:            p.Sudo,

@@ -190,7 +190,10 @@ func TestSandboxExec_SummaryDescriptionMentionsCommandDescription(t *testing.T) 
 // invalid-arguments (InvalidParams), not an execution error.
 func TestSandboxExec_MissingCommandIsInvalidParams(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	res := callWrapped(t, d, map[string]any{"id": "abc"})
@@ -203,7 +206,10 @@ func TestSandboxExec_MissingCommandIsInvalidParams(t *testing.T) {
 // whitespace-only `command` is rejected as invalid-arguments.
 func TestSandboxExec_WhitespaceCommandIsInvalidParams(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	res := callWrapped(t, d, map[string]any{"id": "abc", "command": "   "})
@@ -217,7 +223,10 @@ func TestSandboxExec_WhitespaceCommandIsInvalidParams(t *testing.T) {
 // while a value containing '=' is accepted.
 func TestSandboxExec_InvalidEnvIsInvalidParams(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 
@@ -242,11 +251,16 @@ func TestSandboxExec_InvalidEnvIsInvalidParams(t *testing.T) {
 // is valid (allowed in the value, only '=' separator between key and value).
 func TestSandboxExec_EnvValueWithEqualsAccepted(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	// Validation must pass; the call must not be rejected as invalid-arguments.
-	if res := callWrapped(t, d, map[string]any{"id": "abc", "command": "echo hi", "env": map[string]string{"A": "b=c"}}); handler.IsInvalidArgumentsResult(res) {
+	if res := callWrapped(t, d, map[string]any{
+		"id": "abc", "command": "echo hi", "env": map[string]string{"A": "b=c"},
+	}); handler.IsInvalidArgumentsResult(res) {
 		t.Fatalf("env value with '=' must be accepted, got err=%v", res.GetError())
 	}
 }

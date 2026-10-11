@@ -93,7 +93,9 @@ func TestAccessLogger_EmitsLine(t *testing.T) {
 	base := logrus.New()
 	base.SetOutput(&buf)
 	al := NewAccessLogger(base.WithField("server", "test"))
-	al.AccessLog(handler.AccessLogEntry{Tool: "sandbox_list", Args: map[string]any{}, Source: "STDIO", Outcome: "ok", RequestID: "r1"})
+	al.AccessLog(handler.AccessLogEntry{
+		Tool: "sandbox_list", Args: map[string]any{}, Source: "STDIO", Outcome: "ok", RequestID: "r1",
+	})
 	if !bytes.Contains(buf.Bytes(), []byte("tools/call")) {
 		t.Fatalf("log line missing: %s", buf.String())
 	}

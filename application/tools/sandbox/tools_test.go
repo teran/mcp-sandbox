@@ -488,7 +488,9 @@ func TestSandboxCreate_Error(t *testing.T) {
 	svc := newFake()
 	svc.createErr = errFake
 	d := toolByName(t, svc, "sandbox_create")
-	if _, err := callHandler(t, d, svc, map[string]any{"profile": "default", "cwd": "/c", "session_id": "s1"}); !errors.Is(err, errFake) {
+	if _, err := callHandler(t, d, svc, map[string]any{
+		"profile": "default", "cwd": "/c", "session_id": "s1",
+	}); !errors.Is(err, errFake) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -584,7 +586,10 @@ func TestSandboxCreate_MissingRequiredIsInvalidParams(t *testing.T) {
 
 func TestSandboxExec_Handler(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("\x1b[31mok\x1b[0m"), Stderr: []byte("err")}
 	d := toolByName(t, svc, "sandbox_exec")
 	out, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "echo hi"})
@@ -613,7 +618,11 @@ func TestSandboxExec_Handler(t *testing.T) {
 // command].
 func TestSandboxExec_WrapperFromProfileShell(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Shell: "/bin/sh", UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		Shell:     "/bin/sh",
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "git status"}); err != nil {
@@ -629,7 +638,11 @@ func TestSandboxExec_WrapperFromProfileShell(t *testing.T) {
 // "bash -l" → ["bash","-l","-c",command].
 func TestSandboxExec_WrapperFromShellWithArgs(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Shell: "bash -l", UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		Shell:     "bash -l",
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "pwd"}); err != nil {
@@ -644,7 +657,10 @@ func TestSandboxExec_WrapperFromShellWithArgs(t *testing.T) {
 // to "bash".
 func TestSandboxExec_DefaultShellBash(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation}) // Shell == ""
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	}) // Shell == ""
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "ls -la"}); err != nil {
@@ -659,10 +675,15 @@ func TestSandboxExec_DefaultShellBash(t *testing.T) {
 // Request.Env.
 func TestSandboxExec_EnvPassthrough(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
-	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "env", "env": map[string]string{"FOO": "bar", "BAZ": "qux=1"}}); err != nil {
+	if _, err := callHandler(t, d, svc, map[string]any{
+		"id": "abc", "command": "env", "env": map[string]string{"FOO": "bar", "BAZ": "qux=1"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if svc.execReq.Env["FOO"] != "bar" || svc.execReq.Env["BAZ"] != "qux=1" {
@@ -674,7 +695,10 @@ func TestSandboxExec_EnvPassthrough(t *testing.T) {
 // override) Request.Env.
 func TestSandboxExec_EmptyEnvNoOverride(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "ls"}); err != nil {
@@ -695,7 +719,10 @@ func TestSandboxExec_SummaryOptional(t *testing.T) {
 		{"id": "abc", "command": "ls", "summary": "list files"},
 	} {
 		svc := newFake()
-		svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+		svc.session = runningSession("abc", spec.SandboxSpec{
+			UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+			Isolation: defaultPolicy().Isolation,
+		})
 		svc.execRes = &exec.Result{ExitCode: 0, Stdout: []byte("ok")}
 		d := toolByName(t, svc, "sandbox_exec")
 		if _, err := callHandler(t, d, svc, args); err != nil {
@@ -773,7 +800,10 @@ func TestSandboxExec_NoSecrets_OutputUnchanged(t *testing.T) {
 
 func TestSandboxExec_EmptyCommand(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	d := toolByName(t, svc, "sandbox_exec")
 	for _, cmd := range []string{"", "   ", "\t"} {
 		if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": cmd}); err == nil {
@@ -785,7 +815,11 @@ func TestSandboxExec_EmptyCommand(t *testing.T) {
 func TestSandboxExec_RootUserPolicy(t *testing.T) {
 	svc := newFake()
 	// SudoNever session: root rejected.
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Sudo: spec.SudoNever, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Sudo:      spec.SudoNever,
+		Isolation: defaultPolicy().Isolation,
+	})
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "id", "user": "root"}); err == nil {
 		t.Fatal("expected root rejection under SudoNever")
@@ -811,7 +845,9 @@ func TestSandboxExec_UnsupportedUser(t *testing.T) {
 
 func TestSandboxExec_FallbackNobody(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execRes = &exec.Result{ExitCode: 0}
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "x"}); err != nil {
@@ -824,7 +860,10 @@ func TestSandboxExec_FallbackNobody(t *testing.T) {
 
 func TestSandboxExec_ExecError(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1000, GID: 1000}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1000, GID: 1000},
+		Isolation: defaultPolicy().Isolation,
+	})
 	svc.execErr = errFake
 	d := toolByName(t, svc, "sandbox_exec")
 	if _, err := callHandler(t, d, svc, map[string]any{"id": "abc", "command": "x"}); !errors.Is(err, errFake) {
@@ -913,7 +952,9 @@ func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
-	sp, err := buildSpec(b, createInput{Profile: "default", Cwd: "/c", SessionID: "s"})
+	sp, err := buildSpec(b, createInput{
+		Profile: "default", Cwd: "/c", SessionID: "s",
+	})
 	if err != nil {
 		t.Fatalf("buildSpec: %v", err)
 	}
@@ -936,7 +977,9 @@ func TestBuildSpec_ProfileUser(t *testing.T) {
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
-	sp, err := buildSpec(b, createInput{Profile: "default", Cwd: "/c", SessionID: "s"})
+	sp, err := buildSpec(b, createInput{
+		Profile: "default", Cwd: "/c", SessionID: "s",
+	})
 	if err != nil {
 		t.Fatalf("buildSpec: %v", err)
 	}
@@ -948,7 +991,9 @@ func TestBuildSpec_ProfileUser(t *testing.T) {
 func TestBuildSpec_UnknownProfile_ErrProfileNotFound(t *testing.T) {
 	svc := newFake()
 	b := builder{svc: svc}
-	if _, err := buildSpec(b, createInput{Profile: "nope", Cwd: "/c", SessionID: "s"}); !errors.Is(err, domainprofile.ErrProfileNotFound) {
+	if _, err := buildSpec(b, createInput{
+		Profile: "nope", Cwd: "/c", SessionID: "s",
+	}); !errors.Is(err, domainprofile.ErrProfileNotFound) {
 		t.Fatalf("err = %v, want ErrProfileNotFound", err)
 	}
 }
@@ -960,7 +1005,9 @@ func TestBuildSpec_ProfileGetError_Propagates(t *testing.T) {
 	svc := newFake()
 	svc.policy.Profiles = fakeResolver{err: errFake}
 	b := builder{svc: svc}
-	if _, err := buildSpec(b, createInput{Profile: "default", Cwd: "/c", SessionID: "s"}); !errors.Is(err, errFake) {
+	if _, err := buildSpec(b, createInput{
+		Profile: "default", Cwd: "/c", SessionID: "s",
+	}); !errors.Is(err, errFake) {
 		t.Fatalf("err = %v, want resolver error to propagate", err)
 	}
 }
@@ -1022,7 +1069,9 @@ func TestPolicyAndBackendName(t *testing.T) {
 // panics).
 func TestHandlers_RejectMalformedArgs(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		Isolation: defaultPolicy().Isolation,
+	})
 	for _, name := range []string{
 		"sandbox_info", "sandbox_stats", "sandbox_create",
 		"sandbox_exec", "sandbox_destroy",
@@ -1036,7 +1085,9 @@ func TestHandlers_RejectMalformedArgs(t *testing.T) {
 
 func TestResolveUser_UnsupportedValue(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		Isolation: defaultPolicy().Isolation,
+	})
 	b := builder{svc: svc}
 	if _, err := resolveUser(b, "abc", "9999"); err == nil {
 		t.Fatal("expected unsupported user error")
@@ -1045,7 +1096,10 @@ func TestResolveUser_UnsupportedValue(t *testing.T) {
 
 func TestResolveUser_DefaultNonRoot(t *testing.T) {
 	svc := newFake()
-	svc.session = runningSession("abc", spec.SandboxSpec{UIDGID: spec.UIDGID{UID: 1234, GID: 1234}, Isolation: defaultPolicy().Isolation})
+	svc.session = runningSession("abc", spec.SandboxSpec{
+		UIDGID:    spec.UIDGID{UID: 1234, GID: 1234},
+		Isolation: defaultPolicy().Isolation,
+	})
 	b := builder{svc: svc}
 	user, err := resolveUser(b, "abc", "")
 	if err != nil {

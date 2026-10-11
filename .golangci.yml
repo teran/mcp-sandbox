@@ -67,6 +67,7 @@ linters:
     - godot
     - dupword
     - nakedret
+    - lll
   settings:
     ireturn:
       allow:
@@ -79,6 +80,8 @@ linters:
         - ^github\.com/teran/mcp-sandbox/domain/sandbox/role\.Backend$
     nakedret:
       max-func-lines: 30
+    lll:
+      line-length: 130
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.

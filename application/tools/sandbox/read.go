@@ -13,8 +13,17 @@ import (
 )
 
 // readTool builds a read-only tool definition (S03).
-func readTool(b builder, name, title, desc, instructions string, in *jsonschema.Schema, out *jsonschema.Schema, h def.ToolHandler) *def.ToolDef {
-	return b.tool(name, title, desc, instructions, def.Annotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: false}, in, out, nil, h)
+func readTool(
+	b builder,
+	name, title, desc, instructions string,
+	in, out *jsonschema.Schema,
+	h def.ToolHandler,
+) *def.ToolDef {
+	return b.tool(
+		name, title, desc, instructions,
+		def.Annotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: false},
+		in, out, nil, h,
+	)
 }
 
 // sandboxListDef declares sandbox_list: list sandbox sessions.
@@ -43,7 +52,8 @@ func sandboxListDef(b builder) *def.ToolDef {
 // sandboxInfoDef declares sandbox_info: detailed spec + state of one sandbox.
 func sandboxInfoDef(b builder) *def.ToolDef {
 	return readTool(b, "sandbox_info", "Inspect a sandbox",
-		"Return detailed spec and state of one sandbox: image, working directory, state, creation time and secret names (values redacted).",
+		"Return detailed spec and state of one sandbox: image, working directory, state, creation "+
+			"time and secret names (values redacted).",
 		"Read-only. Pass the session id. Secret values are never returned; only their names are listed.",
 		obj(map[string]*jsonschema.Schema{"id": strP("Sandbox session id")}, "id"),
 		objectOutput(),

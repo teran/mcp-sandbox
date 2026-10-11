@@ -57,10 +57,14 @@ func outputSchema() *jsonschema.Schema {
 // profileListDef declares profile_list: enumerate operator-authored profiles.
 func profileListDef(l Lister) *def.ToolDef {
 	return &def.ToolDef{
-		Name:         "profile_list",
-		Title:        "List sandbox profiles",
-		Description:  "List the operator-authored sandbox profiles by name and description. Profiles are read-only and fully determine image, env, mounts, network, resources, user and sudo; sandbox_create references one by name.",
-		Instructions: "Returns the available profiles and their descriptions. Pick a profile name to pass to sandbox_create. Only names and descriptions are returned; no sensitive profile content is exposed.",
+		Name:  "profile_list",
+		Title: "List sandbox profiles",
+		Description: "List the operator-authored sandbox profiles by name and description. Profiles " +
+			"are read-only and fully determine image, env, mounts, network, resources, user and sudo; " +
+			"sandbox_create references one by name.",
+		Instructions: "Returns the available profiles and their descriptions. Pick a profile name to " +
+			"pass to sandbox_create. Only names and descriptions are returned; no sensitive profile " +
+			"content is exposed.",
 		Annotations: def.Annotations{
 			ReadOnlyHint:    true,
 			DestructiveHint: false,

@@ -13,8 +13,17 @@ import (
 
 // deleteTool builds a destructive tool definition (S03/S12). Destructive tools
 // require human confirmation client-side (HITL); the server does not cascade.
-func deleteTool(b builder, name, title, desc, instructions string, in *jsonschema.Schema, out *jsonschema.Schema, h def.ToolHandler) *def.ToolDef {
-	return b.tool(name, title, desc, instructions, def.Annotations{ReadOnlyHint: false, DestructiveHint: true, IdempotentHint: true, OpenWorldHint: false}, in, out, nil, h)
+func deleteTool(
+	b builder,
+	name, title, desc, instructions string,
+	in, out *jsonschema.Schema,
+	h def.ToolHandler,
+) *def.ToolDef {
+	return b.tool(
+		name, title, desc, instructions,
+		def.Annotations{ReadOnlyHint: false, DestructiveHint: true, IdempotentHint: true, OpenWorldHint: false},
+		in, out, nil, h,
+	)
 }
 
 // sandboxDestroyDef declares sandbox_destroy: destroy one sandbox.

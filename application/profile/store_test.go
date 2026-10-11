@@ -132,7 +132,8 @@ func TestGet_ReadsOnDemand_ReflectsEdits(t *testing.T) {
 	st := New(dir)
 
 	// Overwrite → new value on the next call.
-	writeProfile(t, dir, "default.yml", strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/other:v2", 1))
+	writeProfile(t, dir, "default.yml",
+		strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/other:v2", 1))
 	p, err := st.Get("default")
 	if err != nil {
 		t.Fatalf("Get after overwrite: %v", err)
@@ -209,7 +210,8 @@ func TestList_MissingDir_Empty(t *testing.T) {
 func TestGet_DuplicateName_Error(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "a.yml", validYAML)
-	writeProfile(t, dir, "b.yml", strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/app:v1", 1)) // same name "default"
+	writeProfile(t, dir, "b.yml",
+		strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/app:v1", 1)) // same name "default"
 	st := New(dir)
 	if _, err := st.Get("default"); err == nil {
 		t.Fatal("expected duplicate-name error")
@@ -221,7 +223,8 @@ func TestGet_DuplicateName_Error(t *testing.T) {
 func TestList_DuplicateName_Error(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "a.yml", validYAML)
-	writeProfile(t, dir, "b.yml", strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/app:v1", 1)) // same name "default"
+	writeProfile(t, dir, "b.yml",
+		strings.Replace(validYAML, "image: docker.io/library/alpine:3.20", "image: ghcr.io/org/app:v1", 1)) // same name "default"
 	st := New(dir)
 	if _, err := st.List(); err == nil {
 		t.Fatal("expected duplicate-name error")

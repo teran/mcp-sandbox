@@ -217,7 +217,8 @@ func TestBuildServer_DoesNotLoadAtStartup(t *testing.T) {
 // profiles dir.
 func TestBuildServer_WiresProfileStore(t *testing.T) {
 	dir := t.TempDir()
-	prof := "name: default\nimage: docker.io/library/alpine:3.20\nnetwork:\n  mode: bridge\ncgroups:\n  pids_limit: 256\nsudo: never\n"
+	prof := "name: default\nimage: docker.io/library/alpine:3.20\n" +
+		"network:\n  mode: bridge\ncgroups:\n  pids_limit: 256\nsudo: never\n"
 	if err := os.WriteFile(filepath.Join(dir, "default.yml"), []byte(prof), 0o644); err != nil {
 		t.Fatal(err)
 	}

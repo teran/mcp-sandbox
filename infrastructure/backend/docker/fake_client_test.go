@@ -139,7 +139,14 @@ func newFakeClient() *fakeClient {
 	}
 }
 
-func (f *fakeClient) ContainerCreate(_ context.Context, config *container.Config, hostConfig *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, _ string) (container.CreateResponse, error) {
+func (f *fakeClient) ContainerCreate(
+	_ context.Context,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	_ *network.NetworkingConfig,
+	_ *ocispec.Platform,
+	_ string,
+) (container.CreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil {
@@ -282,7 +289,11 @@ func (f *fakeClient) ContainerStats(_ context.Context, containerID string, _ boo
 	return container.StatsResponseReader{Body: io.NopCloser(bytes.NewBufferString(body)), OSType: "linux"}, nil
 }
 
-func (f *fakeClient) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error) {
+func (f *fakeClient) ContainerExecCreate(
+	ctx context.Context,
+	containerID string,
+	options container.ExecOptions,
+) (container.ExecCreateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.execErr != nil {
@@ -293,7 +304,11 @@ func (f *fakeClient) ContainerExecCreate(ctx context.Context, containerID string
 	return container.ExecCreateResponse{ID: "exec-" + containerID}, nil
 }
 
-func (f *fakeClient) ContainerExecAttach(ctx context.Context, execID string, _ container.ExecAttachOptions) (types.HijackedResponse, error) {
+func (f *fakeClient) ContainerExecAttach(
+	ctx context.Context,
+	execID string,
+	_ container.ExecAttachOptions,
+) (types.HijackedResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.execAttachErr != nil {
@@ -306,7 +321,10 @@ func (f *fakeClient) ContainerExecAttach(ctx context.Context, execID string, _ c
 	f.execStdin = append(f.execStdin, nil)
 	idx := len(f.execStdin) - 1
 	if f.execReaderErr != nil {
-		return types.HijackedResponse{Conn: &recordingConn{dst: &f.execStdin[idx]}, Reader: bufio.NewReader(errReader{f.execReaderErr})}, nil
+		return types.HijackedResponse{
+			Conn:   &recordingConn{dst: &f.execStdin[idx]},
+			Reader: bufio.NewReader(errReader{f.execReaderErr}),
+		}, nil
 	}
 	var buf bytes.Buffer
 	if len(f.execResults) > 0 {
