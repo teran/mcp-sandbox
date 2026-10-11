@@ -4,6 +4,7 @@ package spec
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -31,12 +32,7 @@ func AllNetworkModes() []NetworkMode {
 // spec requesting any known mode (host included) validates; the fail-closed
 // host opt-in is enforced by the operator-authored profile, not here (Phase 7).
 func IsValidNetworkMode(m NetworkMode) bool {
-	for _, n := range AllNetworkModes() {
-		if m == n {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllNetworkModes(), m)
 }
 
 // SudoPolicy controls whether commands run inside the sandbox (via

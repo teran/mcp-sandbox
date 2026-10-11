@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -561,12 +562,8 @@ func TestSandboxCreate_SchemaRejectsRemovedParams(t *testing.T) {
 	}
 	for _, extra := range removed {
 		args := map[string]any{}
-		for k, v := range base {
-			args[k] = v
-		}
-		for k, v := range extra {
-			args[k] = v
-		}
+		maps.Copy(args, base)
+		maps.Copy(args, extra)
 		if err := validateToolArgs(d, args); err == nil {
 			t.Fatalf("removed param %v must be rejected by the strict schema", extra)
 		}

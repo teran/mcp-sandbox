@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -72,12 +73,8 @@ func (t *fakeTraceLogger) WithFields(fields map[string]any) TraceLogger {
 	t.rec.mu.Lock()
 	defer t.rec.mu.Unlock()
 	merged := make(map[string]any, len(t.fields)+len(fields))
-	for k, v := range t.fields {
-		merged[k] = v
-	}
-	for k, v := range fields {
-		merged[k] = v
-	}
+	maps.Copy(merged, t.fields)
+	maps.Copy(merged, fields)
 	t.rec.fieldSets = append(t.rec.fieldSets, merged)
 	return &fakeTraceLogger{rec: t.rec, fields: merged}
 }

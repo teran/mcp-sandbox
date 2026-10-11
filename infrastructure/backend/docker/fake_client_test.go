@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,12 +187,7 @@ func (f *fakeClient) ImagePull(_ context.Context, refStr string, opts image.Pull
 // wasPulledLocked reports whether the given image ref has been pulled. Callers
 // must hold f.mu.
 func (f *fakeClient) wasPulledLocked(ref string) bool {
-	for _, p := range f.pulledImages {
-		if p == ref {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(f.pulledImages, ref)
 }
 
 // pulledRefs returns a copy of the pulled image references for assertions.

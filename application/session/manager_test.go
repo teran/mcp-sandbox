@@ -291,13 +291,11 @@ func TestSessionMutex(_ *testing.T) {
 	sess := domainsession.New("m", validSpec())
 	var wg sync.WaitGroup
 	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sess.Lock()
 			defer sess.Unlock()
 			sess.Touch(time.Now())
-		}()
+		})
 	}
 	wg.Wait()
 }

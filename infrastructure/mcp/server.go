@@ -67,14 +67,12 @@ func toSDKTool(t *def.ToolDef) *mcp.Tool {
 		Description: desc,
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:    t.Annotations.ReadOnlyHint,
-			DestructiveHint: boolPtr(t.Annotations.DestructiveHint),
+			DestructiveHint: new(t.Annotations.DestructiveHint),
 			IdempotentHint:  t.Annotations.IdempotentHint,
-			OpenWorldHint:   boolPtr(t.Annotations.OpenWorldHint),
+			OpenWorldHint:   new(t.Annotations.OpenWorldHint),
 			Title:           t.Title,
 		},
 		InputSchema:  t.InputSchema,
 		OutputSchema: t.OutputSchema,
 	}
 }
-
-func boolPtr(v bool) *bool { return &v }

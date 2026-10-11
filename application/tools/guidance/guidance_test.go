@@ -36,7 +36,7 @@ func TestInstructions_PresentAndIndexed(t *testing.T) {
 	for _, uri := range uris {
 		known[uri] = true
 	}
-	for _, tok := range strings.Fields(ins) {
+	for tok := range strings.FieldsSeq(ins) {
 		if strings.HasPrefix(tok, "sandbox://guidance/") {
 			if !known[tok] {
 				t.Fatalf("Instructions() references unknown resource URI %q", tok)

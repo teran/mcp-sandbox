@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
@@ -229,9 +230,7 @@ func TestSandboxExec_InvalidEnvIsInvalidParams(t *testing.T) {
 	}
 	for _, env := range cases {
 		args := map[string]any{"id": "abc", "command": "echo hi"}
-		for k, v := range env {
-			args[k] = v
-		}
+		maps.Copy(args, env)
 		res := callWrapped(t, d, args)
 		if !handler.IsInvalidArgumentsResult(res) {
 			t.Fatalf("env %v: expected invalid-arguments result, got IsError=%v err=%v", env, res.IsError, res.GetError())

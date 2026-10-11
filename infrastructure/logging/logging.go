@@ -227,7 +227,7 @@ func isSecret(f reflect.StructField) bool {
 
 func fieldName(f reflect.StructField) string {
 	if tag := f.Tag.Get("json"); tag != "" {
-		name := strings.Split(tag, ",")[0]
+		name, _, _ := strings.Cut(tag, ",")
 		if name != "" && name != "-" {
 			return name
 		}

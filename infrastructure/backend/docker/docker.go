@@ -346,13 +346,11 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 		NetworkMode:    container.NetworkMode(networkMode),
 
 		// Bounded resources.
-		Resources: container.Resources{
-			PidsLimit:  &pids,
-			Memory:     iso.Memory,
-			MemorySwap: iso.MemorySwap,
-			NanoCPUs:   iso.NanoCPUs,
-			Ulimits:    toDockerUlimits(iso.Ulimits),
-		},
+		PidsLimit:  &pids,
+		Memory:     iso.Memory,
+		MemorySwap: iso.MemorySwap,
+		NanoCPUs:   iso.NanoCPUs,
+		Ulimits:    toDockerUlimits(iso.Ulimits),
 
 		Mounts: mounts,
 		Tmpfs:  tmpfs,

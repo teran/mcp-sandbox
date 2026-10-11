@@ -300,16 +300,14 @@ func TestConcurrent_GetList_RaceSafe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if _, err := st.Get("default"); err != nil {
 				t.Errorf("Get: %v", err)
 			}
 			if _, err := st.List(); err != nil {
 				t.Errorf("List: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
