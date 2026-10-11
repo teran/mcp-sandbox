@@ -65,6 +65,7 @@ linters:
     - ireturn
     - interfacebloat
     - godot
+    - dupword
   settings:
     ireturn:
       allow:
