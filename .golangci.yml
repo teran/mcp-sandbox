@@ -73,6 +73,7 @@ linters:
     - nlreturn
     - varnamelen
     - godoclint
+    - containedctx
   settings:
     ireturn:
       allow:
