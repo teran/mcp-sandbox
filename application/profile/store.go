@@ -83,6 +83,15 @@ type yamlUser struct {
 //   - memory_gb -> Memory (GiB);
 //   - when only Memory is set, MemorySwap defaults to Memory so the
 //     "memory_swap >= memory" Validate invariant holds with swap disabled.
+// yamlCgroups fields mirror the YAML cgroups block; the _toDomain converter
+// below turns them into domain Cgroups with the server-enforced defaults.
+
+// Conversion constants: CPU cores → nanoseconds and GiB → bytes.
+const (
+	nanoCPUsPerCore = 1_000_000_000
+	bytesPerGiB     = 1024 * 1024 * 1024
+)
+
 func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
 	cg := domainprofile.Cgroups{
 		NanoCPUs:   yc.NanoCPUs,
@@ -91,10 +100,10 @@ func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
 		PidsLimit:  yc.PidsLimit,
 	}
 	if cg.NanoCPUs == 0 && yc.CPUCores > 0 {
-		cg.NanoCPUs = int64(yc.CPUCores * 1_000_000_000)
+		cg.NanoCPUs = int64(yc.CPUCores * nanoCPUsPerCore)
 	}
 	if cg.Memory == 0 && yc.MemoryGB > 0 {
-		cg.Memory = yc.MemoryGB * 1024 * 1024 * 1024
+		cg.Memory = yc.MemoryGB * bytesPerGiB
 	}
 	if cg.Memory > 0 && cg.MemorySwap == 0 {
 		cg.MemorySwap = cg.Memory

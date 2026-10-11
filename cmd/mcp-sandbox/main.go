@@ -40,13 +40,21 @@ func main() {
 	exit(run(context.Background(), os.Args[1:], os.Stderr))
 }
 
+// Process exit codes. flag.Parse mirrors the standard library's convention of
+// exiting with status 2 on a usage/parse error.
+const (
+	exitOK    = 0
+	exitError = 1
+	exitUsage = 2
+)
+
 // run performs the composition-root wiring and starts the stdio transport. It
 // returns a process exit code. It is separated from main for testability.
 func run(ctx context.Context, args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet(appName, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return exitUsage
 	}
 
 	cfg, err := config.Load()

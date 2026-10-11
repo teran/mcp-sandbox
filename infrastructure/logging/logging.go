@@ -26,6 +26,11 @@ const DefaultLogFilename = "mcp-sandbox.log"
 // redactedMarker replaces secret values in all output and logs.
 const redactedMarker = "***REDACTED***"
 
+// logFileMode is the strict 0600 permission applied to the stdio log file so
+// log contents (which can carry request ids) stay readable only by the owner
+// (L01).
+const logFileMode = 0o600
+
 // Options configures the logger.
 type Options struct {
 	Level    string // empty ⇒ logging disabled
@@ -94,11 +99,11 @@ func openLogFile(filename string) (*os.File, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	f, err := root.OpenFile(filepath.Base(filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := root.OpenFile(filepath.Base(filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("logging: open %q: %w", filename, err)
 	}
-	if err := f.Chmod(0o600); err != nil {
+	if err := f.Chmod(logFileMode); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("logging: chmod %q: %w", filename, err)
 	}

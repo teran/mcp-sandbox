@@ -231,20 +231,33 @@ func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 // §7.1). sandbox_create applies it to every spec; a caller can never weaken it.
 // Resources/network are overridden by the operator profile at BuildSpec time;
 // the built-in bounded values here are a fail-closed, profile-independent base.
+//
+// Hardening constants: default non-root user, bounded pids/memory/cpu and an
+// explicit nofile rlimit ceiling for the fail-closed base (SPEC §7.1).
+const (
+	defaultSandboxUID  = 1000
+	defaultSandboxGID  = 1000
+	defaultPidsLimit   = 512
+	defaultMemoryBytes = 4 * 1024 * 1024 * 1024 // 4 GiB, in-RAM only
+	defaultNanoCPUs    = 1_000_000_000          // 1 CPU
+	defaultNofileSoft  = 1024
+	defaultNofileHard  = 2048
+)
+
 func (s *Service) defaultIsolation() spec.Isolation {
 	return spec.Isolation{
 		ReadOnlyRootfs:  true,
 		CapDrop:         []string{"ALL"},
 		NoNewPrivileges: true,
 		Seccomp:         spec.SeccompDefault,
-		User:            spec.UIDGID{UID: 1000, GID: 1000},
-		PidsLimit:       512,
-		Memory:          4 * 1024 * 1024 * 1024,
+		User:            spec.UIDGID{UID: defaultSandboxUID, GID: defaultSandboxGID},
+		PidsLimit:       defaultPidsLimit,
+		Memory:          defaultMemoryBytes,
 		// MemorySwap equal to Memory disables swap entirely (memory + swap limit
 		// == memory => no swap), keeping the sandbox in-RAM only.
-		MemorySwap:   4 * 1024 * 1024 * 1024,
-		NanoCPUs:     1_000_000_000,
-		Ulimits:      []spec.Ulimit{{Name: "nofile", Soft: 1024, Hard: 2048}},
+		MemorySwap:   defaultMemoryBytes,
+		NanoCPUs:     defaultNanoCPUs,
+		Ulimits:      []spec.Ulimit{{Name: "nofile", Soft: defaultNofileSoft, Hard: defaultNofileHard}},
 		NetworkMode:  spec.NetworkBridge,
 		TmpfsWorkdir: true,
 		AutoRemove:   true,

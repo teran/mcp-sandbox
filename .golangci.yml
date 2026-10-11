@@ -69,6 +69,7 @@ linters:
     - nakedret
     - lll
     - funlen
+    - mnd
   settings:
     ireturn:
       allow:

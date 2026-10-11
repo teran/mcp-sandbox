@@ -19,7 +19,9 @@ func sanitizeANSI(s string) string {
 }
 
 // sanitizeControl drops C0 control characters (0x00–0x1F) except tab, LF and
-// CR.
+// CR, plus DEL (0x7F).
+const del = 0x7f
+
 func sanitizeControl(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -27,7 +29,7 @@ func sanitizeControl(s string) string {
 		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
 			continue
 		}
-		if r == 0x7f {
+		if r == del {
 			continue
 		}
 		b.WriteRune(r)

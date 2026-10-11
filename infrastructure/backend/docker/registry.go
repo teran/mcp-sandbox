@@ -26,12 +26,16 @@ func init() {
 
 // dockerAvailable reports whether the docker daemon is reachable. It is
 // evaluated lazily inside Select/sandbox_create — never at startup (A02/N35).
+// dockerPingTimeout bounds the startup laziness probe (SPEC §7.9). Evaluated
+// lazily inside Select/sandbox_create — never at startup (A02/N35).
+const dockerPingTimeout = 2 * time.Second
+
 func dockerAvailable() bool {
 	cli, err := newClient("")
 	if err != nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
 	defer cancel()
 	return pingOK(ctx, cli.Ping)
 }
