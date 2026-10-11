@@ -25,6 +25,7 @@ func ShortID(full string) string {
 	if len(full) > ShortIDLength {
 		return full[:ShortIDLength]
 	}
+
 	return full
 }
 
@@ -40,6 +41,7 @@ func WithSessionID(ctx context.Context, id string) context.Context {
 // IDFromContext returns the session id stored in the context, if any.
 func IDFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(sessionIDKey{}).(string)
+
 	return id, ok
 }
 

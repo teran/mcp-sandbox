@@ -25,6 +25,7 @@ func registerResources(server *mcp.Server) {
 			if !ok {
 				return nil, mcp.ResourceNotFoundError(uri)
 			}
+
 			return &mcp.ReadResourceResult{
 				Contents: []*mcp.ResourceContents{{
 					URI:      uri,

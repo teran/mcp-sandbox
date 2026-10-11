@@ -20,5 +20,6 @@ func WithID(ctx context.Context, id string) context.Context {
 // IDFromContext returns the request id stored in the context, if any.
 func IDFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(key{}).(string)
+
 	return id, ok
 }

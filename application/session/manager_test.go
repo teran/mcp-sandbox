@@ -43,6 +43,7 @@ func (f *fakeLife) Create(_ context.Context, s spec.SandboxSpec) (string, error)
 	id := "ctr-" + string(rune('a'+f.nextID-1))
 	f.created = append(f.created, s)
 	f.createdIDs[id] = true
+
 	return id, nil
 }
 
@@ -54,6 +55,7 @@ func (f *fakeLife) Destroy(_ context.Context, id string) error {
 	}
 	f.destroyed = append(f.destroyed, id)
 	delete(f.createdIDs, id)
+
 	return nil
 }
 

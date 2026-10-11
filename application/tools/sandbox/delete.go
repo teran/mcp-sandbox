@@ -43,6 +43,7 @@ func sandboxDestroyDef(b builder) *def.ToolDef {
 			if err := b.svc.Destroy(ctx, in.ID); err != nil {
 				return nil, err
 			}
+
 			return DestroyOutput{Destroyed: 1, IDs: []string{domainsession.ShortID(in.ID)}}, nil
 		})
 }
@@ -63,6 +64,7 @@ func sandboxDestroyAllDef(b builder) *def.ToolDef {
 			for _, s := range before {
 				ids = append(ids, domainsession.ShortID(s.ID()))
 			}
+
 			return DestroyOutput{Destroyed: len(ids), IDs: ids}, nil
 		})
 }

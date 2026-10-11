@@ -32,6 +32,7 @@ func NewServer(impl *mcp.Implementation, logger *logging.Logger, tools []*def.To
 			return handler.Call(ctx, deps, tt, req)
 		})
 	}
+
 	return server
 }
 
@@ -47,6 +48,7 @@ func BuildTools(svc *Service) []*def.ToolDef {
 	if svc.profiles != nil {
 		tools = append(tools, profiletool.All(svc.profiles)...)
 	}
+
 	return tools
 }
 
@@ -61,6 +63,7 @@ func toSDKTool(t *def.ToolDef) *mcp.Tool {
 	if t.Instructions != "" {
 		desc = t.Instructions + "\n\n" + desc
 	}
+
 	return &mcp.Tool{
 		Name:        t.Name,
 		Title:       t.Title,

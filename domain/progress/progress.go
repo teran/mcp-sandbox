@@ -36,6 +36,7 @@ func WithSink(ctx context.Context, s Sink) context.Context {
 	if s == nil {
 		return ctx
 	}
+
 	return context.WithValue(ctx, sinkKey{}, s)
 }
 
@@ -46,6 +47,7 @@ func SinkFromContext(ctx context.Context) Sink {
 	if s, ok := ctx.Value(sinkKey{}).(Sink); ok && s != nil {
 		return s
 	}
+
 	return func(context.Context, Event) {}
 }
 
@@ -114,6 +116,7 @@ func NewLineBatcher(sink Sink, opts ...LineBatcherOption) *LineBatcher {
 	if o.maxMessageLen <= 0 {
 		o.maxMessageLen = defaultMaxMessageLen
 	}
+
 	return &LineBatcher{
 		sink:           sink,
 		flushThreshold: o.flushThreshold,
@@ -131,6 +134,7 @@ func (b *LineBatcher) Write(p []byte) (int, error) {
 		if c == '\n' {
 			b.emit(context.Background(), string(b.buffer))
 			b.buffer = b.buffer[:0]
+
 			continue
 		}
 		b.buffer = append(b.buffer, c)
@@ -139,6 +143,7 @@ func (b *LineBatcher) Write(p []byte) (int, error) {
 			b.buffer = b.buffer[b.flushThreshold:]
 		}
 	}
+
 	return len(p), nil
 }
 

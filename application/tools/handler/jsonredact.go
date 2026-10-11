@@ -21,6 +21,7 @@ func argRedactor(contract []def.RedactionField) func(any) any {
 			keys[f.Name] = true
 		}
 	}
+
 	return func(v any) any { return redactKeys(v, keys) }
 }
 
@@ -33,16 +34,19 @@ func redactKeys(v any, secret map[string]bool) any {
 		for k, val := range t {
 			if secret[k] {
 				out[k] = redactedMarker
+
 				continue
 			}
 			out[k] = redactKeys(val, secret)
 		}
+
 		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, val := range t {
 			out[i] = redactKeys(val, secret)
 		}
+
 		return out
 	default:
 		return v

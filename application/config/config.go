@@ -43,6 +43,7 @@ func Load() (*Config, error) {
 	if err := envconfig.Process("", &c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+
 	return &c, nil
 }
 
@@ -71,6 +72,7 @@ func (c *Config) Validate() error {
 		}
 		c.AllowDirs[i] = resolved
 	}
+
 	return nil
 }
 
@@ -87,7 +89,9 @@ func expandHome(p string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+
 		return filepath.Join(home, p[2:]), nil
 	}
+
 	return p, nil
 }

@@ -45,6 +45,7 @@ func sandboxListDef(b builder) *def.ToolDef {
 					State:   string(s.State()),
 				})
 			}
+
 			return out, nil
 		})
 }
@@ -73,6 +74,7 @@ func sandboxInfoDef(b builder) *def.ToolDef {
 			for _, sec := range sp.Secrets {
 				secrets = append(secrets, SecretSummary{Name: sec.Name})
 			}
+
 			return InfoOutput{
 				ID:         domainsession.ShortID(s.ID()),
 				Image:      sp.Image,
@@ -106,6 +108,7 @@ func sandboxStatsDef(b builder) *def.ToolDef {
 			if err != nil {
 				return nil, err
 			}
+
 			return StatsOutput{ID: domainsession.ShortID(sess.ID()), Details: details}, nil
 		})
 }

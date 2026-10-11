@@ -32,6 +32,7 @@ func writeDockerConfig(t *testing.T, auths map[string]string) string {
 		t.Fatal(err)
 	}
 	t.Setenv(dockerconfig.EnvOverrideConfigDir, dir)
+
 	return dir
 }
 

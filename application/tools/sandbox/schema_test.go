@@ -87,8 +87,10 @@ func assertNoSharedPointers(root *jsonschema.Schema) error {
 		if err := walk(s.AdditionalProperties, path+"/additionalProperties"); err != nil {
 			return err
 		}
+
 		return nil
 	}
+
 	return walk(root, "root")
 }
 

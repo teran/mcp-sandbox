@@ -41,6 +41,7 @@ func (h *slogHandler) Handle(ctx context.Context, rec slog.Record) error {
 	}
 	rec.Attrs(func(a slog.Attr) bool {
 		fields[a.Key] = a.Value.Any()
+
 		return true
 	})
 
@@ -61,6 +62,7 @@ func (h *slogHandler) Handle(ctx context.Context, rec slog.Record) error {
 	default:
 		entry.Info(rec.Message)
 	}
+
 	return nil
 }
 
@@ -69,6 +71,7 @@ func (h *slogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	combined := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
 	combined = append(combined, h.attrs...)
 	combined = append(combined, attrs...)
+
 	return &slogHandler{logger: h.logger, attrs: combined, group: h.group}
 }
 
@@ -77,5 +80,6 @@ func (h *slogHandler) WithGroup(name string) slog.Handler {
 	if h.group != "" {
 		name = h.group + "." + name
 	}
+
 	return &slogHandler{logger: h.logger, attrs: h.attrs, group: name}
 }

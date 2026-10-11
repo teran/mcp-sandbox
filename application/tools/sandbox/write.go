@@ -101,6 +101,7 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 			if err != nil {
 				return nil, err
 			}
+
 			return CreateOutput{ID: domainsession.ShortID(s.ID())}, nil
 		})
 }
@@ -121,6 +122,7 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 		if errors.Is(err, domainprofile.ErrProfileNotFound) {
 			return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: unknown profile %q: %w", in.Profile, err)
 		}
+
 		return spec.SandboxSpec{}, err
 	}
 
@@ -267,6 +269,7 @@ func validateExecEnv(env map[string]string) error {
 			return handler.NewInvalidArgumentsError("sandbox_exec: env key/value must not contain NUL or newline")
 		}
 	}
+
 	return nil
 }
 
@@ -285,12 +288,14 @@ func resolveUser(b builder, id, requested string) (string, error) {
 		if s.Spec().Sudo != spec.SudoRequire {
 			return "", errors.New("sandbox_exec: root user requires a 'require' sudo policy")
 		}
+
 		return "0", nil
 	}
 	uid, gid := s.Spec().UIDGID.UID, s.Spec().UIDGID.GID
 	if uid == 0 {
 		return "65534:65534", nil // nobody
 	}
+
 	return fmt.Sprintf("%d:%d", uid, gid), nil
 }
 
@@ -316,6 +321,7 @@ func sandboxSecretValues(b builder, id string) []string {
 			vals = append(vals, v)
 		}
 	}
+
 	return vals
 }
 
@@ -330,5 +336,6 @@ func redactSecrets(s string, secrets []string) string {
 	for _, sec := range secrets {
 		out = strings.ReplaceAll(out, sec, redactedMarker)
 	}
+
 	return out
 }

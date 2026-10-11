@@ -30,6 +30,7 @@ func (p *progressEmitService) Exec(ctx context.Context, req exec.Request) (*exec
 	// be redacted before it reaches the caller-visible sink.
 	sink := progress.SinkFromContext(ctx)
 	sink(ctx, progress.Event{Message: string(res.Stdout), Progress: int64(len(res.Stdout))})
+
 	return res, nil
 }
 
@@ -48,6 +49,7 @@ func marshalProgressArgs(t *testing.T, v any) json.RawMessage {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return b
 }
 

@@ -142,6 +142,7 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 	}()
 
 	outcome = executeTool(ctx, deps, tool, req, result, argRedact, trace)
+
 	return result, nil
 }
 
@@ -165,6 +166,7 @@ func executeTool(
 	if err := validateArgs(tool.InputSchema, req.Params.Arguments); err != nil {
 		verr := &invalidArgumentsError{err: fmt.Errorf("%s: invalid arguments: %w", tool.Name, err)}
 		result.SetError(verr)
+
 		return "error"
 	}
 	trace.Tracef("handler: args valid")
@@ -174,6 +176,7 @@ func executeTool(
 	output, err := tool.Handler(ctx, req.Params.Arguments)
 	if err != nil {
 		result.SetError(err)
+
 		return "error"
 	}
 	trace.Tracef("handler: dispatch done")
@@ -190,10 +193,12 @@ func executeTool(
 	raw, err := json.Marshal(output)
 	if err != nil {
 		result.SetError(fmt.Errorf("%s: marshal output: %w", tool.Name, err))
+
 		return "error"
 	}
 	result.StructuredContent = json.RawMessage(raw)
 	result.Content = []mcp.Content{&mcp.TextContent{Text: string(raw)}}
+
 	return "ok"
 }
 
@@ -213,6 +218,7 @@ func validateArgs(schema *jsonschema.Schema, args json.RawMessage) error {
 			return fmt.Errorf("unmarshal arguments: %w", err)
 		}
 	}
+
 	return resolved.Validate(instance)
 }
 
@@ -226,6 +232,7 @@ func parseArgs(args json.RawMessage) any {
 			return map[string]any{}
 		}
 	}
+
 	return v
 }
 
@@ -243,6 +250,7 @@ func IsInvalidArgumentsResult(res *mcp.CallToolResult) bool {
 	if res == nil {
 		return false
 	}
+
 	return IsInvalidArguments(res.GetError())
 }
 

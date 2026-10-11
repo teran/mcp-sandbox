@@ -197,6 +197,7 @@ func (s *SandboxSpec) Validate() error {
 			return fmt.Errorf("sandbox: mount %d requires Source and Target", i)
 		}
 	}
+
 	return nil
 }
 
@@ -206,5 +207,6 @@ func hasCapDropAll(caps []string) bool {
 			return true
 		}
 	}
+
 	return false
 }

@@ -34,6 +34,7 @@ func strEnumP(desc string, vals ...string) *jsonschema.Schema {
 	for _, v := range vals {
 		enum = append(enum, v)
 	}
+
 	return &jsonschema.Schema{Type: "string", Description: desc, Enum: enum}
 }
 

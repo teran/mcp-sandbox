@@ -174,6 +174,7 @@ func New(api dockerAPI, allowDirs []string, opts ...Option) *Backend {
 	for _, o := range opts {
 		o(&cfg)
 	}
+
 	return &Backend{api: api, cfg: cfg}
 }
 
@@ -189,6 +190,7 @@ func (b *Backend) entryFor(ctx context.Context, sessionID string) *logrus.Entry 
 	} else if sessionID != "" {
 		e = e.WithField("session_id", sessionID)
 	}
+
 	return logging.RequestEntry(ctx, e)
 }
 
@@ -221,6 +223,7 @@ func newClient(host string) (*client.Client, error) {
 	if host == "" {
 		host = defaultDockerHost
 	}
+
 	return client.NewClientWithOpts(client.WithHost(host), client.WithAPIVersionNegotiation())
 }
 
@@ -311,6 +314,7 @@ func (b *Backend) Destroy(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+
 	return b.api.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true, RemoveVolumes: true})
 }
 
@@ -321,6 +325,7 @@ func (b *Backend) buildConfig(s spec.SandboxSpec, image string, labels map[strin
 	if workdir == "" {
 		workdir = defaultWorkdir
 	}
+
 	return &container.Config{
 		Image:      image,
 		WorkingDir: workdir,
@@ -362,6 +367,7 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 		Mounts: mounts,
 		Tmpfs:  tmpfs,
 	}
+
 	return hostCfg
 }
 
@@ -385,6 +391,7 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 		for _, m := range s.Mounts {
 			if m.Source == s.WorkingDir && m.Target == s.WorkingDir {
 				readOnly = m.ReadOnly
+
 				break
 			}
 		}
@@ -412,6 +419,7 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 			ReadOnly: m.ReadOnly,
 		})
 	}
+
 	return out, nil
 }
 
@@ -428,6 +436,7 @@ func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 func (b *Backend) buildTmpfs(s spec.SandboxSpec) (map[string]string, error) {
 	uid := fmt.Sprintf("%d", s.Isolation.User.UID)
 	gid := fmt.Sprintf("%d", s.Isolation.User.GID)
+
 	return map[string]string{
 		tmpfsRunDir: "rw,noexec,nosuid,nodev,mode=0755,uid=" + uid + ",gid=" + gid,
 		// Explicit "exec" so Docker Desktop / some daemons that force noexec on
@@ -452,6 +461,7 @@ func (b *Backend) writeSecrets(ctx context.Context, cid string, secrets []spec.S
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -487,10 +497,12 @@ func (b *Backend) writeSecret(ctx context.Context, cid, name, value string) erro
 
 	if _, err := hijacked.Conn.Write([]byte(value)); err != nil {
 		hijacked.Close()
+
 		return fmt.Errorf("docker: write secret %q stdin: %w", name, err)
 	}
 	if err := hijacked.CloseWrite(); err != nil {
 		hijacked.Close()
+
 		return fmt.Errorf("docker: close secret %q stdin: %w", name, err)
 	}
 
@@ -509,6 +521,7 @@ func (b *Backend) writeSecret(ctx context.Context, cid, name, value string) erro
 	if inspect.ExitCode != 0 {
 		return fmt.Errorf("docker: write secret %q: exec exited with code %d", name, inspect.ExitCode)
 	}
+
 	return nil
 }
 
@@ -591,6 +604,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		}
 	}
 	b.entryFor(execCtx, id).WithField("exit_code", inspect.ExitCode).Trace("docker: exec done")
+
 	return res, nil
 }
 
@@ -642,6 +656,7 @@ func newExecStream(execCtx context.Context, req exec.Request) *execStream {
 		s.outWriter = io.MultiWriter(&s.stdout, s.outBatcher)
 		s.errWriter = io.MultiWriter(&s.stderr, s.errBatcher)
 	}
+
 	return s
 }
 
@@ -670,6 +685,7 @@ func (b *Backend) Info(ctx context.Context, id string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docker: inspect: %w", err)
 	}
+
 	return inspect, nil
 }
 
@@ -689,6 +705,7 @@ func (b *Backend) Stats(ctx context.Context, id string) (any, error) {
 	if err := json.NewDecoder(reader.Body).Decode(&stats); err != nil {
 		return nil, fmt.Errorf("docker: stats decode: %w", err)
 	}
+
 	return stats, nil
 }
 
@@ -711,6 +728,7 @@ func (b *Backend) containerIDBySession(ctx context.Context, id string) (string, 
 	if len(list) == 0 {
 		return "", ErrNotFound
 	}
+
 	return list[0].ID, nil
 }
 
@@ -745,6 +763,7 @@ func (b *Backend) verifyHostPath(src string) error {
 	if realPath != resolved {
 		return fmt.Errorf("host path %q resolved to %q after open", src, realPath)
 	}
+
 	return nil
 }
 
@@ -756,6 +775,7 @@ func (b *Backend) withinAllowDirs(p string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -772,6 +792,7 @@ func (b *Backend) validateImageRef(ref string) error {
 	if _, err := reference.ParseNormalizedNamed(ref); err != nil {
 		return fmt.Errorf("sandbox: invalid image reference %q: %w", ref, err)
 	}
+
 	return nil
 }
 
@@ -815,6 +836,7 @@ func (b *Backend) pullImage(ctx context.Context, ref string) error {
 	if _, err := io.Copy(io.Discard, reader); err != nil {
 		return fmt.Errorf("docker: pull image %q: read: %w", ref, err)
 	}
+
 	return nil
 }
 
@@ -829,22 +851,26 @@ func registryAuth(ref string) string {
 	domain, err := registryHost(ref)
 	if err != nil || domain == "" {
 		log.Debugf("docker: could not derive registry from %q; pulling unauthenticated", ref)
+
 		return ""
 	}
 
 	cf, err := dockerconfig.Load(dockerConfigDir())
 	if err != nil {
 		log.Warnf("docker: failed to load client config for registry %q: %v; pulling unauthenticated", domain, err)
+
 		return ""
 	}
 
 	auth, err := cf.GetAuthConfig(domain)
 	if err != nil {
 		log.Debugf("docker: no credentials configured for registry %q; pulling unauthenticated", domain)
+
 		return ""
 	}
 	if auth.Username == "" && auth.Password == "" && auth.IdentityToken == "" && auth.Auth == "" {
 		log.Debugf("docker: empty credentials for registry %q; pulling unauthenticated", domain)
+
 		return ""
 	}
 
@@ -858,8 +884,10 @@ func registryAuth(ref string) string {
 	})
 	if err != nil {
 		log.Warnf("docker: failed to encode registry auth for %q: %v; pulling unauthenticated", domain, err)
+
 		return ""
 	}
+
 	return encoded
 }
 
@@ -870,6 +898,7 @@ func registryHost(ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return reference.Domain(named), nil
 }
 
@@ -883,6 +912,7 @@ func dockerConfigDir() string {
 	if err != nil {
 		return ""
 	}
+
 	return filepath.Join(home, ".docker")
 }
 
@@ -900,6 +930,7 @@ func toEnvSlice(env map[string]string) []string {
 	for _, k := range keys {
 		out = append(out, k+"="+env[k])
 	}
+
 	return out
 }
 
@@ -916,6 +947,7 @@ func toDockerUlimits(ul []spec.Ulimit) []*container.Ulimit {
 			Hard: clampUint64(u.Hard),
 		})
 	}
+
 	return out
 }
 
@@ -925,5 +957,6 @@ func clampUint64(v uint64) int64 {
 	if v > math.MaxInt64 {
 		return math.MaxInt64
 	}
+
 	return int64(v)
 }

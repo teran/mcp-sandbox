@@ -29,6 +29,7 @@ func toolByName(t *testing.T, svc Service, name string) *def.ToolDef {
 		}
 	}
 	t.Fatalf("tool %q not found", name)
+
 	return nil
 }
 
@@ -38,6 +39,7 @@ func callHandler(t *testing.T, d *def.ToolDef, _ Service, args any) (any, error)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return d.Handler(context.Background(), b)
 }
 
@@ -58,6 +60,7 @@ func validateToolArgs(d *def.ToolDef, args any) error {
 			return err
 		}
 	}
+
 	return resolved.Validate(instance)
 }
 
@@ -84,6 +87,7 @@ func callWrapped(t *testing.T, d *def.ToolDef, args any) *mcp.CallToolResult {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return res
 }
 

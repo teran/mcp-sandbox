@@ -33,6 +33,7 @@ func (f *fakeAccessLogger) entries() []AccessLogEntry {
 	defer f.mu.Unlock()
 	out := make([]AccessLogEntry, len(f.got))
 	copy(out, f.got)
+
 	return out
 }
 
@@ -43,6 +44,7 @@ func newDeps(al AccessLogger, redact func(any) any) Dependencies {
 	if redact == nil {
 		redact = identityRedact
 	}
+
 	return Dependencies{
 		AccessLogger:  al,
 		Redact:        redact,
@@ -76,6 +78,7 @@ func (t *fakeTraceLogger) WithFields(fields map[string]any) TraceLogger {
 	maps.Copy(merged, t.fields)
 	maps.Copy(merged, fields)
 	t.rec.fieldSets = append(t.rec.fieldSets, merged)
+
 	return &fakeTraceLogger{rec: t.rec, fields: merged}
 }
 
@@ -99,6 +102,7 @@ func (t *fakeTraceLogger) sawRequestID(id string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -110,6 +114,7 @@ func (t *fakeTraceLogger) sawTool(tool string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -183,6 +188,7 @@ func marshalArgs(t *testing.T, v any) json.RawMessage {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return b
 }
 
@@ -191,6 +197,7 @@ func TestCall_DispatchAndStructuredOutput(t *testing.T) {
 	var gotArgv json.RawMessage
 	d := testTool(func(_ context.Context, args json.RawMessage) (any, error) {
 		gotArgv = args
+
 		return map[string]any{"result": "ok"}, nil
 	})
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{"path": "/x"})}}
@@ -236,6 +243,7 @@ func TestCall_InvalidArguments(t *testing.T) {
 	called := false
 	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) {
 		called = true
+
 		return map[string]any{}, nil
 	})
 	// Missing required "path".
@@ -299,6 +307,7 @@ func TestCall_RedactsOutput(t *testing.T) {
 	redactCalls := 0
 	redact := func(_ any) any {
 		redactCalls++
+
 		return "REDACTED"
 	}
 	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) {

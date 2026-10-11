@@ -73,6 +73,7 @@ func NewService(reg *backend.Registry, cfg backend.Config, opts ...Option) *Serv
 			o(s)
 		}
 	}
+
 	return s
 }
 
@@ -83,6 +84,7 @@ func (s *Service) entryFor(ctx context.Context, sessionID string) *logrus.Entry 
 	if sessionID != "" {
 		e = e.WithField("session_id", sessionID)
 	}
+
 	return logging.RequestEntry(ctx, e)
 }
 
@@ -111,6 +113,7 @@ func (s *Service) ensure(ctx context.Context) (*session.Manager, role.Backend, e
 	}
 	s.be = be
 	s.mgr = session.NewManager(life)
+
 	return s.mgr, be, nil
 }
 
@@ -120,6 +123,7 @@ func (s *Service) Policy() sandboxtool.Policy {
 	if s.profiles != nil {
 		res = s.profiles
 	}
+
 	return sandboxtool.Policy{
 		DefaultImage: "", // retained on the struct but unused (image comes from the profile)
 		Isolation:    s.defaultIsolation(),
@@ -138,6 +142,7 @@ func (s *Service) Create(ctx context.Context, sp spec.SandboxSpec) (*domainsessi
 	if err != nil {
 		return nil, err
 	}
+
 	return mgr.Create(ctx, sp)
 }
 
@@ -149,6 +154,7 @@ func (s *Service) Get(id string) (*domainsession.Session, error) {
 	if mgr == nil {
 		return nil, session.ErrSessionNotFound
 	}
+
 	return mgr.Get(id)
 }
 
@@ -160,6 +166,7 @@ func (s *Service) List(ctx context.Context) []*domainsession.Session {
 	if mgr == nil {
 		return nil
 	}
+
 	return mgr.List(ctx)
 }
 
@@ -171,6 +178,7 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if mgr == nil {
 		return nil
 	}
+
 	return mgr.Destroy(ctx, id)
 }
 
@@ -182,6 +190,7 @@ func (s *Service) DestroyAll(ctx context.Context) error {
 	if mgr == nil {
 		return nil
 	}
+
 	return mgr.DestroyAll(ctx)
 }
 
@@ -196,6 +205,7 @@ func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, err
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
+
 	return ex.Exec(ctx, req.SandboxID, req)
 }
 
@@ -210,6 +220,7 @@ func (s *Service) Info(ctx context.Context, id string) (any, error) {
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
+
 	return ins.Info(ctx, id)
 }
 
@@ -224,6 +235,7 @@ func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
+
 	return ins.Stats(ctx, id)
 }
 

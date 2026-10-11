@@ -54,6 +54,7 @@ func New(opts Options) (*Logger, error) {
 	if opts.Level == "" {
 		l := logrus.New()
 		l.SetOutput(io.Discard)
+
 		return &Logger{base: l, entry: logrus.NewEntry(l), enabled: false}, nil
 	}
 
@@ -105,8 +106,10 @@ func openLogFile(filename string) (*os.File, error) {
 	}
 	if err := f.Chmod(logFileMode); err != nil {
 		_ = f.Close()
+
 		return nil, fmt.Errorf("logging: chmod %q: %w", filename, err)
 	}
+
 	return f, nil
 }
 
@@ -144,6 +147,7 @@ func (l *Logger) Close() error {
 	if l.file != nil {
 		return l.file.Close()
 	}
+
 	return nil
 }
 
@@ -173,6 +177,7 @@ func RequestEntry(ctx context.Context, base *logrus.Entry) *logrus.Entry {
 	if id, ok := RequestIDFromContext(ctx); ok {
 		return base.WithField("request_id", id)
 	}
+
 	return base
 }
 
@@ -195,10 +200,12 @@ func redactValue(v reflect.Value) any {
 			f := t.Field(i)
 			if isSecret(f) {
 				out[fieldName(f)] = redactedMarker
+
 				continue
 			}
 			out[fieldName(f)] = redactValue(v.Field(i))
 		}
+
 		return out
 	case reflect.Map:
 		out := make(map[string]any, v.Len())
@@ -206,22 +213,26 @@ func redactValue(v reflect.Value) any {
 		for iter.Next() {
 			out[fmt.Sprint(iter.Key().Interface())] = redactValue(iter.Value())
 		}
+
 		return out
 	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
 			return nil
 		}
+
 		return redactValue(v.Elem())
 	case reflect.Slice, reflect.Array:
 		out := make([]any, v.Len())
 		for i := range v.Len() {
 			out[i] = redactValue(v.Index(i))
 		}
+
 		return out
 	default:
 		if v.CanInterface() {
 			return v.Interface()
 		}
+
 		return nil
 	}
 }
@@ -237,5 +248,6 @@ func fieldName(f reflect.StructField) string {
 			return name
 		}
 	}
+
 	return f.Name
 }

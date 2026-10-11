@@ -28,6 +28,7 @@ func (p *progressSink) got() []progress.Event {
 	defer p.mu.Unlock()
 	out := make([]progress.Event, len(p.events))
 	copy(out, p.events)
+
 	return out
 }
 
@@ -36,6 +37,7 @@ func messages(events []progress.Event) []string {
 	for i, e := range events {
 		out[i] = e.Message
 	}
+
 	return out
 }
 

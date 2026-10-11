@@ -28,6 +28,7 @@ func (c *captureSink) got() []progress.Event {
 	defer c.mu.Unlock()
 	out := make([]progress.Event, len(c.events))
 	copy(out, c.events)
+
 	return out
 }
 
@@ -45,6 +46,7 @@ func TestCall_StashesProgressSinkInContext(t *testing.T) {
 		sink := progress.SinkFromContext(ctx)
 		sink(ctx, want)
 		emitted = true
+
 		return map[string]any{"result": "ok"}, nil
 	})
 
@@ -78,6 +80,7 @@ func TestCall_NoProgressSink_HandlerGetsNilSafeSink(t *testing.T) {
 		sink := progress.SinkFromContext(ctx)
 		sink(ctx, progress.Event{Message: "probe"}) // must not panic
 		called = true
+
 		return map[string]any{"result": "ok"}, nil
 	})
 
@@ -107,6 +110,7 @@ func TestCall_ProgressSinkRetrievableByAllTools(t *testing.T) {
 			t.Fatal("expected a non-nil sink in context")
 		}
 		seen = true
+
 		return map[string]any{}, nil
 	})
 

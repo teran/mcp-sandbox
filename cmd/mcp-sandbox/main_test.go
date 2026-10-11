@@ -40,6 +40,7 @@ func newTestLogger(t *testing.T) *logging.Logger {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { l.Close() })
+
 	return l
 }
 
@@ -54,6 +55,7 @@ func (discardWriteCloser) Close() error                { return nil }
 // side is held open for the lifetime of the test via the returned closer.
 func newBlockingStdioTransport() (mcp.Transport, func()) {
 	pr, pw := io.Pipe()
+
 	return &mcp.IOTransport{Reader: io.NopCloser(pr), Writer: discardWriteCloser{}}, func() { pw.Close() }
 }
 

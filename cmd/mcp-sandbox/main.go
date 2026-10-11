@@ -94,6 +94,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 // fails.
 func fail(stderr io.Writer, format string, args ...any) int {
 	_, _ = fmt.Fprintf(stderr, format, args...)
+
 	return 1
 }
 
@@ -118,6 +119,7 @@ func buildServer(cfg *config.Config, logger *logging.Logger) *mcp.Server {
 	// surface lazily on the first profile tool call.
 	svc.SetProfileStore(applicationprofile.New(cfg.SandboxProfilesDir))
 	deps := mcpserver.HandlerDependencies(logger)
+
 	return mcpserver.NewServer(
 		&mcp.Implementation{Name: appName, Version: appVersion},
 		logger,
@@ -140,8 +142,10 @@ func serve(ctx context.Context, logger *logging.Logger, cfg *config.Config, tran
 	case err := <-errCh:
 		if err != nil {
 			logger.WithField("error", err).Error("server terminated")
+
 			return 1
 		}
+
 		return 0
 	case <-ctx.Done():
 		return 0

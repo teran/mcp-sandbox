@@ -41,6 +41,7 @@ func makeIDs() (id1, id2, id3 string) {
 	id1 = strings.Repeat("a", 64)
 	id2 = "aa" + strings.Repeat("b", 62)
 	id3 = strings.Repeat("c", 64)
+
 	return id1, id2, id3
 }
 
@@ -58,6 +59,7 @@ func newManagerWithIDs(t *testing.T, ids ...string) (*Manager, *fakeLife) {
 		}
 		id := ids[i]
 		i++
+
 		return id, nil
 	}
 	for range ids {
@@ -65,6 +67,7 @@ func newManagerWithIDs(t *testing.T, ids ...string) (*Manager, *fakeLife) {
 			t.Fatalf("Create: %v", err)
 		}
 	}
+
 	return m, life
 }
 

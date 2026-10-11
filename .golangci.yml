@@ -70,6 +70,7 @@ linters:
     - lll
     - funlen
     - mnd
+    - nlreturn
   settings:
     ireturn:
       allow:

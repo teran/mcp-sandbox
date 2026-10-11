@@ -21,6 +21,7 @@ func newBufferLogger(buf *bytes.Buffer) *logrus.Entry {
 	l.SetOutput(buf)
 	l.SetLevel(logrus.TraceLevel)
 	l.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true, DisableColors: true})
+
 	return logrus.NewEntry(l)
 }
 

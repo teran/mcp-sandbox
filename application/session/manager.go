@@ -74,6 +74,7 @@ func NewManager(life role.Lifecycle, opts ...Option) *Manager {
 			o(m)
 		}
 	}
+
 	return m
 }
 
@@ -89,6 +90,7 @@ func (m *Manager) entryFor(ctx context.Context, sessionID string) *logrus.Entry 
 	if id, ok := requestid.IDFromContext(ctx); ok {
 		e = e.WithField("request_id", id)
 	}
+
 	return e
 }
 
@@ -99,6 +101,7 @@ func (m *Manager) traceOp(ctx context.Context, op, sessionID string) func() {
 	e := m.entryFor(ctx, sessionID).WithField("operation", op)
 	e.Trace("session: operation start")
 	start := time.Now()
+
 	return func() {
 		e.WithField("duration_ms", time.Since(start).Milliseconds()).Trace("session: operation done")
 	}
@@ -116,6 +119,7 @@ func newIDFrom(r io.Reader) (string, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return "", fmt.Errorf("session: generate id: %w", err)
 	}
+
 	return hex.EncodeToString(buf), nil
 }
 
@@ -187,6 +191,7 @@ func (m *Manager) resolveID(prefix string) (string, error) {
 	if match == "" {
 		return "", ErrSessionNotFound
 	}
+
 	return match, nil
 }
 
@@ -201,6 +206,7 @@ func (m *Manager) Get(id string) (*domainsession.Session, error) {
 	}
 	s := m.sessions[full]
 	m.entryFor(context.Background(), full).WithField("operation", "get").Trace("session: got")
+
 	return s, nil
 }
 
@@ -213,6 +219,7 @@ func (m *Manager) List(ctx context.Context) []*domainsession.Session {
 		out = append(out, s)
 	}
 	m.entryFor(ctx, "").WithField("operation", "list").WithField("count", len(out)).Trace("session: listed")
+
 	return out
 }
 
@@ -248,6 +255,7 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	m.mu.Lock()
 	delete(m.sessions, full)
 	m.mu.Unlock()
+
 	return nil
 }
 
@@ -266,6 +274,7 @@ func (m *Manager) DestroyAll(ctx context.Context) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -282,5 +291,6 @@ func (m *Manager) Reap(ctx context.Context, timeout time.Duration, now time.Time
 			return err
 		}
 	}
+
 	return nil
 }

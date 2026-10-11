@@ -40,16 +40,22 @@ func (f *fakeBackend) Capabilities() role.CapabilitySet {
 func (f *fakeBackend) Create(_ context.Context, s spec.SandboxSpec) (string, error) {
 	f.created = true
 	f.createdSpec = s
+
 	return "cid-1", nil
 }
 
-func (f *fakeBackend) Destroy(_ context.Context, _ string) error { f.destroyed++; return nil }
+func (f *fakeBackend) Destroy(_ context.Context, _ string) error {
+	f.destroyed++
+
+	return nil
+}
 
 func (f *fakeBackend) Exec(_ context.Context, _ string, req exec.Request) (*exec.Result, error) {
 	if f.capNotSupport {
 		return nil, role.ErrCapabilityNotSupported
 	}
 	f.execReq = req
+
 	return f.execRes, nil
 }
 
@@ -57,6 +63,7 @@ func (f *fakeBackend) Info(_ context.Context, _ string) (any, error) {
 	if f.capNotSupport {
 		return nil, role.ErrCapabilityNotSupported
 	}
+
 	return f.info, nil
 }
 
@@ -64,12 +71,14 @@ func (f *fakeBackend) Stats(_ context.Context, _ string) (any, error) {
 	if f.capNotSupport {
 		return nil, role.ErrCapabilityNotSupported
 	}
+
 	return f.stats, nil
 }
 
 func testSpec() spec.SandboxSpec {
 	svc := NewService(backend.NewRegistry(), backend.Config{})
 	iso := svc.defaultIsolation()
+
 	return spec.SandboxSpec{
 		Image:        "img",
 		UIDGID:       iso.User,
@@ -90,6 +99,7 @@ func newTestService(t *testing.T, fb *fakeBackend) *Service {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
 	return NewService(reg, backend.Config{})
 }
 
@@ -332,6 +342,7 @@ func TestService_NetworkHostAllowedAndApplied(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+
 		return NewService(reg, cfg), fb
 	}
 

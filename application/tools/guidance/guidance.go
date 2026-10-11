@@ -54,6 +54,7 @@ func fileFor(uri string) (string, bool) {
 		URISecurity: "security.md",
 	}
 	f, ok := files[uri]
+
 	return f, ok
 }
 
@@ -131,6 +132,7 @@ func All() []Resource {
 			out[i].Content = readFile(f)
 		}
 	}
+
 	return out
 }
 
@@ -140,6 +142,7 @@ func Content(uri string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+
 	return readFile(f), true
 }
 
@@ -150,6 +153,7 @@ func readFile(name string) string {
 	if err != nil {
 		return ""
 	}
+
 	return string(b)
 }
 
@@ -159,5 +163,6 @@ func URIs() []string {
 	for i, r := range registry {
 		out[i] = r.URI
 	}
+
 	return out
 }

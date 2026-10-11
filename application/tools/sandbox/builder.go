@@ -39,6 +39,7 @@ func (b builder) tool(
 // (S03).
 func All(svc Service) []*def.ToolDef {
 	b := builder{svc: svc}
+
 	return []*def.ToolDef{
 		sandboxListDef(b),
 		sandboxInfoDef(b),
@@ -57,5 +58,6 @@ func Register(reg *registry.Registry, svc Service) error {
 			return err
 		}
 	}
+
 	return nil
 }

@@ -82,6 +82,7 @@ func profileListDef(l Lister) *def.ToolDef {
 			for _, p := range ps {
 				out.Profiles = append(out.Profiles, Summary{Name: p.Name, Description: p.Description})
 			}
+
 			return out, nil
 		},
 	}

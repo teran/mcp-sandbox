@@ -23,6 +23,7 @@ func writeProfile(t *testing.T, dir, filename, content string) string {
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+
 	return p
 }
 

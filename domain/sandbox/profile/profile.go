@@ -41,6 +41,7 @@ func ValidName(name string) bool {
 	if name == "." || name == ".." {
 		return false
 	}
+
 	return namePattern.MatchString(name)
 }
 
@@ -156,6 +157,7 @@ func (p *Profile) Validate() error {
 	if strings.ContainsAny(p.Shell, "\x00\n") {
 		return fmt.Errorf("profile: shell must not contain NUL or newline")
 	}
+
 	return nil
 }
 

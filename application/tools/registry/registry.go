@@ -35,6 +35,7 @@ func (r *Registry) Register(t *def.ToolDef) error {
 		return fmt.Errorf("tools: tool %q already registered", t.Name)
 	}
 	r.tools[t.Name] = t
+
 	return nil
 }
 
@@ -43,6 +44,7 @@ func (r *Registry) Get(name string) (*def.ToolDef, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
+
 	return t, ok
 }
 
@@ -55,6 +57,7 @@ func (r *Registry) List() []*def.ToolDef {
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+
 	return out
 }
 
@@ -62,6 +65,7 @@ func (r *Registry) List() []*def.ToolDef {
 func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
 	return len(r.tools)
 }
 
@@ -95,5 +99,6 @@ func Validate(t *def.ToolDef) error {
 	if t.Handler == nil {
 		return fmt.Errorf("tools: tool %q: handler is required", t.Name)
 	}
+
 	return nil
 }

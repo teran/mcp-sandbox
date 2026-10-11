@@ -52,6 +52,7 @@ func (f *fakeService) BackendName() string {
 	if f.backend != "" {
 		return f.backend
 	}
+
 	return "docker"
 }
 
@@ -65,6 +66,7 @@ func (f *fakeService) Create(_ context.Context, s spec.SandboxSpec) (*domainsess
 	if f.session != nil {
 		return f.session, nil
 	}
+
 	return domainsession.New("sess-1", s), nil
 }
 
@@ -77,11 +79,13 @@ func (f *fakeService) Get(id string) (*domainsession.Session, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		return f.sessions[full], nil
 	}
 	if f.session != nil {
 		return f.session, nil
 	}
+
 	return domainsession.New(id, f.createdSpec), nil
 }
 
@@ -94,8 +98,10 @@ func (f *fakeService) List(_ context.Context) []*domainsession.Session {
 		for _, s := range f.sessions {
 			out = append(out, s)
 		}
+
 		return out
 	}
+
 	return nil
 }
 
@@ -123,6 +129,7 @@ func resolveFakePrefix(sessions map[string]*domainsession.Session, prefix string
 	if match == "" {
 		return "", errFakeNotFound
 	}
+
 	return match, nil
 }
 
@@ -134,6 +141,7 @@ func (f *fakeService) Exec(_ context.Context, req exec.Request) (*exec.Result, e
 	f.mu.Lock()
 	f.execReq = req
 	f.mu.Unlock()
+
 	return f.execRes, f.execErr
 }
 
@@ -218,6 +226,7 @@ func (f fakeResolver) Get(name string) (*domainprofile.Profile, error) {
 	if !ok {
 		return nil, domainprofile.ErrProfileNotFound
 	}
+
 	return p, nil
 }
 
@@ -228,5 +237,6 @@ func newFake() *fakeService {
 func runningSession(id string, s spec.SandboxSpec) *domainsession.Session {
 	sess := domainsession.New(id, s)
 	sess.MarkRunning()
+
 	return sess
 }

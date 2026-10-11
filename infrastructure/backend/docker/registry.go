@@ -37,6 +37,7 @@ func dockerAvailable() bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
 	defer cancel()
+
 	return pingOK(ctx, cli.Ping)
 }
 
@@ -44,6 +45,7 @@ func dockerAvailable() bool {
 // availability decision is directly testable without a real daemon.
 func pingOK(ctx context.Context, ping func(context.Context) (types.Ping, error)) bool {
 	_, err := ping(ctx)
+
 	return err == nil
 }
 
@@ -54,5 +56,6 @@ func newFromConfig(cfg backend.Config) (role.Backend, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return New(cli, cfg.AllowDirs, WithAllowSymlinks(cfg.AllowSymlinks)), nil
 }

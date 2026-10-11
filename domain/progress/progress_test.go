@@ -25,6 +25,7 @@ func (r *recordingSink) got() []Event {
 	defer r.mu.Unlock()
 	out := make([]Event, len(r.events))
 	copy(out, r.events)
+
 	return out
 }
 

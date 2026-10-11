@@ -15,6 +15,7 @@ var ansiPattern = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]
 // preserved; all other C0 control characters are dropped.
 func sanitizeANSI(s string) string {
 	s = ansiPattern.ReplaceAllString(s, "")
+
 	return sanitizeControl(s)
 }
 
@@ -34,5 +35,6 @@ func sanitizeControl(s string) string {
 		}
 		b.WriteRune(r)
 	}
+
 	return b.String()
 }

@@ -27,6 +27,7 @@ func (f fakeLister) List() ([]*domainprofile.Profile, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+
 	return f.profiles, nil
 }
 
@@ -58,6 +59,7 @@ func toolDef(t *testing.T, l Lister) *def.ToolDef {
 		}
 	}
 	t.Fatal("profile_list tool not found")
+
 	return nil
 }
 
@@ -137,6 +139,7 @@ func jsonHas(s, sub string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 

@@ -52,6 +52,7 @@ type recordingConn struct {
 
 func (c *recordingConn) Write(b []byte) (int, error) {
 	*c.dst = append(*c.dst, b...)
+
 	return len(b), nil
 }
 
@@ -172,6 +173,7 @@ func (f *fakeClient) ContainerCreate(
 	}
 	f.createdConfigs = append(f.createdConfigs, config)
 	f.createdHostConfigs = append(f.createdHostConfigs, hostConfig)
+
 	return container.CreateResponse{ID: id}, nil
 }
 
@@ -188,6 +190,7 @@ func (f *fakeClient) ImagePull(_ context.Context, refStr string, opts image.Pull
 	if f.pullBodyErr != nil {
 		return io.NopCloser(errReader{f.pullBodyErr}), nil
 	}
+
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
@@ -203,6 +206,7 @@ func (f *fakeClient) pulledRefs() []string {
 	defer f.mu.Unlock()
 	out := make([]string, len(f.pulledImages))
 	copy(out, f.pulledImages)
+
 	return out
 }
 
@@ -212,6 +216,7 @@ func (f *fakeClient) pullOpts() []image.PullOptions {
 	defer f.mu.Unlock()
 	out := make([]image.PullOptions, len(f.pullOptions))
 	copy(out, f.pullOptions)
+
 	return out
 }
 
@@ -225,6 +230,7 @@ func (f *fakeClient) ContainerStart(_ context.Context, containerID string, _ con
 	if _, ok := f.containers[containerID]; !ok {
 		return errors.New("container not found")
 	}
+
 	return nil
 }
 
@@ -240,6 +246,7 @@ func (f *fakeClient) ContainerList(_ context.Context, options container.ListOpti
 			out = append(out, container.Summary{ID: c.id, Labels: c.labels})
 		}
 	}
+
 	return out, nil
 }
 
@@ -252,6 +259,7 @@ func matchesFilter(labels map[string]string, args filters.Args) bool {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -266,6 +274,7 @@ func (f *fakeClient) ContainerInspect(_ context.Context, containerID string) (co
 	if !ok {
 		return container.InspectResponse{}, errors.New("no such container")
 	}
+
 	return container.InspectResponse{
 		ContainerJSONBase: &container.ContainerJSONBase{ID: containerID, State: &container.State{Running: true}},
 		Config:            c.config,
@@ -286,6 +295,7 @@ func (f *fakeClient) ContainerStats(_ context.Context, containerID string, _ boo
 	if body == "" {
 		body = `{"name":"x","cpu_stats":{},"memory_stats":{}}`
 	}
+
 	return container.StatsResponseReader{Body: io.NopCloser(bytes.NewBufferString(body)), OSType: "linux"}, nil
 }
 
@@ -301,6 +311,7 @@ func (f *fakeClient) ContainerExecCreate(
 	}
 	f.execCreates = append(f.execCreates, options)
 	f.execCtxDeadlines = append(f.execCtxDeadlines, execDeadlineFromContext(ctx))
+
 	return container.ExecCreateResponse{ID: "exec-" + containerID}, nil
 }
 
@@ -339,6 +350,7 @@ func (f *fakeClient) ContainerExecAttach(
 			_, _ = w.Write([]byte(r.stderr))
 		}
 	}
+
 	return types.HijackedResponse{Conn: &recordingConn{dst: &f.execStdin[idx]}, Reader: bufio.NewReader(&buf)}, nil
 }
 
@@ -354,8 +366,10 @@ func (f *fakeClient) ContainerExecInspect(ctx context.Context, _ string) (contai
 	}
 	if len(f.execResults) > 0 {
 		r := f.execResults[0]
+
 		return container.ExecInspect{ExitCode: r.exitCode}, r.err
 	}
+
 	return container.ExecInspect{ExitCode: 0}, nil
 }
 
@@ -368,6 +382,7 @@ func (f *fakeClient) ContainerRemove(_ context.Context, containerID string, opti
 	f.removes = append(f.removes, containerID)
 	f.removedOpts = append(f.removedOpts, options)
 	delete(f.containers, containerID)
+
 	return nil
 }
 
@@ -379,6 +394,7 @@ func (f *fakeClient) lastHostConfig() *container.HostConfig {
 	if len(f.createdHostConfigs) == 0 {
 		return nil
 	}
+
 	return f.createdHostConfigs[len(f.createdHostConfigs)-1]
 }
 
@@ -388,6 +404,7 @@ func (f *fakeClient) lastConfig() *container.Config {
 	if len(f.createdConfigs) == 0 {
 		return nil
 	}
+
 	return f.createdConfigs[len(f.createdConfigs)-1]
 }
 
@@ -395,6 +412,7 @@ func (f *fakeClient) lastConfig() *container.Config {
 // time.Time when ctx has no deadline.
 func execDeadlineFromContext(ctx context.Context) time.Time {
 	d, _ := ctx.Deadline()
+
 	return d
 }
 
@@ -406,5 +424,6 @@ func (f *fakeClient) lastExecDeadline() time.Time {
 	if len(f.execCtxDeadlines) == 0 {
 		return time.Time{}
 	}
+
 	return f.execCtxDeadlines[len(f.execCtxDeadlines)-1]
 }

@@ -150,15 +150,51 @@ func TestNetworkHostIsValidMode(t *testing.T) {
 // resource-bounding invariant.
 func TestValidate_KeepsHardeningAndBoundedResourceChecks(t *testing.T) {
 	mut := map[string]func(*SandboxSpec) string{
-		"readonly false":   func(s *SandboxSpec) string { s.Isolation.ReadOnlyRootfs = false; return "ReadOnlyRootfs" },
-		"no new priv":      func(s *SandboxSpec) string { s.Isolation.NoNewPrivileges = false; return "NoNewPrivileges" },
-		"capdrop":          func(s *SandboxSpec) string { s.Isolation.CapDrop = []string{"NET_ADMIN"}; return "CapDrop" },
-		"root user":        func(s *SandboxSpec) string { s.Isolation.User = UIDGID{UID: 0}; return "non-root" },
-		"tmpfs workdir":    func(s *SandboxSpec) string { s.Isolation.TmpfsWorkdir = false; return "TmpfsWorkdir" },
-		"autoremove":       func(s *SandboxSpec) string { s.Isolation.AutoRemove = false; return "AutoRemove" },
-		"pids unbounded":   func(s *SandboxSpec) string { s.Isolation.PidsLimit = 0; return "PidsLimit" },
-		"memory unbounded": func(s *SandboxSpec) string { s.Isolation.Memory = 0; return "Memory" },
-		"nacpus unbounded": func(s *SandboxSpec) string { s.Isolation.NanoCPUs = 0; return "NanoCPUs" },
+		"readonly false": func(s *SandboxSpec) string {
+			s.Isolation.ReadOnlyRootfs = false
+
+			return "ReadOnlyRootfs"
+		},
+		"no new priv": func(s *SandboxSpec) string {
+			s.Isolation.NoNewPrivileges = false
+
+			return "NoNewPrivileges"
+		},
+		"capdrop": func(s *SandboxSpec) string {
+			s.Isolation.CapDrop = []string{"NET_ADMIN"}
+
+			return "CapDrop"
+		},
+		"root user": func(s *SandboxSpec) string {
+			s.Isolation.User = UIDGID{UID: 0}
+
+			return "non-root"
+		},
+		"tmpfs workdir": func(s *SandboxSpec) string {
+			s.Isolation.TmpfsWorkdir = false
+
+			return "TmpfsWorkdir"
+		},
+		"autoremove": func(s *SandboxSpec) string {
+			s.Isolation.AutoRemove = false
+
+			return "AutoRemove"
+		},
+		"pids unbounded": func(s *SandboxSpec) string {
+			s.Isolation.PidsLimit = 0
+
+			return "PidsLimit"
+		},
+		"memory unbounded": func(s *SandboxSpec) string {
+			s.Isolation.Memory = 0
+
+			return "Memory"
+		},
+		"nacpus unbounded": func(s *SandboxSpec) string {
+			s.Isolation.NanoCPUs = 0
+
+			return "NanoCPUs"
+		},
 	}
 	for name, m := range mut {
 		t.Run(name, func(t *testing.T) {

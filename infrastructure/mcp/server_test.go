@@ -143,6 +143,7 @@ func connectClient(t *testing.T, s *mcp.Server) *mcp.ClientSession {
 		t.Fatalf("client connect: %v", err)
 	}
 	t.Cleanup(func() { _ = cs.Close() })
+
 	return cs
 }
 
@@ -152,6 +153,7 @@ func newTestServer(t *testing.T) *mcp.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return NewServer(&mcp.Implementation{Name: "mcp-sandbox", Version: "dev"}, l,
 		[]*def.ToolDef{testDef("sandbox_a")}, HandlerDependencies(l))
 }

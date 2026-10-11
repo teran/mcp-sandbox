@@ -108,6 +108,7 @@ func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
 	if cg.Memory > 0 && cg.MemorySwap == 0 {
 		cg.MemorySwap = cg.Memory
 	}
+
 	return cg
 }
 
@@ -139,6 +140,7 @@ func (yp *yamlProfile) toDomain() *domainprofile.Profile {
 	if strings.TrimSpace(p.Shell) == "" {
 		p.Shell = "bash"
 	}
+
 	return p
 }
 
@@ -169,6 +171,7 @@ func (s *Store) scan() (map[string]*domainprofile.Profile, error) {
 		if os.IsNotExist(err) {
 			return profiles, nil
 		}
+
 		return nil, fmt.Errorf("profile: read dir %q: %w", s.dir, err)
 	}
 
@@ -237,6 +240,7 @@ func (s *Store) Get(name string) (*domainprofile.Profile, error) {
 	if !ok {
 		return nil, domainprofile.ErrProfileNotFound
 	}
+
 	return p, nil
 }
 
@@ -257,5 +261,6 @@ func (s *Store) List() ([]*domainprofile.Profile, error) {
 	for _, n := range names {
 		out = append(out, profiles[n])
 	}
+
 	return out, nil
 }

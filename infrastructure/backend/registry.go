@@ -70,6 +70,7 @@ func (r *Registry) Register(f Factory) error {
 		return fmt.Errorf("backend: factory %q already registered", f.Name)
 	}
 	r.factories[f.Name] = f
+
 	return nil
 }
 
@@ -78,6 +79,7 @@ func (r *Registry) Get(name string) (Factory, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	f, ok := r.factories[name]
+
 	return f, ok
 }
 
@@ -89,6 +91,7 @@ func (r *Registry) List() []Factory {
 	for _, f := range r.factories {
 		out = append(out, f)
 	}
+
 	return out
 }
 
@@ -115,8 +118,10 @@ func (r *Registry) Select(_ context.Context, need role.CapabilitySet) (Factory, 
 		if candidates[i].Priority != candidates[j].Priority {
 			return candidates[i].Priority < candidates[j].Priority
 		}
+
 		return candidates[i].Name < candidates[j].Name
 	})
+
 	return candidates[0], nil
 }
 
