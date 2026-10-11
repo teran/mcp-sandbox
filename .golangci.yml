@@ -76,6 +76,7 @@ linters:
     - containedctx
     - forcetypeassert
     - nilerr
+    - errorlint
   settings:
     ireturn:
       allow:
