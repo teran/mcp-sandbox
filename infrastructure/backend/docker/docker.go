@@ -567,71 +567,93 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	// terminal `cancelled` event on context cancellation. Progress is a single
 	// monotonic counter shared across both streams. Without a real sink the
 	// no-op discards everything and the Result is byte-for-byte unchanged.
-	sink := progress.SinkFromContext(execCtx)
-
-	// A single shared, monotonically increasing Progress counter across the
-	// whole stream (start, both stdout/stderr chunks, done, cancelled) so the
-	// emitted sequence is never decreasing.
-	var mu sync.Mutex
-	var seq int64
-	emit := func(msg string, total int64) {
-		if sink == nil {
-			return
-		}
-		mu.Lock()
-		seq++
-		p := seq
-		mu.Unlock()
-		sink(execCtx, progress.Event{Message: msg, Progress: p, Total: total})
-	}
-	batcherSink := func(_ context.Context, e progress.Event) { emit(e.Message, e.Total) }
-
-	var stdout, stderr bytes.Buffer
-	outWriter := io.Writer(&stdout)
-	errWriter := io.Writer(&stderr)
-	var outBatcher, errBatcher *progress.LineBatcher
-	if sink != nil {
-		// The start event shows the raw visible command (req.Command), falling
-		// back to the argv wrapper when the command string is absent.
-		startCmd := req.Command
-		if strings.TrimSpace(startCmd) == "" {
-			startCmd = strings.Join(req.Argv, " ")
-		}
-		emit("start: "+startCmd, 0)
-		outBatcher = progress.NewLineBatcher(batcherSink)
-		errBatcher = progress.NewLineBatcher(batcherSink)
-		outWriter = io.MultiWriter(&stdout, outBatcher)
-		errWriter = io.MultiWriter(&stderr, errBatcher)
-	}
-	if _, err := stdcopy.StdCopy(outWriter, errWriter, hijacked.Reader); err != nil {
+	stream := newExecStream(execCtx, req)
+	if _, err := stdcopy.StdCopy(stream.outWriter, stream.errWriter, hijacked.Reader); err != nil {
 		return nil, fmt.Errorf("docker: exec read: %w", err)
 	}
 	// Flush any trailing partial (non-newline-terminated) output so it is
 	// streamed too before the terminal events.
-	if outBatcher != nil {
-		outBatcher.Flush(execCtx)
-	}
-	if errBatcher != nil {
-		errBatcher.Flush(execCtx)
-	}
+	stream.flush(execCtx)
 
 	inspect, err := b.api.ContainerExecInspect(execCtx, execResp.ID)
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec inspect: %w", err)
 	}
 
-	res := &exec.Result{ExitCode: inspect.ExitCode, Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+	res := &exec.Result{ExitCode: inspect.ExitCode, Stdout: stream.stdout.Bytes(), Stderr: stream.stderr.Bytes()}
 
-	if sink != nil {
-		emit(fmt.Sprintf("done: exit code %d", inspect.ExitCode), int64(len(res.Stdout)+len(res.Stderr)))
+	if stream.sink != nil {
+		stream.emit(fmt.Sprintf("done: exit code %d", inspect.ExitCode), int64(len(res.Stdout)+len(res.Stderr)))
 		if execCtx.Err() != nil {
 			// The command ran (the fake ignores cancellation); surface the
 			// cancellation as a terminal event before returning the result.
-			emit("cancelled", 0)
+			stream.emit("cancelled", 0)
 		}
 	}
 	b.entryFor(execCtx, id).WithField("exit_code", inspect.ExitCode).Trace("docker: exec done")
 	return res, nil
+}
+
+// execStream carries the progress-streaming state for Exec (Phase 6, §5.1).
+// It demuxes stdcopy output into two buffers while emitting line-batched
+// progress events when a sink is present; a nil sink keeps the Result
+// byte-for-byte identical to non-streaming exec.
+type execStream struct {
+	sink                   progress.Sink
+	emit                   func(msg string, total int64)
+	outWriter              io.Writer
+	errWriter              io.Writer
+	outBatcher, errBatcher *progress.LineBatcher
+	stdout, stderr         bytes.Buffer
+}
+
+// newExecStream wires the progress sink into the exec output demux: a single
+// shared, monotonically increasing Progress counter across the whole stream
+// (start, both stdout/stderr chunks, done, cancelled) so the emitted sequence
+// is never decreasing.
+func newExecStream(execCtx context.Context, req exec.Request) *execStream {
+	s := &execStream{sink: progress.SinkFromContext(execCtx)}
+	var mu sync.Mutex
+	var seq int64
+	s.emit = func(msg string, total int64) {
+		if s.sink == nil {
+			return
+		}
+		mu.Lock()
+		seq++
+		p := seq
+		mu.Unlock()
+		s.sink(execCtx, progress.Event{Message: msg, Progress: p, Total: total})
+	}
+	batcherSink := func(_ context.Context, e progress.Event) { s.emit(e.Message, e.Total) }
+
+	s.outWriter = io.Writer(&s.stdout)
+	s.errWriter = io.Writer(&s.stderr)
+	if s.sink != nil {
+		// The start event shows the raw visible command (req.Command), falling
+		// back to the argv wrapper when the command string is absent.
+		startCmd := req.Command
+		if strings.TrimSpace(startCmd) == "" {
+			startCmd = strings.Join(req.Argv, " ")
+		}
+		s.emit("start: "+startCmd, 0)
+		s.outBatcher = progress.NewLineBatcher(batcherSink)
+		s.errBatcher = progress.NewLineBatcher(batcherSink)
+		s.outWriter = io.MultiWriter(&s.stdout, s.outBatcher)
+		s.errWriter = io.MultiWriter(&s.stderr, s.errBatcher)
+	}
+	return s
+}
+
+// flush emits any trailing partial (non-newline-terminated) output so it is
+// streamed before the terminal events.
+func (s *execStream) flush(execCtx context.Context) {
+	if s.outBatcher != nil {
+		s.outBatcher.Flush(execCtx)
+	}
+	if s.errBatcher != nil {
+		s.errBatcher.Flush(execCtx)
+	}
 }
 
 // ---------------------------------------------------------------------------

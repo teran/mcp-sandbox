@@ -141,15 +141,31 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 		trace.Tracef("handler: call done")
 	}()
 
+	outcome = executeTool(ctx, deps, tool, req, result, argRedact, trace)
+	return result, nil
+}
+
+// executeTool runs the four-step tool pipeline: validate arguments against the
+// strict input schema (S08), dispatch to the application-layer handler, redact
+// the structured output (S02/S09) and marshal it into the result. It returns
+// the access-log outcome ("ok" or "error").
+func executeTool(
+	ctx context.Context,
+	deps Dependencies,
+	tool *def.ToolDef,
+	req *mcp.CallToolRequest,
+	result *mcp.CallToolResult,
+	argRedact func(any) any,
+	trace TraceLogger,
+) string {
 	// 1. Validate arguments against the strict input schema (S08). A failed
 	// validation rejects the call as an invalid-params tool error before any
 	// execution happens.
 	trace.Tracef("handler: validating args")
 	if err := validateArgs(tool.InputSchema, req.Params.Arguments); err != nil {
-		outcome = "error"
 		verr := &invalidArgumentsError{err: fmt.Errorf("%s: invalid arguments: %w", tool.Name, err)}
 		result.SetError(verr)
-		return result, nil
+		return "error"
 	}
 	trace.Tracef("handler: args valid")
 
@@ -157,9 +173,8 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 	trace.Tracef("handler: dispatch start")
 	output, err := tool.Handler(ctx, req.Params.Arguments)
 	if err != nil {
-		outcome = "error"
 		result.SetError(err)
-		return result, nil
+		return "error"
 	}
 	trace.Tracef("handler: dispatch done")
 
@@ -174,13 +189,12 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 	trace.Tracef("handler: marshaling output")
 	raw, err := json.Marshal(output)
 	if err != nil {
-		outcome = "error"
 		result.SetError(fmt.Errorf("%s: marshal output: %w", tool.Name, err))
-		return result, nil
+		return "error"
 	}
 	result.StructuredContent = json.RawMessage(raw)
 	result.Content = []mcp.Content{&mcp.TextContent{Text: string(raw)}}
-	return result, nil
+	return "ok"
 }
 
 // validateArgs validates the raw arguments against the tool's input schema.

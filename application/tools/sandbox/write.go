@@ -172,78 +172,87 @@ func sandboxExecDef(b builder) *def.ToolDef {
 		}, "id", "command"),
 		objectOutput(),
 		nil, // no secret fields: command/env are not sensitive and are kept visible in access logs
-		func(ctx context.Context, args json.RawMessage) (any, error) {
-			var in execInput
-			if err := json.Unmarshal(args, &in); err != nil {
-				return nil, fmt.Errorf("sandbox_exec: %w", err)
+		execHandler(b),
+	)
+}
+
+// execHandler builds the sandbox_exec handler: parse and validate the input,
+// resolve the shell wrapper and user, wrap the progress sink for redaction and
+// ANSI-sanitization, run the command and redact its output against the
+// sandbox's known secret values (S02/§7.3).
+func execHandler(b builder) def.ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (any, error) {
+		var in execInput
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, fmt.Errorf("sandbox_exec: %w", err)
+		}
+		if strings.TrimSpace(in.Command) == "" {
+			return nil, handler.NewInvalidArgumentsError("sandbox_exec: command must not be empty")
+		}
+		if err := validateExecEnv(in.Env); err != nil {
+			return nil, err
+		}
+		user, err := resolveUser(b, in.ID, in.User)
+		if err != nil {
+			return nil, err
+		}
+		// Resolve the shell wrapper from the session spec, defaulting to
+		// bash (SPEC §7.10). strings.Fields whitespace-splits a
+		// multi-token shell like "bash -l" into ["bash","-l"].
+		sess, err := b.svc.Get(in.ID)
+		if err != nil {
+			return nil, err
+		}
+		shell := sess.Spec().Shell
+		if strings.TrimSpace(shell) == "" {
+			shell = "bash"
+		}
+		wrapper := append(strings.Fields(shell), "-c", in.Command)
+		// Fetch the sandbox's known secret values once so both the progress
+		// stream and the final structured output are redacted against them
+		// (S02/§7.3).
+		secrets := sandboxSecretValues(b, in.ID)
+		// Wrap the context sink so streamed progress events are secrets-
+		// redacted (S02) and ANSI-sanitized (S09) before they reach the
+		// caller — the same contract as any other output (Phase 6, §5.1).
+		// Progress/Total are preserved. Nil-safe: SinkFromContext is never
+		// nil, so a no-op sink is wrapped harmlessly.
+		sink := progress.SinkFromContext(ctx)
+		execCtx := ctx
+		if sink != nil {
+			wrapped := func(c context.Context, e progress.Event) {
+				sink(c, progress.Event{
+					Message:  redactSecrets(sanitizeANSI(e.Message), secrets),
+					Progress: e.Progress,
+					Total:    e.Total,
+				})
 			}
-			if strings.TrimSpace(in.Command) == "" {
-				return nil, handler.NewInvalidArgumentsError("sandbox_exec: command must not be empty")
-			}
-			if err := validateExecEnv(in.Env); err != nil {
-				return nil, err
-			}
-			user, err := resolveUser(b, in.ID, in.User)
-			if err != nil {
-				return nil, err
-			}
-			// Resolve the shell wrapper from the session spec, defaulting to
-			// bash (SPEC §7.10). strings.Fields whitespace-splits a
-			// multi-token shell like "bash -l" into ["bash","-l"].
-			sess, err := b.svc.Get(in.ID)
-			if err != nil {
-				return nil, err
-			}
-			shell := sess.Spec().Shell
-			if strings.TrimSpace(shell) == "" {
-				shell = "bash"
-			}
-			wrapper := append(strings.Fields(shell), "-c", in.Command)
-			// Fetch the sandbox's known secret values once so both the progress
-			// stream and the final structured output are redacted against them
-			// (S02/§7.3).
-			secrets := sandboxSecretValues(b, in.ID)
-			// Wrap the context sink so streamed progress events are secrets-
-			// redacted (S02) and ANSI-sanitized (S09) before they reach the
-			// caller — the same contract as any other output (Phase 6, §5.1).
-			// Progress/Total are preserved. Nil-safe: SinkFromContext is never
-			// nil, so a no-op sink is wrapped harmlessly.
-			sink := progress.SinkFromContext(ctx)
-			execCtx := ctx
-			if sink != nil {
-				wrapped := func(c context.Context, e progress.Event) {
-					sink(c, progress.Event{
-						Message:  redactSecrets(sanitizeANSI(e.Message), secrets),
-						Progress: e.Progress,
-						Total:    e.Total,
-					})
-				}
-				execCtx = progress.WithSink(ctx, wrapped)
-			}
-			res, err := b.svc.Exec(execCtx, exec.Request{
-				SandboxID:  sess.ID(),
-				Command:    in.Command,
-				Env:        in.Env,
-				Argv:       wrapper,
-				WorkingDir: in.WorkingDir,
-				Timeout:    in.Timeout,
-				User:       user,
-			})
-			if err != nil {
-				return nil, err
-			}
-			// Redact stdout/stderr against the sandbox's known secret values
-			// (S02/§7.3). A command may print a secret (e.g. `echo $SECRET`
-			// from the env, or `cat /run/sandbox/<secret>`); the struct-tag
-			// redactor cannot see inside free-form text, so we replace the
-			// known secret values before returning the output.
-			return ExecOutput{
-				ID:       domainsession.ShortID(sess.ID()),
-				ExitCode: res.ExitCode,
-				Stdout:   redactSecrets(sanitizeANSI(string(res.Stdout)), secrets),
-				Stderr:   redactSecrets(sanitizeANSI(string(res.Stderr)), secrets),
-			}, nil
+			execCtx = progress.WithSink(ctx, wrapped)
+		}
+		res, err := b.svc.Exec(execCtx, exec.Request{
+			SandboxID:  sess.ID(),
+			Command:    in.Command,
+			Env:        in.Env,
+			Argv:       wrapper,
+			WorkingDir: in.WorkingDir,
+			Timeout:    in.Timeout,
+			User:       user,
 		})
+		if err != nil {
+			return nil, err
+		}
+		// Redact stdout/stderr against the sandbox's known secret values
+		// (S02/§7.3). A command may print a secret (e.g. `echo $SECRET`
+		// from the env, or `cat /run/sandbox/<secret>`); the struct-tag
+		// redactor cannot see inside free-form text, so we replace the
+		// known secret values before returning the output.
+		return ExecOutput{
+			ID:       domainsession.ShortID(sess.ID()),
+			ExitCode: res.ExitCode,
+			Stdout:   redactSecrets(sanitizeANSI(string(res.Stdout)), secrets),
+			Stderr:   redactSecrets(sanitizeANSI(string(res.Stderr)), secrets),
+		}, nil
+	}
 }
 
 // validateExecEnv rejects a per-exec env map with an empty key or a NUL/newline

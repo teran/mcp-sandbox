@@ -68,6 +68,7 @@ linters:
     - dupword
     - nakedret
     - lll
+    - funlen
   settings:
     ireturn:
       allow:
@@ -82,6 +83,9 @@ linters:
       max-func-lines: 30
     lll:
       line-length: 130
+    funlen:
+      lines: 60
+      statements: 40
   exclusions:
     rules:
       # Test code may ignore errors in setup/cleanup helpers without noise.
