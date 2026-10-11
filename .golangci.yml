@@ -63,6 +63,7 @@ linters:
     - wastedassign
     - modernize
     - ireturn
+    - interfacebloat
   settings:
     ireturn:
       allow:
