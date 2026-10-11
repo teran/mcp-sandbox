@@ -74,6 +74,7 @@ linters:
     - varnamelen
     - godoclint
     - containedctx
+    - forcetypeassert
   settings:
     ireturn:
       allow:

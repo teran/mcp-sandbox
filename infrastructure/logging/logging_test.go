@@ -196,12 +196,12 @@ func TestRedact(t *testing.T) {
 		Ptr:   ptr,
 	}
 
-	r := Redact(o).(map[string]any)
+	r := mustMap(t, Redact(o))
 	if r["id"] != "id-1" {
 		t.Fatalf("id = %v", r["id"])
 	}
 
-	in := r["inner"].(map[string]any)
+	in := mustMap(t, r["inner"])
 	if in["token"] != redactedMarker {
 		t.Fatalf("inner.token = %v, want %q", in["token"], redactedMarker)
 	}
@@ -209,17 +209,21 @@ func TestRedact(t *testing.T) {
 		t.Fatalf("inner.name = %v", in["name"])
 	}
 
-	m := r["map"].(map[string]any)
+	m := mustMap(t, r["map"])
 	if m["k"] != "v" {
 		t.Fatalf("map = %v", m)
 	}
 
-	list := r["list"].([]any)
-	if list[0].(map[string]any)["token"] != redactedMarker {
+	list, ok := r["list"].([]any)
+	if !ok {
+		t.Fatalf("expected list, got %T", r["list"])
+	}
+	first := mustMap(t, list[0])
+	if first["token"] != redactedMarker {
 		t.Fatalf("list[0].token not redacted: %v", list[0])
 	}
 
-	ptrOut := r["ptr"].(map[string]any)
+	ptrOut := mustMap(t, r["ptr"])
 	if ptrOut["token"] != redactedMarker || ptrOut["name"] != "p" {
 		t.Fatalf("ptr redaction wrong: %v", ptrOut)
 	}
@@ -245,7 +249,7 @@ func TestRedact_SecretFieldNameFromJSON(t *testing.T) {
 	type s struct {
 		Value string `json:"value" secret:"true"`
 	}
-	r := Redact(s{Value: "x"}).(map[string]any)
+	r := mustMap(t, Redact(s{Value: "x"}))
 	if r["value"] != redactedMarker {
 		t.Fatalf("value = %v", r["value"])
 	}
@@ -255,9 +259,19 @@ func TestRedact_NonSecretUnexported(t *testing.T) {
 	type s struct {
 		hidden string
 	}
-	r := Redact(s{hidden: "x"}).(map[string]any)
+	r := mustMap(t, Redact(s{hidden: "x"}))
 	// Unexported fields cannot be read via reflection and are omitted (nil).
 	if r["hidden"] != nil {
 		t.Fatalf("hidden = %v, want nil", r["hidden"])
 	}
+}
+
+func mustMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", v)
+	}
+
+	return m
 }

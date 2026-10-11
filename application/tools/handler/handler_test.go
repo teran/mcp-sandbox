@@ -215,7 +215,11 @@ func TestCall_DispatchAndStructuredOutput(t *testing.T) {
 		t.Fatal("StructuredContent not set")
 	}
 	var out map[string]any
-	if err := json.Unmarshal(res.StructuredContent.(json.RawMessage), &out); err != nil {
+	raw, ok := res.StructuredContent.(json.RawMessage)
+	if !ok {
+		t.Fatalf("expected json.RawMessage, got %T", res.StructuredContent)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
 	}
 	if out["result"] != "ok" {
@@ -321,7 +325,11 @@ func TestCall_RedactsOutput(t *testing.T) {
 	if redactCalls < 1 {
 		t.Fatal("redact not called on output")
 	}
-	if string(res.StructuredContent.(json.RawMessage)) != `"REDACTED"` {
+	raw, ok := res.StructuredContent.(json.RawMessage)
+	if !ok {
+		t.Fatalf("expected json.RawMessage, got %T", res.StructuredContent)
+	}
+	if string(raw) != `"REDACTED"` {
 		t.Fatalf("redacted output = %s", res.StructuredContent)
 	}
 }

@@ -13,7 +13,10 @@ func TestArgRedactor_RedactsSecretKeys(t *testing.T) {
 		"secrets": []any{map[string]any{"name": "k", "value": "v"}},
 		"path":    "/safe",
 	}
-	out := redact(in).(map[string]any)
+	out, ok := redact(in).(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", redact(in))
+	}
 	if out["argv"] != redactedMarker {
 		t.Fatalf("argv = %v, want redacted", out["argv"])
 	}
@@ -28,11 +31,18 @@ func TestArgRedactor_RedactsSecretKeys(t *testing.T) {
 func TestArgRedactor_NoSecretKeys(t *testing.T) {
 	redact := argRedactor(nil)
 	out := redact(map[string]any{"a": 1, "b": []any{2, 3}})
-	m := out.(map[string]any)
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
 	if m["a"] != 1 {
 		t.Fatalf("got %v", out)
 	}
-	if len(m["b"].([]any)) != 2 {
+	b, ok := m["b"].([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", m["b"])
+	}
+	if len(b) != 2 {
 		t.Fatalf("got %v", out)
 	}
 }
@@ -40,7 +50,14 @@ func TestArgRedactor_NoSecretKeys(t *testing.T) {
 func TestRedactKeys_NestedMap(t *testing.T) {
 	secret := map[string]bool{"token": true}
 	out := redactKeys(map[string]any{"nested": map[string]any{"token": "x", "keep": "y"}}, secret)
-	nested := out.(map[string]any)["nested"].(map[string]any)
+	root, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	nested, ok := root["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested map, got %T", root["nested"])
+	}
 	if nested["token"] != redactedMarker {
 		t.Fatalf("token = %v", nested["token"])
 	}

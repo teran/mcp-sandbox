@@ -162,7 +162,11 @@ func TestSandboxExec_ProgressStream_NoSinkNilSafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
-	if eo := out.(ExecOutput); eo.Stdout != "ok\n" {
+	eo, ok := out.(ExecOutput)
+	if !ok {
+		t.Fatalf("expected ExecOutput, got %T", out)
+	}
+	if eo.Stdout != "ok\n" {
 		t.Fatalf("stdout = %q, want ok\\n", eo.Stdout)
 	}
 }

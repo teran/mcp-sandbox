@@ -274,12 +274,15 @@ func TestSandboxInfo_HandlerRedactsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io := out.(InfoOutput)
-	if len(io.Secrets) != 1 || io.Secrets[0].Name != "k" {
-		t.Fatalf("secrets = %+v", io.Secrets)
+	info, ok := out.(InfoOutput)
+	if !ok {
+		t.Fatalf("expected InfoOutput, got %T", out)
 	}
-	if io.Image != "img" || io.State != string(domainsession.StateRunning) {
-		t.Fatalf("info = %+v", io)
+	if len(info.Secrets) != 1 || info.Secrets[0].Name != "k" {
+		t.Fatalf("secrets = %+v", info.Secrets)
+	}
+	if info.Image != "img" || info.State != string(domainsession.StateRunning) {
+		t.Fatalf("info = %+v", info)
 	}
 }
 
@@ -300,7 +303,10 @@ func TestSandboxStats_Handler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	so := out.(StatsOutput)
+	so, ok := out.(StatsOutput)
+	if !ok {
+		t.Fatalf("expected StatsOutput, got %T", out)
+	}
 	if so.ID != "abc" {
 		t.Fatalf("output = %+v", so)
 	}
@@ -318,7 +324,10 @@ func TestSandboxCreate_Handler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	co := out.(CreateOutput)
+	co, ok := out.(CreateOutput)
+	if !ok {
+		t.Fatalf("expected CreateOutput, got %T", out)
+	}
 	if co.ID == "" {
 		t.Fatal("empty id")
 	}
@@ -356,17 +365,20 @@ func TestSandboxCreate_OutputShortID(t *testing.T) {
 	svc := newFake()
 	svc.session = runningSession(full, spec.SandboxSpec{Isolation: defaultPolicy().Isolation})
 	d := toolByName(t, svc, "sandbox_create")
-	co, err := callHandler(t, d, svc, map[string]any{"profile": "default", "cwd": "/c", "session_id": "s1"})
+	res, err := callHandler(t, d, svc, map[string]any{"profile": "default", "cwd": "/c", "session_id": "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := co.(CreateOutput).ID
-	want := domainsession.ShortID(full)
-	if got != want {
-		t.Fatalf("create output ID = %q, want short %q", got, want)
+	create, ok := res.(CreateOutput)
+	if !ok {
+		t.Fatalf("expected CreateOutput, got %T", res)
 	}
-	if len(got) != 12 {
-		t.Fatalf("create output ID length = %d, want 12", len(got))
+	want := domainsession.ShortID(full)
+	if create.ID != want {
+		t.Fatalf("create output ID = %q, want short %q", create.ID, want)
+	}
+	if len(create.ID) != 12 {
+		t.Fatalf("create output ID length = %d, want 12", len(create.ID))
 	}
 }
 
@@ -396,7 +408,7 @@ func TestShortID_RoundTripViaPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if io := o.(InfoOutput); io.ID != short {
+	if io, ok := o.(InfoOutput); !ok || io.ID != short {
 		t.Fatalf("info ID = %q, want short %q", io.ID, short)
 	}
 
@@ -409,8 +421,8 @@ func TestShortID_RoundTripViaPrefix(t *testing.T) {
 	if svc.execReq.SandboxID != full {
 		t.Fatalf("exec resolved to sandbox %q, want full %q", svc.execReq.SandboxID, full)
 	}
-	if eo.(ExecOutput).ID != short {
-		t.Fatalf("exec output ID = %q, want short %q", eo.(ExecOutput).ID, short)
+	if eo, ok := eo.(ExecOutput); !ok || eo.ID != short {
+		t.Fatalf("exec output ID = %q, want short %q", eo.ID, short)
 	}
 
 	// sandbox_destroy by short id echoes the short id.
@@ -419,7 +431,9 @@ func TestShortID_RoundTripViaPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if do := dd.(DestroyOutput); len(do.IDs) != 1 || do.IDs[0] != short {
+	if do, ok := dd.(DestroyOutput); !ok {
+		t.Fatalf("expected DestroyOutput, got %T", dd)
+	} else if len(do.IDs) != 1 || do.IDs[0] != short {
 		t.Fatalf("destroy IDs = %v, want [%q]", do.IDs, short)
 	}
 }
@@ -600,7 +614,10 @@ func TestSandboxExec_Handler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eo := out.(ExecOutput)
+	eo, ok := out.(ExecOutput)
+	if !ok {
+		t.Fatalf("expected ExecOutput, got %T", out)
+	}
 	if eo.ExitCode != 0 || eo.Stdout != "ok" {
 		t.Fatalf("output = %+v", eo)
 	}
@@ -767,7 +784,10 @@ func TestSandboxExec_RedactsSecretFromOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eo := out.(ExecOutput)
+	eo, ok := out.(ExecOutput)
+	if !ok {
+		t.Fatalf("expected ExecOutput, got %T", out)
+	}
 	if strings.Contains(eo.Stdout, "topsecret") {
 		t.Fatalf("stdout leaked secret: %q", eo.Stdout)
 	}
@@ -797,7 +817,11 @@ func TestSandboxExec_NoSecrets_OutputUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if eo := out.(ExecOutput); eo.Stdout != "plain output" {
+	eo, ok := out.(ExecOutput)
+	if !ok {
+		t.Fatalf("expected ExecOutput, got %T", out)
+	}
+	if eo.Stdout != "plain output" {
 		t.Fatalf("output = %q, want unchanged", eo.Stdout)
 	}
 }
@@ -882,7 +906,11 @@ func TestSandboxDestroy_Handler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.(DestroyOutput).Destroyed != 1 {
+	do, ok := out.(DestroyOutput)
+	if !ok {
+		t.Fatalf("expected DestroyOutput, got %T", out)
+	}
+	if do.Destroyed != 1 {
 		t.Fatalf("output = %+v", out)
 	}
 }
@@ -924,7 +952,10 @@ func TestSandboxDestroyAll_CountsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	do := out.(DestroyOutput)
+	do, ok := out.(DestroyOutput)
+	if !ok {
+		t.Fatalf("expected DestroyOutput, got %T", out)
+	}
 	if do.Destroyed != 2 || len(do.IDs) != 2 {
 		t.Fatalf("output = %+v", do)
 	}
