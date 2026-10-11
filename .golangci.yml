@@ -64,6 +64,7 @@ linters:
     - modernize
     - ireturn
     - interfacebloat
+    - godot
   settings:
     ireturn:
       allow:
