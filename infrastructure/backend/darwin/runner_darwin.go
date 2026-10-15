@@ -32,7 +32,7 @@ const rlimitNPROC = 0x7
 // limits are applied in the parent before exec (the child inherits setrlimit
 // limits). Output is captured to buffers while also being written to the spec
 // writers, so the Result returned by Wait carries stdout/stderr.
-func (realRunner) Start(ctx context.Context, ps ProcessSpec) (Process, error) {
+func (realRunner) Start(_ context.Context, ps ProcessSpec) (Process, error) {
 	if len(ps.Argv) == 0 {
 		return nil, fmt.Errorf("darwin: empty argv")
 	}
@@ -132,8 +132,7 @@ func (p *osProcess) Wait(ctx context.Context) (*Result, error) {
 		return nil, ctx.Err()
 	case err := <-errCh:
 		if err != nil {
-			var ee *exec.ExitError
-			if errors.As(err, &ee) {
+			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
 					return &Result{
 						ExitCode: ws.ExitStatus(),

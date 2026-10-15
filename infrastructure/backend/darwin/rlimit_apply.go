@@ -19,17 +19,17 @@ type rlimitOps interface {
 // no-op returning an empty map.
 func rlimitSaveAndApply(lowers []Rlimit, ops rlimitOps) (map[int]syscall.Rlimit, error) {
 	prev := make(map[int]syscall.Rlimit, len(lowers))
-	for _, rl := range lowers {
-		lim, err := ops.Getrlimit(rl.Resource)
+	for _, spec := range lowers {
+		lim, err := ops.Getrlimit(spec.Resource)
 		if err != nil {
 			return nil, err
 		}
-		prev[rl.Resource] = *lim
+		prev[spec.Resource] = *lim
 	}
 
 	applied := make([]int, 0, len(lowers))
-	for _, rl := range lowers {
-		if err := ops.Setrlimit(rl.Resource, &syscall.Rlimit{Cur: rl.Soft, Max: rl.Hard}); err != nil {
+	for _, spec := range lowers {
+		if err := ops.Setrlimit(spec.Resource, &syscall.Rlimit{Cur: spec.Soft, Max: spec.Hard}); err != nil {
 			for _, res := range applied {
 				if p, ok := prev[res]; ok {
 					_ = ops.Setrlimit(res, &p)
@@ -38,7 +38,7 @@ func rlimitSaveAndApply(lowers []Rlimit, ops rlimitOps) (map[int]syscall.Rlimit,
 
 			return nil, err
 		}
-		applied = append(applied, rl.Resource)
+		applied = append(applied, spec.Resource)
 	}
 
 	return prev, nil
