@@ -195,18 +195,21 @@ func defaultProfile() *domainprofile.Profile {
 	return &domainprofile.Profile{
 		Name:        "default",
 		Description: "the default test profile",
-		Image:       "docker.io/library/alpine:3.20",
-		Env:         map[string]string{},
+		Driver:      spec.DriverDocker,
 		Cwd:         domainprofile.CwdConfig{Mode: "ro"},
-		Network:     domainprofile.Network{Mode: spec.NetworkBridge},
-		Cgroups: domainprofile.Cgroups{
-			NanoCPUs:   1_000_000_000,
-			Memory:     512 * 1024 * 1024,
-			MemorySwap: 1024 * 1024 * 1024,
-			PidsLimit:  512,
+		Docker: &domainprofile.DockerProfile{
+			Image:   "docker.io/library/alpine:3.20",
+			Env:     map[string]string{},
+			Network: domainprofile.Network{Mode: spec.NetworkBridge},
+			Cgroups: domainprofile.Cgroups{
+				NanoCPUs:   1_000_000_000,
+				Memory:     512 * 1024 * 1024,
+				MemorySwap: 1024 * 1024 * 1024,
+				PidsLimit:  512,
+			},
+			User: &spec.UIDGID{UID: 1000, GID: 1000},
+			Sudo: spec.SudoNever,
 		},
-		User: &spec.UIDGID{UID: 1000, GID: 1000},
-		Sudo: spec.SudoNever,
 	}
 }
 

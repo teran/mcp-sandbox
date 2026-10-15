@@ -38,7 +38,7 @@ encoded in an **immutable `Isolation` block** that a caller cannot weaken.
 | Scope | Status |
 |-------|--------|
 | **Docker backend** | ✅ **MVP — implemented** |
-| Apple Container (and other backends) | ⏳ **Future extension** — the `Backend` abstraction is designed for it (see [Architecture](#6-architecture)) but is **not** implemented in the MVP |
+| Apple Container (and other backends) | ⏳ **Future extension** — the `Backend` abstraction is designed for it (see [Architecture](#6-architecture)) but is **not** implemented in the MVP. An **experimental macOS `sandbox-exec` (Seatbelt) driver** is **designed but not implemented** — see [§7.12](#712-apple--sandbox-exec-driver-darwin-backend--experimental). |
 | `CapStream` / `Mountable` capabilities | ⏳ Future — **not** implemented in the MVP |
 
 The rationale for Docker-first: *"Docker is everywhere"* — it is the most
@@ -434,6 +434,10 @@ type Factory struct {
 ```
 
 - **Docker registers itself** via package `init()`.
+- A future **darwin** backend (macOS Seatbelt via `/usr/bin/sandbox-exec`,
+  §7.12) registers the same way with `Priority` 10 (docker preferred) and an
+  `Available()` gated on `runtime.GOOS == "darwin"`, the presence of
+  `/usr/bin/sandbox-exec`, and `euid != 0`.
 - `Available()` is evaluated **lazily inside `sandbox_create`** — never at
   startup (**A02/N35**: no outbound calls at startup). Backend selection happens
   on the first tool call that needs a backend.
@@ -532,6 +536,14 @@ create → use (exec/read/write/copy/install) → destroy
   **Today `DestroyAll` runs only via the `sandbox_destroy_all` tool** — there is
   no automatic teardown on server exit, so a process that dies without explicit
   destroy leaves orphaned containers (to be reclaimed by the future orphan-GC).
+- **darwin/`sandbox-exec` driver (future, §7.12):** `sandbox-exec` applies a
+  sandbox scheme and **execs** the command into the **same process** — there is
+  **no supervisor wrapper and no `AutoRemove` equivalent**. The **leader process
+  pid** is the sandbox handle (analogous to label-based ownership, §7.8);
+  `Create` returns the leader pid and `Destroy` kills the **whole process group**
+  (`kill(-pgid, SIGKILL)`), **idempotently** (`ESRCH` → no-op). A server exit
+  without explicit destroy leaves the sandboxed process tree as an **orphan**.
+  `req.Timeout` (§6.10) becomes a process-group `SIGKILL` cancellation.
 - **State model (X01):** **stateful, per-session, in-memory.** State lives in
   the session manager (a process-local map); it is *not* persisted to disk or a
   DB. Reasoning: sandboxes are ephemeral by design and tied to the lifetime of
@@ -655,6 +667,16 @@ create, regardless of the input spec:
 
 Because the block is immutable and applied by the server, a caller cannot pass
 a spec that disables these protections.
+
+**darwin/`sandbox-exec` driver — weaker resource isolation (documented, §7.12).**
+macOS has **no cgroup** for general use, so the immutable block maps only
+partially onto the darwin backend: `PidsLimit`→`RLIMIT_NPROC`, `Ulimits`→
+`setrlimit` (`RLIMIT_CPU/NOFILE/FSIZE/STACK/CORE`), read-only rootfs→
+`file-read-only` scheme rights; **`Memory`/`MemorySwap`/`NanoCPUs` are not
+hard-enforceable** (`RLIMIT_AS` is an approximation only) and are declared
+**unsupported** on darwin, never silently ignored. Resource limits on darwin
+are therefore **weaker** than Docker and **must not be relied on as hard
+quotas**.
 
 **Resource limits come from the operator profile (Phase 7).** The
 `Memory`/`MemorySwap`/`NanoCPUs`/`PidsLimit`/`Ulimits` values (rows above) are
@@ -783,6 +805,7 @@ itself can **never** be weakened (by profile or caller).
 | AppArmor profiles | Roadmap. |
 | **gVisor / runsc** | **Target state** for kernel-escape containment (**T1 kernel-escape**). |
 | Rootless Docker | Roadmap (reduces the §7.6 socket risk). |
+| **Darwin backend (`sandbox-exec`/Seatbelt)** | **Experimental** (designed, not implemented) — **policy-based containment, NOT a kernel-escape equivalent** (see §7.12). |
 | Backend abstraction | Ready — a future `gvisor`/`apple` backend implements the same `Backend` roles. |
 
 ### 7.8 Session identifiers & ownership
@@ -955,6 +978,7 @@ Schema key reference (`domain/sandbox/profile.Profile`):
 | `user` | `{uid,gid}` | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user. |
 | `sudo` | string | Optional. `never`(default)/`require`. |
 | `shell` | string | Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image. |
+| `seatbelt` | `{sbpl,mach_lookups,sysctls}` | Optional. **darwin/Seatbelt only (§7.12)** — carries the operator SBPL template (merged after server-hardening ops), extra `mach-lookup` services and `sysctl` keys. Ignored by the Docker backend. Validation rejects only NUL in `sbpl`. |
 
 #### Loader & store (read-only)
 
@@ -1002,6 +1026,176 @@ Secrets, ClientSessionID})` produces the typed `SandboxSpec` (§6.5) with:
 
 If the requested `profile` is not in the store, `sandbox_create` returns a
 "not found" error.
+
+### 7.12 Apple / `sandbox-exec` driver (darwin backend) — experimental
+
+> **Status: experimental alternative driver — designed, not implemented.**
+> This section documents a **second** backend that, unlike the Docker MVP
+> (§1), is **macOS-only** and runs on **Apple's Seatbelt** via the external
+> `/usr/bin/sandbox-exec` binary — **pure Go, no cgo, no root**. It realizes
+> the same `Backend` roles on Apple platforms and is a concrete instance of
+> the "Apple Container (and other backends)" future-extension slot (§1) and
+> the backend-abstraction roadmap (§7.7). **Docker remains the
+> default/preferred backend** (lower `Priority`); the darwin backend is
+> selected only on macOS when Docker is unavailable.
+
+#### Mechanism
+
+- A sandbox is a **self-sandboxed child process**: the backend spawns a
+  long-lived child under `/usr/bin/sandbox-exec -p <SBPL> <shell> -c ...` (the
+  same **fixed** `[<shell>,"-c",command]` wrapper as §7.5, **S11**; the
+  rendered profile is passed as an argv argument, never shell-interpolated).
+  `sandbox-exec` applies the Seatbelt (SBPL) profile to **itself** and then
+  `execvp`s the child, which inherits the sandbox — so **no root and no
+  privilege elevation** is needed and the "started but not yet sandboxed"
+  window is closed. "Create" spawns the child (the `sleep infinity`
+  analogue); "Destroy" is `SIGKILL` + `Wait` (idempotent, **X02**).
+- **Pure Go, no cgo:** `sandbox-exec` is an external binary invoked via
+  `os/exec`; there is no cgo and the server process is **never root**
+  (`Available()` returns false when `euid == 0`).
+
+#### Roles (capability set)
+
+| Role | darwin backend | Notes |
+|------|----------------|-------|
+| `Backend` | ✅ | Name `darwin`, `Priority` 10 (docker=0 preferred). |
+| `Lifecycle` (`Create`/`Destroy`) | ✅ | Spawn/kill of the sandboxed child; idempotent (**X02**). |
+| `Executable` (`Exec`) | ✅ | `sandbox-exec -p <SBPL>` wrapper around the fixed `[<shell>,"-c",command]` form. |
+| `Introspectable` (`Info`/`Stats`) | ❌ | **Not implemented.** No cgroups on macOS; `Info`/`Stats` return `ErrCapabilityNotSupported` (§6.2) — **no stub**. |
+
+Registration follows §6.3: the factory registers via `init()` into the shared
+registry, is blank-imported in `cmd/mcp-sandbox/main.go`, and its `Available()`
+is evaluated **lazily** in `Select` (**A02/N35**): `runtime.GOOS == "darwin"`,
+`/usr/bin/sandbox-exec` exists, and `euid != 0`.
+
+#### Profile extension (`seatbelt` block, §7.11)
+
+The operator profile gains an optional **`seatbelt`** block that carries the
+Seatbelt (SBPL) template and darwin knobs. It is projected into
+`SandboxSpec.Sandbox` by `Profile.BuildSpec` and consumed by the darwin
+backend (`domain/sandbox/spec.Sandbox`):
+
+```yaml
+seatbelt:                    # optional; darwin/Seatbelt
+  sbpl: |                    # operator SBPL merged AFTER server-hardening ops
+    (import "system.sb")
+    (allow process-fork)
+  mach_lookups:              # extra (allow mach-lookup ...)
+    - com.apple.system.logger
+  sysctls:                   # extra (allow sysctl-read ...)
+    - kern.osversion
+```
+
+`domain/sandbox/profile.Profile.Seatbelt` is a `*SeatbeltProfile` (SBPL,
+MachLookups, Sysctls) that `BuildSpec` projects into `spec.Sandbox{SBPL,
+MachLookups, Sysctls}`. Validation rejects only NUL in `SBPL`; the profile is **read-only**
+and operator-authored per the §7.11 trust model. A profile that requests a
+darwin-unsupported capability (see below) remains **valid** but the limit is
+**honestly reported as not enforced** on this backend — never silently ignored.
+
+#### Isolation → Seatbelt projection
+
+The darwin backend renders a full SBPL from the typed `SandboxSpec` (order:
+imports → `(deny default)` → network → mach → sysctl → file → operator
+`seatbelt.sbpl`). The generator is a **deterministic pure function
+`SandboxSpec → SBPL`**; a caller never supplies SBPL text, it supplies a
+`SandboxSpec` exactly as for Docker:
+
+| `Isolation` / spec | Seatbelt operation |
+|--------------------|--------------------|
+| always | `(deny default)` |
+| `Mounts` + `cwd` (ro) | `(allow file-read* (subpath "<path>"))` |
+| `Mounts` + `cwd.mode=rw` | `(allow file-read* …)` + `(allow file-write* …)` |
+| `NetworkMode == none` | `(deny network*)` (default) |
+| `NetworkMode == bridge`/`host` | `(allow network-outbound)` |
+| `Resources.Ulimits` | `setrlimit(2)` via Go wrapper before `execvp` (`RLIMIT_NOFILE/AS/CPU/NPROC/FSIZE/STACK/CORE`) |
+| `Resources.NanoCPUs/Memory/PidsLimit` | **not mappable** (no cgroups on macOS) — declared unsupported, never silently ignored |
+| `UIDGID` | **not applied** (self-sandbox runs as the current host user) |
+| mach | `(deny mach-lookup)` + allow-list |
+| sysctl | `(deny sysctl*)` + allow-list |
+
+**SBPL injection is a real new vector** (an S11-analog absent from the Docker
+backend). No raw user/profile string is ever interpolated into SBPL; only
+typed, validated absolute paths are used, and each path is rejected if it
+contains any SBPL metacharacter from `" \ ( ) ;` or `\n \r \0` — otherwise a
+crafted value such as `") (allow file-write*) ;"` would terminate the string
+and inject an `(allow file-write*)` token. The generator is covered by
+injection-focussed unit tests (fail-closed: a hostile path ⇒ `InvalidParams`).
+`ALLOW_DIRS` remains the **single** host-path gate (**S04**): the generator
+emits `file-read*`/`file-write* (subpath …)` rules **only** for sources inside
+`ALLOW_DIRS` (and the sanctioned per-session `0700` scratch dir); the session
+`cwd` must be within `ALLOW_DIRS`; everything else is deny-by-default.
+`ALLOW_SYMLINKS`/`EvalSymlinks`/open-then-verify run **before** SBPL
+generation. `mach-lookup` is narrowed to the minimum bootstrap services a
+shell needs (confused-deputy containment, below).
+
+#### Reduced threat model vs Docker (explicit)
+
+The darwin driver is **strictly weaker** than the Docker MVP and is documented
+as such; it is a **policy-based containment** convenience for macOS hosts,
+**not** the security target and **MUST NOT** be presented as equivalent to
+Docker/gVisor isolation:
+
+- **Shared host kernel.** No namespaces, no separate kernel, no user
+  namespace. An SBPL bypass or a kernel bug = **full host compromise** at
+  operator privilege — not a root boundary and **not** a gVisor/runsc-class
+  kernel-escape containment (see §7.7 target state).
+- **No cgroup resource budgets.** `NanoCPUs`, `Memory`, `MemorySwap`,
+  `PidsLimit` do **not** translate 1:1 (macOS has no cgroups) and are declared
+  **unsupported**, never silently ignored. Only setrlimit-mappable `ulimits`
+  are enforced, and those are **soft per-process limits**, not hard cgroup
+  quotas — a runaway process can degrade the whole host (DoS).
+- **No uid change.** `sandbox-exec` runs as the **current host user**
+  (`UIDGID` is not applied); a darwin sandbox shares the host user's identity
+  and is not the non-root drop of §7.10. The driver refuses to run at `uid 0`
+  (self-sandbox, §7.6-analog).
+- **No network isolation.** macOS has no network namespaces, so `bridge` is
+  not a real bridge and host/bridge are indistinguishable; only
+  `network-outbound` deny/allow is enforceable.
+- **Shared IPC / confused deputy.** The Mach/IPC namespace is shared; any
+  allowed `mach-lookup` to a privileged Mach service is a confused-deputy path
+  (the service cannot distinguish a sandboxed caller). Hence `mach-lookup`
+  MUST be minimal.
+- **No supply-chain image/digest boundary (§7.9).** There is no image; SBPL
+  executes on the host OS against host libraries. The operator-authored
+  profile is trusted only insofar as its SBPL is not over-broad.
+- **Unsupported Apple API.** `/usr/bin/sandbox-exec` and SBPL are **not a
+  supported public API** (deprecated since macOS 10.10+) and are not guaranteed
+  by Apple as a security boundary for hostile/multi-tenant code; behavior may
+  change across OS releases.
+
+**Invariants preserved:** `ALLOW_DIRS` as the single host-path gate (**S04**);
+no secret leakage (**S02/N02**) — secrets delivered as a `0600` file in a
+per-session `0700` directory (macOS has no tmpfs; the analog of `/run/sandbox`),
+**never** in argv and **never** in SBPL (the literal validator is what prevents
+a secret from entering SBPL); non-root self-sandbox (§7.6-analog); **S11**
+no-shell-concat preserved.
+
+#### Lifecycle, observability & reliability
+
+- **No container/daemon/image.** A session is an **in-memory record** (SBPL +
+  env + cwd) in the session manager (**X01**); each `sandbox_exec` spawns a
+  fresh `sandbox-exec` child. Cleanup is **explicit only** (§6.6): `Destroy`
+  kills the whole process group (`kill(-pgid, SIGKILL)`), **idempotently**
+  (`ESRCH` → no-op). There is **no `AutoRemove` equivalent**; a server exit
+  without explicit destroy leaves the sandboxed tree as an **orphan** (nothing
+  is left but live processes and any host path the profile granted `rw`).
+  `req.Timeout` (§6.10) becomes a process-group `SIGKILL` cancellation
+  (SIGTERM is unreliable against sandboxed children).
+- **No live introspection** (`Introspectable` → `ErrCapabilityNotSupported`);
+  resource observability uses `getrusage`/`task_info`/`ps` (no cgroup metrics).
+- **Policy-denial detection.** `sandbox-exec` does not log its own denials;
+  macOS records them in the **unified log**
+  (`subsystem == "com.apple.sandbox"`). The darwin driver tails this log
+  filtered by session and classifies a `deny` as a **policy failure**, not a
+  normal exit code (a denied syscall also surfaces in-band as `EPERM`). Logged
+  with `session_id` and pid (L08-style, no secrets).
+- **Portability (declared break).** The `sandbox-exec` backend is
+  **macOS-only**; a Linux host has no `sandbox-exec` and must fall back to
+  Docker (or a future `bwrap` backend). Backends are **non-interchangeable
+  isolation mechanisms**, not a portable abstraction layer — backend selection
+  is explicit per platform, and the absence of an available backend surfaces
+  `ErrNoAvailableBackend` rather than silently degrading (§6.3).
 
 ---
 
@@ -1055,6 +1249,11 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 - **`request_id` correlation (L09/L04GO):** generated per request, carried via
   context (`WithRequestID`/`RequestIDFromContext`), threaded on every log
   record.
+- **darwin driver log events (§7.12)** — same pipeline (L08/L09,
+  `request_id`-correlated, `command`/paths redacted): `session_create {
+  session_id, pid, profile }`, `session_destroy { session_id, pid, rc,
+  term_signal }`, `sandbox_deny { session_id, pid, message }` (from §7.12
+  policy-denial detection), and `exec_result { session_id, exit_code }`.
 
 ---
 
@@ -1184,3 +1383,8 @@ L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 **MUST NOT respected:** N01–N13, N15–N36 as applicable (notably N31 — no
 undeclared optional Makefile targets; N36 — CI read-only; N05GO — official
 Docker SDK, not low-level `http.Client`).
+
+> **§7.12 note:** the darwin/`sandbox-exec` driver section does **not** change
+> any existing MUST/NOT; it records an **additional** contract for a future,
+> macOS-only backend with a strictly reduced threat model (policy-based
+> containment, not kernel isolation).

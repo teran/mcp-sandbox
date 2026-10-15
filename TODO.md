@@ -122,11 +122,47 @@ daemon. Today this is out of scope (Phase 4, e2e N/A).
 - [ ] **Docs:** update `AGENTS.md`/`TODO.md` Phase-4 N/A note if the lane is
       adopted — English, `D01 D02`
 
+### Darwin backend — `sandbox-exec` (Seatbelt) driver (backlog — designed, not implemented)
+
+Designed in `SPEC.md` §7.12 and `README.md` "macOS driver". macOS-only,
+policy-based containment (deny-by-default SBPL), pure Go via `/usr/bin/
+sandbox-exec` (no cgo, no root). Docker remains the default backend.
+
+- [ ] **`spec.Sandbox` type + profile `sandbox:` block:** add
+      `domain/sandbox/spec.Sandbox{SBPL, MachLookups, Sysctls}` and the
+      `Profile.Sandbox` field; `BuildSpec` copies it into `SandboxSpec`;
+      validation rejects NUL in SBPL — `@architect`/`@developer`, `D01 D02`
+- [ ] **SBPL generator + literal validator:** deterministic `SandboxSpec → SBPL`
+      renderer (imports → `deny default` → network → mach → sysctl → file →
+      operator `sbpl`) plus fail-closed validation rejecting SBPL metacharacters
+      (`" \ ( ) ; \n \r \0`) in any path — `@security` first, `S04 S11`
+- [ ] **darwin backend package:** `infrastructure/backend/darwin` registering via
+      `init()` (Priority 10), `Available()` gated on `GOOS==darwin` +
+      `/usr/bin/sandbox-exec` + `euid != 0`; `Lifecycle` (spawn/kill child) and
+      `Executable` (fixed `[<shell>,"-c",command]` wrapper); `Introspectable`
+      returns `ErrCapabilityNotSupported` — `@developer`, `C01`
+- [ ] **setrlimit wrapper:** apply `RLIMIT_CPU/NOFILE/AS/NPROC/FSIZE/STACK/CORE`
+      before `execvp`; honestly report `Memory`/`NanoCPUs`/`PidsLimit` as
+      unsupported on darwin — `@developer`, `C01`
+- [ ] **Policy-denial detection:** tail unified log
+      (`subsystem == "com.apple.sandbox"`) filtered by session, classify `deny`
+      as policy failure, log with `session_id`/pid — `@sre`/`@developer`,
+      `L08 L09`
+- [ ] **Unit tests (no real sandbox-exec):** mock `os/exec` runner (like the
+      docker fake client) so `make test` + coverage ≥ 95% hold in CI; SBPL
+      injection-focussed tests — `@qa`, `C01 C08GO`
+- [ ] **e2e on macos-latest (optional):** smoke-test spawning a real
+      `sandbox-exec` on a macOS runner via an added `make` target — `@devops`,
+      `N31 N36`
+- [ ] **Docs:** mark §7.12 "designed" → "implemented" once wired — English,
+      `D01 D02`
+
 ### Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).
 - gVisor/runsc + rootless as target state (T1 kernel-escape containment).
-- Apple Container and other backends — extension after Docker.
+- Apple Container and other backends — extension after Docker (darwin driver
+  designed in §7.12; gVisor/runsc as kernel-escape target).
 - `CapStream` / `Mountable` capabilities (streaming, dynamic mounts) — future.
 - Warm-instance pool — outside MVP (architecture ready via `SandboxSpec` hash).
 - **Docker-in-Docker corner case** — running containers from inside the sandbox

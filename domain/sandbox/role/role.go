@@ -15,12 +15,15 @@ import (
 var ErrCapabilityNotSupported = errors.New("capability not supported")
 
 // Backend is the base role every backend implements (§6.2). Name identifies
-// the backend (e.g. "docker"), Priority orders backend selection, and
-// Capabilities advertises which role interfaces the backend implements.
+// the backend (e.g. "docker"), Priority orders backend selection,
+// Capabilities advertises which role interfaces the backend implements, and
+// Driver reports the backend driver (SPEC §7.12) so the service can enforce
+// one-backend-per-process driver coherence.
 type Backend interface {
 	Name() string
 	Priority() int
 	Capabilities() CapabilitySet
+	Driver() spec.Driver
 }
 
 // Lifecycle creates and destroys sandboxes.

@@ -210,6 +210,9 @@ func (b *Backend) Capabilities() role.CapabilitySet {
 	}
 }
 
+// Driver reports the backend driver.
+func (b *Backend) Driver() spec.Driver { return spec.DriverDocker }
+
 // compile-time check that Backend satisfies the role interfaces.
 var (
 	_ role.Backend        = (*Backend)(nil)

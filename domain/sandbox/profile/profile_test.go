@@ -1,9 +1,15 @@
 // Package profile_test pins the operator-authored, read-only sandbox profile
-// model (Phase 7): Profile validation and BuildSpec (profile → SandboxSpec).
+// model (Phase 7 + hybrid driver-aware schema, SPEC §7.11/§7.12): Profile
+// validation and BuildSpec (profile → SandboxSpec).
+//
+// The hybrid schema makes the driver explicit: a profile carries a `Driver`
+// (auto/docker/seatbelt) and exactly one of a `Docker` or `Seatbelt` block.
+// BuildSpec resolves auto → the single present block's driver and never emits
+// an auto driver on the resulting SandboxSpec.
 //
 // BuildSpec is the seam where operator intent (image, env, mounts, network,
 // cgroups, user, sudo) is merged with the server's immutable Isolation policy.
-// The design locks two invariants:
+// Two invariants are locked:
 //
 //   - profile-owned fields (NanoCPUs/Memory/MemorySwap/PidsLimit/Ulimits/
 //     NetworkMode) OVERRIDE the server policy `pol`;
@@ -19,27 +25,45 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
-// validProfile returns a profile that passes Validate.
+// validProfile returns a docker-driver profile that passes Validate.
 func validProfile() *Profile {
 	return &Profile{
 		Name:        "default",
 		Description: "the default profile",
-		Image:       "docker.io/library/alpine:3.20",
-		Env:         map[string]string{"A": "1"},
-		Mounts: []Mount{
-			{Source: "/data", Target: "/data", ReadOnly: true},
+		Driver:      spec.DriverDocker,
+		Cwd:         CwdConfig{Target: "", Mode: "ro"},
+		Docker: &DockerProfile{
+			Image: "docker.io/library/alpine:3.20",
+			Env:   map[string]string{"A": "1"},
+			Mounts: []Mount{
+				{Source: "/data", Target: "/data", ReadOnly: true},
+			},
+			Network: Network{Mode: spec.NetworkBridge},
+			Cgroups: Cgroups{
+				NanoCPUs:   1e9,
+				Memory:     512 << 20,
+				MemorySwap: 512 << 20,
+				PidsLimit:  256,
+				Ulimits:    []spec.Ulimit{{Name: "nofile", Soft: 1024, Hard: 1024}},
+			},
+			User: &spec.UIDGID{UID: 1000, GID: 1000},
+			Sudo: spec.SudoNever,
 		},
-		Cwd:     CwdConfig{Target: "", Mode: "ro"},
-		Network: Network{Mode: spec.NetworkBridge},
-		Cgroups: Cgroups{
-			NanoCPUs:   1e9,
-			Memory:     512 << 20,
-			MemorySwap: 512 << 20,
-			PidsLimit:  256,
-			Ulimits:    []spec.Ulimit{{Name: "nofile", Soft: 1024, Hard: 1024}},
+	}
+}
+
+// validSeatbeltProfile returns a seatbelt-driver profile that passes Validate.
+func validSeatbeltProfile() *Profile {
+	return &Profile{
+		Name:        "mac",
+		Description: "a seatbelt profile",
+		Driver:      spec.DriverSeatbelt,
+		Cwd:         CwdConfig{Target: "", Mode: "ro"},
+		Seatbelt: &SeatbeltProfile{
+			SBPL:        "(import \"system.sb\")\n(allow process-fork)",
+			MachLookups: []string{"com.apple.system.logger"},
+			Sysctls:     []string{"kern.osversion"},
 		},
-		User: &spec.UIDGID{UID: 1000, GID: 1000},
-		Sudo: spec.SudoNever,
 	}
 }
 
@@ -65,7 +89,10 @@ func validIsolation() spec.Isolation {
 
 func TestProfileValidate_Valid(t *testing.T) {
 	if err := validProfile().Validate(); err != nil {
-		t.Fatalf("expected valid profile, got: %v", err)
+		t.Fatalf("expected valid docker profile, got: %v", err)
+	}
+	if err := validSeatbeltProfile().Validate(); err != nil {
+		t.Fatalf("expected valid seatbelt profile, got: %v", err)
 	}
 }
 
@@ -81,19 +108,19 @@ func TestProfileValidate_Errors(t *testing.T) {
 		{"bad name", func(p *Profile) { p.Name = "Bad/Name" }, "name"},
 		{"name path traversal", func(p *Profile) { p.Name = "../evil" }, "name"},
 		{"empty description", func(p *Profile) { p.Description = "" }, "description"},
-		{"unparsable image", func(p *Profile) { p.Image = "::::invalid" }, "image"},
-		{"empty image", func(p *Profile) { p.Image = "" }, "image"},
-		{"relative mount source", func(p *Profile) { p.Mounts[0].Source = "data" }, "mount"},
-		{"relative mount target", func(p *Profile) { p.Mounts[0].Target = "data" }, "mount"},
+		{"unparsable image", func(p *Profile) { p.Docker.Image = "::::invalid" }, "image"},
+		{"empty image", func(p *Profile) { p.Docker.Image = "" }, "image"},
+		{"relative mount source", func(p *Profile) { p.Docker.Mounts[0].Source = "data" }, "mount"},
+		{"relative mount target", func(p *Profile) { p.Docker.Mounts[0].Target = "data" }, "mount"},
 		{"invalid cwd mode", func(p *Profile) { p.Cwd.Mode = "weird" }, "cwd"},
 		{"relative cwd target", func(p *Profile) { p.Cwd.Target = "work" }, "cwd"},
-		{"invalid network mode", func(p *Profile) { p.Network.Mode = spec.NetworkMode("vlan") }, "network"},
-		{"unbounded cpus", func(p *Profile) { p.Cgroups.NanoCPUs = 0 }, "NanoCPUs"},
-		{"unbounded memory", func(p *Profile) { p.Cgroups.Memory = 0 }, "Memory"},
-		{"unbounded pids", func(p *Profile) { p.Cgroups.PidsLimit = 0 }, "PidsLimit"},
-		{"memory_swap less than memory", func(p *Profile) { p.Cgroups.MemorySwap = p.Cgroups.Memory - 1 }, "MemorySwap"},
-		{"root user", func(p *Profile) { p.User = &spec.UIDGID{UID: 0, GID: 0} }, "root"},
-		{"invalid sudo", func(p *Profile) { p.Sudo = spec.SudoPolicy("maybe") }, "sudo"},
+		{"invalid network mode", func(p *Profile) { p.Docker.Network.Mode = spec.NetworkMode("vlan") }, "network"},
+		{"unbounded cpus", func(p *Profile) { p.Docker.Cgroups.NanoCPUs = 0 }, "NanoCPUs"},
+		{"unbounded memory", func(p *Profile) { p.Docker.Cgroups.Memory = 0 }, "Memory"},
+		{"unbounded pids", func(p *Profile) { p.Docker.Cgroups.PidsLimit = 0 }, "PidsLimit"},
+		{"memory_swap less than memory", func(p *Profile) { p.Docker.Cgroups.MemorySwap = p.Docker.Cgroups.Memory - 1 }, "MemorySwap"},
+		{"root user", func(p *Profile) { p.Docker.User = &spec.UIDGID{UID: 0, GID: 0} }, "root"},
+		{"invalid sudo", func(p *Profile) { p.Docker.Sudo = spec.SudoPolicy("maybe") }, "sudo"},
 	}
 
 	for _, tt := range tests {
@@ -108,6 +135,268 @@ func TestProfileValidate_Errors(t *testing.T) {
 				t.Fatalf("expected error containing %q, got: %v", tt.want, err)
 			}
 		})
+	}
+}
+
+// --- Driver / block validation (fail-closed, SPEC §7.12) ---
+
+// TestProfileValidate_InvalidDriver pins rule 1: an unknown driver is rejected.
+func TestProfileValidate_InvalidDriver(t *testing.T) {
+	p := validProfile()
+	p.Driver = spec.Driver("bwrap")
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for invalid driver")
+	} else if !strings.Contains(err.Error(), "driver") {
+		t.Fatalf("err = %v, want driver mention", err)
+	}
+}
+
+// TestProfileValidate_BothBlocksSet pins rule 2: a profile declaring both the
+// docker and seatbelt blocks is rejected.
+func TestProfileValidate_BothBlocksSet(t *testing.T) {
+	p := validProfile()
+	p.Seatbelt = &SeatbeltProfile{SBPL: "(allow process-fork)"}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error when both docker and seatbelt blocks are set")
+	} else if !strings.Contains(err.Error(), "both") {
+		t.Fatalf("err = %v, want 'both' mention", err)
+	}
+}
+
+// TestProfileValidate_DockerRequiresDockerBlock pins rule 3: driver==docker
+// with no Docker block is rejected (and no seatbelt block either).
+func TestProfileValidate_DockerRequiresDockerBlock(t *testing.T) {
+	p := validProfile()
+	p.Docker = nil
+	if err := p.Validate(); err == nil {
+		t.Fatal("docker driver with no docker block must fail")
+	} else if !strings.Contains(err.Error(), "docker") {
+		t.Fatalf("err = %v, want docker mention", err)
+	}
+}
+
+// TestProfileValidate_SeatbeltRequiresSeatbeltBlock pins rule 4: driver==seatbelt
+// with no Seatbelt block is rejected.
+func TestProfileValidate_SeatbeltRequiresSeatbeltBlock(t *testing.T) {
+	p := validSeatbeltProfile()
+	p.Seatbelt = nil
+	if err := p.Validate(); err == nil {
+		t.Fatal("seatbelt driver with no seatbelt block must fail")
+	} else if !strings.Contains(err.Error(), "seatbelt") {
+		t.Fatalf("err = %v, want seatbelt mention", err)
+	}
+}
+
+// TestProfileValidate_AutoRequiresExactlyOneBlock pins rule 5: auto/empty
+// driver with neither block set is rejected.
+func TestProfileValidate_AutoRequiresExactlyOneBlock(t *testing.T) {
+	p := validProfile()
+	p.Driver = spec.DriverAuto
+	p.Docker = nil
+	p.Seatbelt = nil
+	if err := p.Validate(); err == nil {
+		t.Fatal("auto driver with zero blocks must fail")
+	}
+}
+
+// TestProfileValidate_AutoAcceptsSingleDockerBlock pins rule 5 happy path: auto
+// with only a docker block is valid.
+func TestProfileValidate_AutoAcceptsSingleDockerBlock(t *testing.T) {
+	p := validProfile()
+	p.Driver = spec.DriverAuto
+	if err := p.Validate(); err != nil {
+		t.Fatalf("auto driver with a docker block should validate: %v", err)
+	}
+}
+
+// TestProfileValidate_AutoAcceptsSingleSeatbeltBlock pins rule 5 happy path:
+// auto with only a seatbelt block is valid.
+func TestProfileValidate_AutoAcceptsSingleSeatbeltBlock(t *testing.T) {
+	p := validSeatbeltProfile()
+	p.Driver = spec.DriverAuto
+	if err := p.Validate(); err != nil {
+		t.Fatalf("auto driver with a seatbelt block should validate: %v", err)
+	}
+}
+
+// TestProfileValidate_EmptyDriverIsAuto pins that an unset driver (empty string)
+// is treated as auto.
+func TestProfileValidate_EmptyDriverIsAuto(t *testing.T) {
+	p := validProfile()
+	p.Driver = ""
+	if err := p.Validate(); err != nil {
+		t.Fatalf("empty driver with a docker block should validate (auto): %v", err)
+	}
+}
+
+// --- Seatbelt block validation (rule 8) ---
+
+// TestProfileValidate_SeatbeltSBPLNulRejected pins that a NUL byte in SBPL is
+// rejected (it would terminate the SBPL string on the Seatbelt backend).
+func TestProfileValidate_SeatbeltSBPLNulRejected(t *testing.T) {
+	p := validSeatbeltProfile()
+	p.Seatbelt.SBPL = "(allow process-fork)\x00"
+	if err := p.Validate(); err == nil {
+		t.Fatal("seatbelt SBPL with NUL must fail")
+	} else if !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("err = %v, want NUL mention", err)
+	}
+}
+
+// TestProfileValidate_SeatbeltMachLookupsRejectControlChars pins that each
+// mach_lookup element must be free of NUL and newline.
+func TestProfileValidate_SeatbeltMachLookupsRejectControlChars(t *testing.T) {
+	for _, bad := range []string{"com.apple.x\x00", "com.apple.x\n"} {
+		p := validSeatbeltProfile()
+		p.Seatbelt.MachLookups = []string{bad}
+		if err := p.Validate(); err == nil {
+			t.Errorf("mach_lookup %q with control char must fail", bad)
+		}
+	}
+}
+
+// TestProfileValidate_SeatbeltSysctlsRejectControlChars pins that each sysctl
+// key must be free of NUL and newline.
+func TestProfileValidate_SeatbeltSysctlsRejectControlChars(t *testing.T) {
+	for _, bad := range []string{"kern.osversion\x00", "kern.osversion\n"} {
+		p := validSeatbeltProfile()
+		p.Seatbelt.Sysctls = []string{bad}
+		if err := p.Validate(); err == nil {
+			t.Errorf("sysctl %q with control char must fail", bad)
+		}
+	}
+}
+
+// --- BuildSpec driver resolution ---
+
+// TestBuildSpec_AutoResolvesDockerDriver pins that auto with only a docker
+// block resolves to DriverDocker and never stays auto.
+func TestBuildSpec_AutoResolvesDockerDriver(t *testing.T) {
+	p := validProfile()
+	p.Driver = spec.DriverAuto
+	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if sp.Driver != spec.DriverDocker {
+		t.Fatalf("sp.Driver = %q, want docker", sp.Driver)
+	}
+}
+
+// TestBuildSpec_AutoResolvesSeatbeltDriver pins that auto with only a seatbelt
+// block resolves to DriverSeatbelt.
+func TestBuildSpec_AutoResolvesSeatbeltDriver(t *testing.T) {
+	p := validSeatbeltProfile()
+	p.Driver = spec.DriverAuto
+	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if sp.Driver != spec.DriverSeatbelt {
+		t.Fatalf("sp.Driver = %q, want seatbelt", sp.Driver)
+	}
+}
+
+// TestBuildSpec_ExplicitDriversPreserved pins that an explicitly declared
+// docker/seatbelt driver is preserved on the spec.
+func TestBuildSpec_ExplicitDriversPreserved(t *testing.T) {
+	docker := validProfile().BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if docker.Driver != spec.DriverDocker {
+		t.Fatalf("docker spec Driver = %q", docker.Driver)
+	}
+	seat := validSeatbeltProfile().BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if seat.Driver != spec.DriverSeatbelt {
+		t.Fatalf("seatbelt spec Driver = %q", seat.Driver)
+	}
+}
+
+// TestBuildSpec_DriverNeverAuto pins the invariant that BuildSpec never emits
+// an auto (or empty) driver.
+func TestBuildSpec_DriverNeverAuto(t *testing.T) {
+	for _, p := range []*Profile{validProfile(), validSeatbeltProfile()} {
+		sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+		if sp.Driver == spec.DriverAuto || sp.Driver == "" {
+			t.Fatalf("sp.Driver = %q, must be a concrete driver", sp.Driver)
+		}
+	}
+}
+
+// --- BuildSpec docker branch ---
+
+// TestBuildSpec_DockerBranchSandboxZero pins that the docker branch emits a
+// zero Sandbox block (the Seatbelt knobs are docker-ignored, SPEC §7.11).
+func TestBuildSpec_DockerBranchSandboxZero(t *testing.T) {
+	p := validProfile()
+	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if sp.Sandbox.SBPL != "" || len(sp.Sandbox.MachLookups) != 0 || len(sp.Sandbox.Sysctls) != 0 {
+		t.Fatalf("sp.Sandbox = %+v, want zero for docker", sp.Sandbox)
+	}
+}
+
+// --- BuildSpec seatbelt branch ---
+
+// TestBuildSpec_SeatbeltBranch pins the full seatbelt projection: no image,
+// Sandbox carried from the Seatbelt block, Sudo=SudoNever, UIDGID/Resources from
+// the server policy, and only the auto cwd mount.
+func TestBuildSpec_SeatbeltBranch(t *testing.T) {
+	pol := validIsolation()
+	p := validSeatbeltProfile()
+	sp := p.BuildSpec(pol, Params{Cwd: "/home/user/proj"})
+
+	if sp.Driver != spec.DriverSeatbelt {
+		t.Fatalf("sp.Driver = %q", sp.Driver)
+	}
+	if sp.Image != "" {
+		t.Fatalf("sp.Image = %q, want empty for seatbelt", sp.Image)
+	}
+	if sp.Sandbox.SBPL != p.Seatbelt.SBPL {
+		t.Fatalf("sp.Sandbox.SBPL = %q", sp.Sandbox.SBPL)
+	}
+	if len(sp.Sandbox.MachLookups) != 1 || sp.Sandbox.MachLookups[0] != "com.apple.system.logger" {
+		t.Fatalf("sp.Sandbox.MachLookups = %+v", sp.Sandbox.MachLookups)
+	}
+	if len(sp.Sandbox.Sysctls) != 1 || sp.Sandbox.Sysctls[0] != "kern.osversion" {
+		t.Fatalf("sp.Sandbox.Sysctls = %+v", sp.Sandbox.Sysctls)
+	}
+	if sp.Sudo != spec.SudoNever {
+		t.Fatalf("sp.Sudo = %q, want never for seatbelt", sp.Sudo)
+	}
+	// UIDGID / Resources come from the server policy (server-default).
+	if sp.UIDGID != pol.User {
+		t.Fatalf("sp.UIDGID = %+v, want policy user %+v", sp.UIDGID, pol.User)
+	}
+	if sp.Resources.NanoCPUs != pol.NanoCPUs || sp.Resources.Memory != pol.Memory || sp.Resources.PidsLimit != pol.PidsLimit {
+		t.Fatalf("sp.Resources = %+v, want policy resources", sp.Resources)
+	}
+	// Only the auto cwd mount exists for seatbelt (no profile mounts).
+	if len(sp.Mounts) != 1 {
+		t.Fatalf("mounts = %+v, want only the cwd mount", sp.Mounts)
+	}
+	if sp.Mounts[0].Source != "/home/user/proj" || sp.Mounts[0].Target != "/home/user/proj" {
+		t.Fatalf("cwd mount = %+v, want 1:1", sp.Mounts[0])
+	}
+	if sp.WorkingDir != "/home/user/proj" {
+		t.Fatalf("WorkingDir = %q", sp.WorkingDir)
+	}
+	// Network follows the policy for seatbelt (no profile network block).
+	if sp.Network.Mode != pol.NetworkMode || sp.Isolation.NetworkMode != pol.NetworkMode {
+		t.Fatalf("network = %+v / isolation %q, want policy", sp.Network, sp.Isolation.NetworkMode)
+	}
+}
+
+// TestBuildSpec_SeatbeltBranchIsolationFromPolicy pins that the seatbelt branch
+// never weakens the immutable Isolation hardening.
+func TestBuildSpec_SeatbeltBranchIsolationFromPolicy(t *testing.T) {
+	pol := validIsolation()
+	sp := validSeatbeltProfile().BuildSpec(pol, Params{Cwd: "/c"})
+	if !sp.Isolation.ReadOnlyRootfs || !sp.Isolation.NoNewPrivileges || !sp.Isolation.TmpfsWorkdir || !sp.Isolation.AutoRemove {
+		t.Fatalf("seatbelt must inherit hardening from policy: %+v", sp.Isolation)
+	}
+	if sp.Isolation.User.UID == 0 {
+		t.Fatal("seatbelt isolation user must stay non-root")
+	}
+}
+
+// TestBuildSpec_SeatbeltResultValidates pins that a built seatbelt spec passes
+// SandboxSpec.Validate (no image needed for the seatbelt driver).
+func TestBuildSpec_SeatbeltResultValidates(t *testing.T) {
+	sp := validSeatbeltProfile().BuildSpec(validIsolation(), Params{Cwd: "/home/user/proj"})
+	if err := sp.Validate(); err != nil {
+		t.Fatalf("built seatbelt spec must validate: %v", err)
 	}
 }
 
@@ -168,7 +457,7 @@ func TestProfileValidate_ImageParseOnly(t *testing.T) {
 		"localhost:5000/app:v1",        // arbitrary registry accepted
 	} {
 		p := validProfile()
-		p.Image = img
+		p.Docker.Image = img
 		if err := p.Validate(); err != nil {
 			t.Errorf("image %q should validate (parse-only): %v", img, err)
 		}
@@ -255,14 +544,14 @@ func TestBuildSpec_ProfileOverridesPolicyResources(t *testing.T) {
 	pol.PidsLimit = 256
 
 	p := validProfile()
-	p.Cgroups = Cgroups{
+	p.Docker.Cgroups = Cgroups{
 		NanoCPUs:   2e9,
 		Memory:     1 << 30,
 		MemorySwap: 2 << 30,
 		PidsLimit:  512,
 		Ulimits:    []spec.Ulimit{{Name: "nofile", Soft: 2048, Hard: 2048}},
 	}
-	p.Network.Mode = spec.NetworkNone
+	p.Docker.Network.Mode = spec.NetworkNone
 
 	sp := p.BuildSpec(pol, Params{Cwd: "/c"})
 
@@ -299,10 +588,7 @@ func TestBuildSpec_HardeningNeverOverridden(t *testing.T) {
 	pol.User = spec.UIDGID{UID: 1000, GID: 1000}
 
 	p := validProfile()
-	p.User = &spec.UIDGID{UID: 0, GID: 0} // hostile: root
-	// There is no profile field for the remaining hardening flags, so the only
-	// way they can be weakened is if the implementation copies from the wrong
-	// source. Assert they all match `pol` exactly.
+	p.Docker.User = &spec.UIDGID{UID: 0, GID: 0} // hostile: root
 
 	sp := p.BuildSpec(pol, Params{Cwd: "/c"})
 
@@ -330,8 +616,6 @@ func TestBuildSpec_HardeningNeverOverridden(t *testing.T) {
 	if !sp.Isolation.AutoRemove {
 		t.Error("AutoRemove must come from pol (true)")
 	}
-	// The profile cannot override the enforced user even though it asked for
-	// root — the sandbox must run non-root.
 	if sp.Isolation.User.UID == 0 {
 		t.Error("Isolation.User must remain non-root from pol, never overridden by profile")
 	}
@@ -342,7 +626,7 @@ func TestBuildSpec_HardeningNeverOverridden(t *testing.T) {
 
 func TestBuildSpec_DefaultUserNonRootWhenProfileUserNil(t *testing.T) {
 	p := validProfile()
-	p.User = nil
+	p.Docker.User = nil
 	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
 	if sp.UIDGID.UID == 0 {
 		t.Fatal("default user must be non-root when profile user is nil")
@@ -354,13 +638,11 @@ func TestBuildSpec_DefaultUserNonRootWhenProfileUserNil(t *testing.T) {
 
 func TestBuildSpec_ProfileUserHonored(t *testing.T) {
 	p := validProfile()
-	p.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	p.Docker.User = &spec.UIDGID{UID: 2000, GID: 2000}
 	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
 	if sp.UIDGID.UID != 2000 || sp.UIDGID.GID != 2000 {
 		t.Fatalf("UIDGID = %+v, want profile user 2000:2000", sp.UIDGID)
 	}
-	// Isolation.User (the enforced non-root for tmpfs ownership) still comes
-	// from pol.
 	if sp.Isolation.User.UID != 1000 {
 		t.Fatalf("Isolation.User.UID = %d, want pol 1000", sp.Isolation.User.UID)
 	}
@@ -384,8 +666,8 @@ func TestBuildSpec_SecretsAndClientSessionIDPassedThrough(t *testing.T) {
 
 func TestBuildSpec_ImageAndEnvFromProfile(t *testing.T) {
 	p := validProfile()
-	p.Image = "ghcr.io/org/app:v1"
-	p.Env = map[string]string{"K": "V"}
+	p.Docker.Image = "ghcr.io/org/app:v1"
+	p.Docker.Env = map[string]string{"K": "V"}
 	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
 	if sp.Image != "ghcr.io/org/app:v1" {
 		t.Fatalf("Image = %q, want profile image", sp.Image)

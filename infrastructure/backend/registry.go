@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
+	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
 // ErrNoAvailableBackend is returned by Select when no registered backend both
@@ -38,6 +39,9 @@ type Factory struct {
 	Name string
 	// Priority orders backend selection: lower values are preferred.
 	Priority int
+	// Driver advertises the backend driver (SPEC §7.12). auto (or empty) means
+	// the factory does not constrain selection to a specific driver.
+	Driver spec.Driver
 	// Capabilities advertises which role interfaces the backend implements.
 	Capabilities role.CapabilitySet
 	// Available reports whether the backend is usable right now. It is
@@ -95,18 +99,27 @@ func (r *Registry) List() []Factory {
 	return out
 }
 
-// Select chooses the best factory that is currently available and covers the
-// required capabilities. It filters by Available() and capability coverage,
-// then orders by Priority (lower preferred) with the name as a deterministic
-// tiebreaker. Availability is evaluated lazily here, on the first call that
-// needs a backend (A02/N35).
-func (r *Registry) Select(_ context.Context, need role.CapabilitySet) (Factory, error) {
+// isAuto reports whether a requested driver means "defer to selection": the
+// DriverAuto value or its empty-string alias (SPEC §7.12).
+func isAuto(d spec.Driver) bool { return d == "" || d == spec.DriverAuto }
+
+// Select chooses the best factory that is currently available, covers the
+// required capabilities, and (when `want` is a concrete driver) advertises that
+// driver. It filters by capability coverage and Available() FIRST — a matching
+// driver never overrides either — then by `!isAuto(want) && f.Driver != want`,
+// and finally orders by Priority (lower preferred) with the name as a
+// deterministic tiebreaker. Availability is evaluated lazily here, on the first
+// call that needs a backend (A02/N35).
+func (r *Registry) Select(_ context.Context, need role.CapabilitySet, want spec.Driver) (Factory, error) {
 	candidates := make([]Factory, 0)
 	for _, f := range r.List() {
 		if !covers(f.Capabilities, need) {
 			continue
 		}
 		if f.Available != nil && !f.Available() {
+			continue
+		}
+		if !isAuto(want) && f.Driver != want {
 			continue
 		}
 		candidates = append(candidates, f)
@@ -142,7 +155,8 @@ var Default = NewRegistry()
 func Register(f Factory) error { return Default.Register(f) }
 
 // Select picks the best available factory covering the required capabilities
-// from the Default registry.
-func Select(ctx context.Context, need role.CapabilitySet) (Factory, error) {
-	return Default.Select(ctx, need)
+// (and, when `want` is concrete, advertising that driver) from the Default
+// registry.
+func Select(ctx context.Context, need role.CapabilitySet, want spec.Driver) (Factory, error) {
+	return Default.Select(ctx, need, want)
 }
