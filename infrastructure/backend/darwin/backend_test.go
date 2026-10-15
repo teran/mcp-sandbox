@@ -29,9 +29,12 @@ import (
 // (SPEC §7.12).
 const sandboxExec = "/usr/bin/sandbox-exec"
 
-// createCommand is the "sleep infinity" analogue the long-lived Create child
-// runs under the fixed [<shell>,"-c",cmd] wrapper (SPEC §7.12).
-const createCommand = "sleep infinity"
+// createCommand is the BSD-portable long sleep the long-lived Create child runs
+// under the fixed [<shell>,"-c",cmd] wrapper (SPEC §7.12). macOS BSD /bin/sleep
+// does not accept the GNU "infinity" argument, so the command uses the largest
+// 31-bit second value (2147483647) — a ~68-year sleep that is effectively
+// forever, but accepted by every BSD sleep.
+const createCommand = "sleep 2147483647"
 
 // baseSeatbeltSpec returns a spec valid under spec.Validate (ReadOnlyRootfs,
 // CapDrop ALL, no-new-privileges, non-root user, bounded resources, known
@@ -163,6 +166,28 @@ func TestCreate_FixedWrapper(t *testing.T) {
 	wantArgv := []string{sandboxExec, "-p", wantSBPL, "bash", "-c", createCommand}
 	if !reflect.DeepEqual(start.Argv, wantArgv) {
 		t.Fatalf("argv = %q\nwant %q", start.Argv, wantArgv)
+	}
+}
+
+// TestCreate_ArgvEndsWithBSDSleepCmd pins the BSD-portability fix: the Create
+// child must run "sleep 2147483647" (BSD-accepted) under the fixed
+// [<shell>,"-c",cmd] wrapper, not the GNU-ism "sleep infinity" (SPEC §7.12).
+func TestCreate_ArgvEndsWithBSDSleepCmd(t *testing.T) {
+	fake := newFakeRunner()
+	b := newTestBackend(t, fake, []string{"/work"})
+
+	if _, err := b.Create(context.Background(), baseSeatbeltSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	argv := fake.recordedStarts()[0].Argv
+	// argv = [sandbox-exec, -p, <SBPL>, <shell tokens...>, -c, <sleep cmd>].
+	if len(argv) < 2 {
+		t.Fatalf("Create argv too short: %q", argv)
+	}
+	tail := argv[len(argv)-2:]
+	want := []string{"-c", "sleep 2147483647"}
+	if !slices.Equal(tail, want) {
+		t.Fatalf("Create argv tail = %q, want %q (BSD-portable long sleep)", tail, want)
 	}
 }
 

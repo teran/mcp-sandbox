@@ -42,9 +42,12 @@ const (
 	priority = 10
 	// sandboxExecPath is the fixed /usr/bin/sandbox-exec binary (SPEC §7.12).
 	sandboxExecPath = "/usr/bin/sandbox-exec"
-	// createCommand is the long-lived "sleep infinity" analogue the Create
-	// child runs under the fixed [<shell>,"-c",cmd] wrapper (SPEC §7.12).
-	createSleepCmd = "sleep infinity"
+	// createCommand is the long-lived Create child command run under the fixed
+	// [<shell>,"-c",cmd] wrapper (SPEC §7.12). It uses an explicit integer second
+	// value (2147483647, a ~68-year sleep) rather than the GNU-ism "sleep
+	// infinity", because macOS's BSD /bin/sleep accepts only integer seconds and
+	// not the GNU "infinity" keyword (SPEC §7.12).
+	createSleepCmd = "sleep 2147483647"
 	// defaultShell is used when the spec requests no shell.
 	defaultShell = "bash"
 )
@@ -365,7 +368,12 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		return nil, fmt.Errorf("darwin: exec: %w", err)
 	}
 
-	return &exec.Result{ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr}, nil
+	return &exec.Result{
+		ExitCode:     res.ExitCode,
+		Stdout:       res.Stdout,
+		Stderr:       res.Stderr,
+		PolicyDenied: IsPolicyDenial(res),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

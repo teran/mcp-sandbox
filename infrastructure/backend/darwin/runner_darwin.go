@@ -63,21 +63,41 @@ func (realRunner) Start(ctx context.Context, ps ProcessSpec) (Process, error) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 
-	// Apply setrlimit before exec: a child process inherits the parent's
-	// resource limits, so setting them here bounds the sandboxed child. This is
-	// the documented darwin analogue of the immutable resource block — weaker
-	// than cgroups and not a hard quota (SPEC §7.12).
-	for _, rl := range ps.Rlimits {
-		if err := syscall.Setrlimit(rl.Resource, &syscall.Rlimit{Cur: rl.Soft, Max: rl.Hard}); err != nil {
-			return nil, fmt.Errorf("darwin: setrlimit(%d): %w", rl.Resource, err)
-		}
+	// Apply the setrlimit-mappable limits, then always restore the parent's own
+	// limits afterwards. The child inherits the lowered limits at fork and keeps
+	// them across exec, so restoring the parent afterwards is safe for the child.
+	// This fixes the previous behaviour, which permanently lowered the server's
+	// own limits by never restoring them. This is the documented darwin analogue
+	// of the immutable resource block — weaker than cgroups and not a hard quota
+	// (SPEC §7.12).
+	prev, err := rlimitSaveAndApply(ps.Rlimits, realOps{})
+	if err != nil {
+		return nil, err
 	}
+	defer func() { _ = rlimitRestore(prev, realOps{}) }()
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("darwin: start %q: %w", ps.Argv[0], err)
 	}
 
 	return &osProcess{cmd: cmd, pgid: cmd.Process.Pid, stdout: &stdout, stderr: &stderr}, nil
+}
+
+// realOps implements rlimitOps over the syscall package on darwin, providing
+// the injectable boundary used by rlimitSaveAndApply/rlimitRestore.
+type realOps struct{}
+
+func (realOps) Getrlimit(resource int) (*syscall.Rlimit, error) {
+	var lim syscall.Rlimit
+	if err := syscall.Getrlimit(resource, &lim); err != nil {
+		return nil, err
+	}
+
+	return &lim, nil
+}
+
+func (realOps) Setrlimit(resource int, lim *syscall.Rlimit) error {
+	return syscall.Setrlimit(resource, lim)
 }
 
 // osProcess is the darwin Process: it tracks the exec.Cmd and its process group

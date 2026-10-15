@@ -158,9 +158,24 @@ verification.
 - [x] **Unit tests (no real sandbox-exec):** mock `os/exec` runner + in-memory
       tailer (like the docker fake client) so `make test` + coverage ≥ 95% hold in
       CI; SBPL injection-focussed tests — `@qa`, `C01 C08GO`
-- [ ] **darwin `log stream` tailer wrapper:** the macOS-specific unified-log
-      tail (`subsystem == "com.apple.sandbox"`, spawned via `log stream`) behind
-      the `darwin` build tag, feeding the implemented `logTailer` boundary —
+- [x] **`createSleepCmd` fix:** `"sleep infinity"` (GNU-ism) →
+      `"sleep 2147483647"` (BSD-portable) in `darwin.go` — SPEC §7.12 —
+      `@developer`, `C01`
+- [x] **In-band policy-denial wired into `Backend.Exec`:** the `deny.go`
+      classifier (`IsPolicyDenial`, previously dead code — never called from
+      `darwin.go`) now sets the new `exec.Result.PolicyDenied` bool on the
+      returned result — Docker backend unaffected — `@developer`, `L08`
+- [x] **setrlimit applied-to-parent-and-never-restored fix:** portable
+      `rlimit_apply.go` (`rlimitOps` + `rlimitSaveAndApply` + `rlimitRestore`,
+      with rollback) wired into `realRunner.Start` with a deferred restore —
+      parent limits always restored, child inherits the lowered limits at fork —
+      `@developer`, `C01`
+- [ ] **darwin `log stream` tailer wrapper (still open):** the macOS-specific
+      unified-log tail (`subsystem == "com.apple.sandbox"`, spawned via
+      `log stream`) behind the `darwin` build tag is **still not implemented** —
+      the portable `ConsumeDenials`/`logTailer` boundary exists and is
+      unit-tested with in-memory tailers, but the macOS-specific tailer and live
+      deny-classification on a real host remain pending manual verification —
       `@sre`/`@developer`, `L08 L09`
 - [ ] **e2e on macos-latest (optional):** smoke-test spawning a real
       `sandbox-exec` on a macOS runner via an added `make` target, plus a live
