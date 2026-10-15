@@ -38,7 +38,7 @@ encoded in an **immutable `Isolation` block** that a caller cannot weaken.
 | Scope | Status |
 |-------|--------|
 | **Docker backend** | ✅ **MVP — implemented** |
-| Apple Container (and other backends) | ⏳ **Future extension** — the `Backend` abstraction is designed for it (see [Architecture](#6-architecture)) but is **not** implemented in the MVP. An **experimental macOS `sandbox-exec` (Seatbelt) driver** is **designed but not implemented** — see [§7.12](#712-apple--sandbox-exec-driver-darwin-backend--experimental). |
+| Apple Container (and other backends) | ⏳ **Future extension** — the `Backend` abstraction is designed for it (see [Architecture](#6-architecture)) but is **not** implemented in the MVP. An **experimental macOS `sandbox-exec` (Seatbelt) driver** is **implemented (portable core wired; real-macOS e2e pending)** — see [§7.12](#712-apple--sandbox-exec-driver-darwin-backend--experimental). |
 | `CapStream` / `Mountable` capabilities | ⏳ Future — **not** implemented in the MVP |
 
 The rationale for Docker-first: *"Docker is everywhere"* — it is the most
@@ -258,7 +258,7 @@ exposed per tool (M04).
 ### 5.2 Self-describing server
 
 The server is **self-describing** over the MCP protocol so a model-host client
-can discover how to use it without external files (**M04/M12**):
+can discover how to use it without external files (**M04/M08**):
 
 - **Server-level `Instructions`** — a short paragraph exposing the redirect
   invariant (**"The host shell is restricted — route commands through this
@@ -536,7 +536,7 @@ create → use (exec/read/write/copy/install) → destroy
   **Today `DestroyAll` runs only via the `sandbox_destroy_all` tool** — there is
   no automatic teardown on server exit, so a process that dies without explicit
   destroy leaves orphaned containers (to be reclaimed by the future orphan-GC).
-- **darwin/`sandbox-exec` driver (future, §7.12):** `sandbox-exec` applies a
+- **darwin/`sandbox-exec` driver (§7.12):** `sandbox-exec` applies a
   sandbox scheme and **execs** the command into the **same process** — there is
   **no supervisor wrapper and no `AutoRemove` equivalent**. The **leader process
   pid** is the sandbox handle (analogous to label-based ownership, §7.8);
@@ -805,7 +805,7 @@ itself can **never** be weakened (by profile or caller).
 | AppArmor profiles | Roadmap. |
 | **gVisor / runsc** | **Target state** for kernel-escape containment (**T1 kernel-escape**). |
 | Rootless Docker | Roadmap (reduces the §7.6 socket risk). |
-| **Darwin backend (`sandbox-exec`/Seatbelt)** | **Experimental** (designed, not implemented) — **policy-based containment, NOT a kernel-escape equivalent** (see §7.12). |
+| **Darwin backend (`sandbox-exec`/Seatbelt)** | **Experimental (implemented — portable core wired; real-macOS e2e pending)** — **policy-based containment, NOT a kernel-escape equivalent** (see §7.12). |
 | Backend abstraction | Ready — a future `gvisor`/`apple` backend implements the same `Backend` roles. |
 
 ### 7.8 Session identifiers & ownership
@@ -1029,15 +1029,43 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 
 ### 7.12 Apple / `sandbox-exec` driver (darwin backend) — experimental
 
-> **Status: experimental alternative driver — designed, not implemented.**
-> This section documents a **second** backend that, unlike the Docker MVP
-> (§1), is **macOS-only** and runs on **Apple's Seatbelt** via the external
-> `/usr/bin/sandbox-exec` binary — **pure Go, no cgo, no root**. It realizes
-> the same `Backend` roles on Apple platforms and is a concrete instance of
-> the "Apple Container (and other backends)" future-extension slot (§1) and
-> the backend-abstraction roadmap (§7.7). **Docker remains the
-> default/preferred backend** (lower `Priority`); the darwin backend is
-> selected only on macOS when Docker is unavailable.
+> **Status: experimental alternative driver — implemented (portable core),
+> real-macOS e2e pending.** This section documents a **second** backend that,
+> unlike the Docker MVP (§1), is **macOS-only** and runs on **Apple's Seatbelt**
+> via the external `/usr/bin/sandbox-exec` binary — **pure Go, no cgo, no
+> root**. It realizes the same `Backend` roles on Apple platforms and is a
+> concrete instance of the "Apple Container (and other backends)"
+> future-extension slot (§1) and the backend-abstraction roadmap (§7.7).
+> **Docker remains the default/preferred backend** (lower `Priority`); the
+> darwin backend is selected only on macOS when Docker is unavailable.
+>
+> **Implementation status:** the backend is **implemented** in
+> `infrastructure/backend/darwin` (`darwin.go` — portable core; `runner_darwin.go`
+> — the real `/usr/bin/sandbox-exec` runner behind the `darwin` build tag;
+> `runner_other.go` — non-darwin stand-in; `deny.go` — portable policy-denial
+> classifier), wired end-to-end via the `seatbelt` profile block
+> (`application/profile`), `spec.Sandbox` / `spec.DriverSeatbelt`
+> (`domain/sandbox/spec`), the SBPL generator+validator
+> (`domain/sandbox/sbpl`), and factory registration through `init()`
+> (`Driver: seatbelt`, `Priority` 10). The full backend logic is exercised by
+> unit tests in CI (mock runner/tailer, coverage ≥ 95%) on **any** GOOS.
+> Recent fixes (all TDD-verified, unit-tested): the child command is the
+> **BSD-portable `sleep 2147483647`** (not the GNU-ism `sleep infinity`); the
+> **in-band policy-denial classifier is now wired into `Backend.Exec`** —
+> `IsPolicyDenial(res)` sets the new `exec.Result.PolicyDenied` bool on the
+> returned result (the `deny.go` classifier was previously dead code; the Docker
+> backend is unaffected); and the **setrlimit save/apply/restore is now correct**
+> — a portable `rlimit_apply.go` (`rlimitOps` + `rlimitSaveAndApply` +
+> `rlimitRestore`, with rollback) is wired into `realRunner.Start` with a
+> deferred restore, so the parent's limits are always restored and the child
+> inherits the lowered limits at fork.
+> **Not yet verified:** no **real-macOS e2e/smoke** has been run — spawning a
+> live `/usr/bin/sandbox-exec` child and tailing the **unified log** via
+> `log stream` require a real macOS host and cannot be exercised inside a
+> Docker/CI sandbox. The macOS-specific `log stream` tailer wrapper (as opposed
+> to the portable classifier + `logTailer` boundary in `deny.go`) is **still not
+> implemented**; treat the unified-log tailing path as pending manual
+> verification on macOS.
 
 #### Mechanism
 
@@ -1048,17 +1076,23 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
   `sandbox-exec` applies the Seatbelt (SBPL) profile to **itself** and then
   `execvp`s the child, which inherits the sandbox — so **no root and no
   privilege elevation** is needed and the "started but not yet sandboxed"
-  window is closed. "Create" spawns the child (the `sleep infinity`
-  analogue); "Destroy" is `SIGKILL` + `Wait` (idempotent, **X02**).
+  window is closed. "Create" spawns the child (the `sleep 2147483647`
+  analogue — the BSD-portable form, not the GNU `sleep infinity`); "Destroy" is
+  `SIGKILL` + `Wait` (idempotent, **X02**).
 - **Pure Go, no cgo:** `sandbox-exec` is an external binary invoked via
   `os/exec`; there is no cgo and the server process is **never root**
-  (`Available()` returns false when `euid == 0`).
+  (`Available()` returns false when `euid == 0`). The package is split into a
+  **portable core** (`darwin.go`, compiled on every GOOS and exercised in CI
+  against a mock runner) and a **platform runner** selected by build tag
+  (`runner_darwin.go` / `runner_other.go`) — so the backend logic is verifiable
+  on any platform while the real `os/exec` wrapper lives behind the `darwin`
+  tag.
 
 #### Roles (capability set)
 
 | Role | darwin backend | Notes |
 |------|----------------|-------|
-| `Backend` | ✅ | Name `darwin`, `Priority` 10 (docker=0 preferred). |
+| `Backend` | ✅ | Name `darwin`, `Driver` = `seatbelt`, `Priority` 10 (docker=0 preferred). |
 | `Lifecycle` (`Create`/`Destroy`) | ✅ | Spawn/kill of the sandboxed child; idempotent (**X02**). |
 | `Executable` (`Exec`) | ✅ | `sandbox-exec -p <SBPL>` wrapper around the fixed `[<shell>,"-c",command]` form. |
 | `Introspectable` (`Info`/`Stats`) | ❌ | **Not implemented.** No cgroups on macOS; `Info`/`Stats` return `ErrCapabilityNotSupported` (§6.2) — **no stub**. |
@@ -1159,10 +1193,18 @@ Docker/gVisor isolation:
 - **No supply-chain image/digest boundary (§7.9).** There is no image; SBPL
   executes on the host OS against host libraries. The operator-authored
   profile is trusted only insofar as its SBPL is not over-broad.
-- **Unsupported Apple API.** `/usr/bin/sandbox-exec` and SBPL are **not a
-  supported public API** (deprecated since macOS 10.10+) and are not guaranteed
-  by Apple as a security boundary for hostile/multi-tenant code; behavior may
-  change across OS releases.
+- **Unsupported / deprecated Apple API.** Both `/usr/bin/sandbox-exec(1)` and
+  the C API `sandbox_init(3)` are formally **deprecated** in the macOS SDK
+  (`API_DEPRECATED` in `sandbox.h`), and there is **no non-deprecated Apple
+  runtime API** to sandbox an arbitrary subprocess — App Sandbox is
+  entitlement/code-signing based and does not apply to runtime-spawned children.
+  These are therefore **not guaranteed** by Apple as a security boundary for
+  hostile/multi-tenant code; behavior may change across OS releases.
+  **Decision:** the darwin backend **stays on `/usr/bin/sandbox-exec`** and keeps
+  the **"pure Go, no cgo"** constraint (C01GO/C02GO). Moving to cgo +
+  `sandbox_init` was evaluated and **rejected**: it would break the no-cgo
+  recorded decision and merely duplicate `sandbox-exec`'s
+  self-sandbox-then-exec logic.
 
 **Invariants preserved:** `ALLOW_DIRS` as the single host-path gate (**S04**);
 no secret leakage (**S02/N02**) — secrets delivered as a `0600` file in a
@@ -1189,7 +1231,18 @@ no-shell-concat preserved.
   (`subsystem == "com.apple.sandbox"`). The darwin driver tails this log
   filtered by session and classifies a `deny` as a **policy failure**, not a
   normal exit code (a denied syscall also surfaces in-band as `EPERM`). Logged
-  with `session_id` and pid (L08-style, no secrets).
+  with `session_id` and pid (L08-style, no secrets). The **in-band classifier is
+  now wired into `Backend.Exec`**: `IsPolicyDenial(res)` sets the new
+  `exec.Result.PolicyDenied` bool on the returned result, so a policy failure is
+  distinguishable from a plain non-zero exit even when the exit codes coincide
+  (the classifier was previously dead code — never called from `darwin.go`; the
+  Docker backend is unaffected). **Implementation status:**
+  the portable, fail-closed classifier (`ClassifyDeny` / `ConsumeDenials` /
+  `IsPolicyDenial`, `deny.go`) and the `logTailer` boundary interface are
+  **implemented and unit-tested** (in-memory tailer, no secrets, S02), but the
+  **macOS-specific `log stream` tailer wrapper is not yet implemented** — the
+  real unified-log tail and its live run on a macOS host are **pending manual
+  verification**.
 - **Portability (declared break).** The `sandbox-exec` backend is
   **macOS-only**; a Linux host has no `sandbox-exec` and must fall back to
   Docker (or a future `bwrap` backend). Backends are **non-interchangeable

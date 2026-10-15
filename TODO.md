@@ -122,40 +122,66 @@ daemon. Today this is out of scope (Phase 4, e2e N/A).
 - [ ] **Docs:** update `AGENTS.md`/`TODO.md` Phase-4 N/A note if the lane is
       adopted — English, `D01 D02`
 
-### Darwin backend — `sandbox-exec` (Seatbelt) driver (backlog — designed, not implemented)
+### Darwin backend — `sandbox-exec` (Seatbelt) driver (implemented — portable core; real-macOS e2e pending)
 
 Designed in `SPEC.md` §7.12 and `README.md` "macOS driver". macOS-only,
 policy-based containment (deny-by-default SBPL), pure Go via `/usr/bin/
-sandbox-exec` (no cgo, no root). Docker remains the default backend.
+sandbox-exec` (no cgo, no root). Docker remains the default backend. The
+portable core is **implemented and unit-tested** (mock runner/tailer, coverage
+≥ 95%) and runs in CI on any GOOS; the remaining items are the real-macOS-only
+verification.
 
-- [ ] **`spec.Sandbox` type + profile `sandbox:` block:** add
-      `domain/sandbox/spec.Sandbox{SBPL, MachLookups, Sysctls}` and the
-      `Profile.Sandbox` field; `BuildSpec` copies it into `SandboxSpec`;
-      validation rejects NUL in SBPL — `@architect`/`@developer`, `D01 D02`
-- [ ] **SBPL generator + literal validator:** deterministic `SandboxSpec → SBPL`
-      renderer (imports → `deny default` → network → mach → sysctl → file →
-      operator `sbpl`) plus fail-closed validation rejecting SBPL metacharacters
-      (`" \ ( ) ; \n \r \0`) in any path — `@security` first, `S04 S11`
-- [ ] **darwin backend package:** `infrastructure/backend/darwin` registering via
-      `init()` (Priority 10), `Available()` gated on `GOOS==darwin` +
-      `/usr/bin/sandbox-exec` + `euid != 0`; `Lifecycle` (spawn/kill child) and
-      `Executable` (fixed `[<shell>,"-c",command]` wrapper); `Introspectable`
-      returns `ErrCapabilityNotSupported` — `@developer`, `C01`
-- [ ] **setrlimit wrapper:** apply `RLIMIT_CPU/NOFILE/AS/NPROC/FSIZE/STACK/CORE`
-      before `execvp`; honestly report `Memory`/`NanoCPUs`/`PidsLimit` as
-      unsupported on darwin — `@developer`, `C01`
-- [ ] **Policy-denial detection:** tail unified log
-      (`subsystem == "com.apple.sandbox"`) filtered by session, classify `deny`
-      as policy failure, log with `session_id`/pid — `@sre`/`@developer`,
-      `L08 L09`
-- [ ] **Unit tests (no real sandbox-exec):** mock `os/exec` runner (like the
-      docker fake client) so `make test` + coverage ≥ 95% hold in CI; SBPL
-      injection-focussed tests — `@qa`, `C01 C08GO`
-- [ ] **e2e on macos-latest (optional):** smoke-test spawning a real
-      `sandbox-exec` on a macOS runner via an added `make` target — `@devops`,
-      `N31 N36`
-- [ ] **Docs:** mark §7.12 "designed" → "implemented" once wired — English,
+- [x] **`spec.Sandbox` type + profile `seatbelt:` block:** `domain/sandbox/
+      spec.Sandbox{SBPL, MachLookups, Sysctls}` and `Profile.Sandbox`/`Seatbelt`
+      (`application/profile`, yaml `seatbelt`); `BuildSpec` copies it into
+      `SandboxSpec`; validation rejects NUL in SBPL — `@architect`/`@developer`,
       `D01 D02`
+- [x] **SBPL generator + literal validator:** deterministic `SandboxSpec → SBPL`
+      renderer (`domain/sandbox/sbpl`; imports → `deny default` → network → mach
+      → sysctl → file → operator `seatbelt.sbpl`) plus fail-closed validation
+      rejecting SBPL metacharacters (`" \ ( ) ; \n \r \0`) in any path —
+      `@security` first, `S04 S11`
+- [x] **darwin backend package:** `infrastructure/backend/darwin` registering via
+      `init()` (Priority 10, `Driver` = `seatbelt`), `Available()` gated on
+      `GOOS==darwin` + `/usr/bin/sandbox-exec` + `euid != 0`; portable core
+      (`darwin.go`) + build-tag runner (`runner_darwin.go` / `runner_other.go`);
+      `Lifecycle` (spawn/kill child) and `Executable` (fixed `[<shell>,"-c",command]`
+      wrapper); `Introspectable` returns `ErrCapabilityNotSupported` — `@developer`,
+      `C01`
+- [x] **setrlimit wrapper:** `RLIMIT_CPU/NOFILE/AS/NPROC/FSIZE/STACK/CORE`
+      applied before `exec` (child inherits); `Memory`/`NanoCPUs`/`PidsLimit`
+      honestly reported as unsupported on darwin — `@developer`, `C01`
+- [x] **Policy-denial detection — portable core:** fail-closed classifier +
+      `ConsumeDenials` + `logTailer` boundary (`deny.go`), classified
+      `sandbox_deny {session_id, pid, ...}` records (L08-style, no secrets, S02) —
+      `@sre`/`@developer`, `L08 L09`
+- [x] **Unit tests (no real sandbox-exec):** mock `os/exec` runner + in-memory
+      tailer (like the docker fake client) so `make test` + coverage ≥ 95% hold in
+      CI; SBPL injection-focussed tests — `@qa`, `C01 C08GO`
+- [x] **`createSleepCmd` fix:** `"sleep infinity"` (GNU-ism) →
+      `"sleep 2147483647"` (BSD-portable) in `darwin.go` — SPEC §7.12 —
+      `@developer`, `C01`
+- [x] **In-band policy-denial wired into `Backend.Exec`:** the `deny.go`
+      classifier (`IsPolicyDenial`, previously dead code — never called from
+      `darwin.go`) now sets the new `exec.Result.PolicyDenied` bool on the
+      returned result — Docker backend unaffected — `@developer`, `L08`
+- [x] **setrlimit applied-to-parent-and-never-restored fix:** portable
+      `rlimit_apply.go` (`rlimitOps` + `rlimitSaveAndApply` + `rlimitRestore`,
+      with rollback) wired into `realRunner.Start` with a deferred restore —
+      parent limits always restored, child inherits the lowered limits at fork —
+      `@developer`, `C01`
+- [ ] **darwin `log stream` tailer wrapper (still open):** the macOS-specific
+      unified-log tail (`subsystem == "com.apple.sandbox"`, spawned via
+      `log stream`) behind the `darwin` build tag is **still not implemented** —
+      the portable `ConsumeDenials`/`logTailer` boundary exists and is
+      unit-tested with in-memory tailers, but the macOS-specific tailer and live
+      deny-classification on a real host remain pending manual verification —
+      `@sre`/`@developer`, `L08 L09`
+- [ ] **e2e on macos-latest (optional):** smoke-test spawning a real
+      `sandbox-exec` on a macOS runner via an added `make` target, plus a live
+      unified-log `log stream` tail run — `@devops`, `N31 N36`
+- [x] **Docs:** §7.12 / README "macOS driver" marked implemented (portable core),
+      real-macOS e2e flagged as pending — English, `D01 D02`
 
 ### Deferred / open questions (discuss later, non-blocking)
 

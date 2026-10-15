@@ -33,4 +33,9 @@ type Result struct {
 	ExitCode int
 	Stdout   []byte
 	Stderr   []byte
+	// PolicyDenied is true when the sandbox policy denied the operation
+	// (darwin/Seatbelt in-band deny marker or EPERM; SPEC §7.12). Backends
+	// without an in-band policy classifier (e.g. Docker) leave it zero, so a
+	// plain non-zero exit remains distinguishable from a policy denial.
+	PolicyDenied bool
 }
