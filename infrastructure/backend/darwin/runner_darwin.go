@@ -55,13 +55,6 @@ func (realRunner) Start(_ context.Context, ps ProcessSpec) (Process, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = io.MultiWriter(&stdout, nonNilWriter(ps.Stdout))
 	cmd.Stderr = io.MultiWriter(&stderr, nonNilWriter(ps.Stderr))
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
 
 	// Apply the setrlimit-mappable limits, then always restore the parent's own
 	// limits afterwards. The child inherits the lowered limits at fork and keeps
