@@ -29,10 +29,15 @@ type fakeBackend struct {
 	info          any
 	stats         any
 	capNotSupport bool
+	driver        spec.Driver
 }
 
 func (f *fakeBackend) Name() string  { return "fake" }
 func (f *fakeBackend) Priority() int { return 0 }
+func (f *fakeBackend) Driver() spec.Driver {
+	return f.driver
+}
+
 func (f *fakeBackend) Capabilities() role.CapabilitySet {
 	return role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true}
 }
@@ -93,6 +98,7 @@ func newTestService(t *testing.T, fb *fakeBackend) *Service {
 	if err := reg.Register(backend.Factory{
 		Name:         "fake",
 		Priority:     0,
+		Driver:       spec.DriverDocker,
 		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true},
 		Available:    func() bool { return true },
 		New:          func(backend.Config) (role.Backend, error) { return fb, nil },
@@ -251,6 +257,7 @@ type roleOnlyBackend struct{}
 func (roleOnlyBackend) Name() string                     { return "only" }
 func (roleOnlyBackend) Priority() int                    { return 0 }
 func (roleOnlyBackend) Capabilities() role.CapabilitySet { return needAll }
+func (roleOnlyBackend) Driver() spec.Driver              { return spec.DriverDocker }
 
 func TestService_Introspect(t *testing.T) {
 	fb := &fakeBackend{info: "info", stats: "stats"}
@@ -402,6 +409,163 @@ func TestService_PolicyBoundedResourceDefaults(t *testing.T) {
 
 // TestService_TraceLogsCarryRequestID asserts the service threads request_id
 // from the context onto its trace lines for exec/info/stats (L09).
+// TestService_Create_UsesRequestedDriver pins that Create drives ensure with the
+// spec's driver: a spec requesting docker selects and caches a docker backend.
+func TestService_Create_UsesRequestedDriver(t *testing.T) {
+	reg := backend.NewRegistry()
+	dockerFB := &fakeBackend{driver: spec.DriverDocker}
+	if err := reg.Register(backend.Factory{
+		Name: "docker", Priority: 0, Driver: spec.DriverDocker,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return dockerFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(reg, backend.Config{})
+	sp := testSpec()
+	sp.Driver = spec.DriverDocker
+	if _, err := svc.Create(context.Background(), sp); err != nil {
+		t.Fatal(err)
+	}
+	if !dockerFB.created {
+		t.Fatal("docker backend Create not called")
+	}
+}
+
+// TestService_Create_SelectsSeatbeltOnFreshService pins that a seatbelt spec on
+// a fresh service selects the seatbelt backend (driver-aware selection), even
+// though docker has a lower priority.
+func TestService_Create_SelectsSeatbeltOnFreshService(t *testing.T) {
+	reg := backend.NewRegistry()
+	dockerFB := &fakeBackend{driver: spec.DriverDocker}
+	seatbeltFB := &fakeBackend{driver: spec.DriverSeatbelt}
+	if err := reg.Register(backend.Factory{
+		Name: "docker", Priority: 0, Driver: spec.DriverDocker,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return dockerFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(backend.Factory{
+		Name: "seatbelt", Priority: 1, Driver: spec.DriverSeatbelt,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return seatbeltFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(reg, backend.Config{})
+	sp := testSpec()
+	sp.Driver = spec.DriverSeatbelt
+	if _, err := svc.Create(context.Background(), sp); err != nil {
+		t.Fatal(err)
+	}
+	if !seatbeltFB.created {
+		t.Fatal("seatbelt backend Create not called")
+	}
+	if dockerFB.created {
+		t.Fatal("docker backend should not be selected for a seatbelt spec")
+	}
+}
+
+// TestService_Create_DriverMismatch pins the fail-closed cached-driver check:
+// once a docker backend is cached for the process, creating with a seatbelt spec
+// must error (one backend per process, SPEC §7.12).
+func TestService_Create_DriverMismatch(t *testing.T) {
+	reg := backend.NewRegistry()
+	dockerFB := &fakeBackend{driver: spec.DriverDocker}
+	seatbeltFB := &fakeBackend{driver: spec.DriverSeatbelt}
+	if err := reg.Register(backend.Factory{
+		Name: "docker", Priority: 0, Driver: spec.DriverDocker,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return dockerFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(backend.Factory{
+		Name: "seatbelt", Priority: 1, Driver: spec.DriverSeatbelt,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return seatbeltFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(reg, backend.Config{})
+
+	dockerSpec := testSpec()
+	dockerSpec.Driver = spec.DriverDocker
+	if _, err := svc.Create(context.Background(), dockerSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	seatSpec := testSpec()
+	seatSpec.Driver = spec.DriverSeatbelt
+	if _, err := svc.Create(context.Background(), seatSpec); err == nil {
+		t.Fatal("expected cached-driver mismatch error")
+	} else if !strings.Contains(err.Error(), "does not match requested driver") {
+		t.Fatalf("err = %v, want cached-driver mismatch", err)
+	}
+}
+
+// TestService_Create_AutoUsesCached pins that once a docker backend is cached,
+// an auto-driver Create reuses it (auto never triggers a mismatch).
+func TestService_Create_AutoUsesCached(t *testing.T) {
+	reg := backend.NewRegistry()
+	dockerFB := &fakeBackend{driver: spec.DriverDocker}
+	if err := reg.Register(backend.Factory{
+		Name: "docker", Priority: 0, Driver: spec.DriverDocker,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return dockerFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(reg, backend.Config{})
+
+	dockerSpec := testSpec()
+	dockerSpec.Driver = spec.DriverDocker
+	if _, err := svc.Create(context.Background(), dockerSpec); err != nil {
+		t.Fatal(err)
+	}
+	// Auto spec reuses the cached docker backend instead of erroring.
+	before := dockerFB.destroyed
+	if _, err := svc.Create(context.Background(), testSpec()); err != nil {
+		t.Fatalf("auto create should reuse cached backend: %v", err)
+	}
+	if dockerFB.destroyed != before {
+		t.Fatal("cached backend must not be torn down on auto create")
+	}
+}
+
+// TestService_OpsUseAutoDriver pins that Exec/Info/Stats call ensure with auto,
+// so they reuse the cached backend regardless of its driver (they do not select
+// a new backend).
+func TestService_OpsUseAutoDriver(t *testing.T) {
+	reg := backend.NewRegistry()
+	dockerFB := &fakeBackend{driver: spec.DriverDocker, info: "info", stats: "stats", execRes: &exec.Result{ExitCode: 0}}
+	if err := reg.Register(backend.Factory{
+		Name: "docker", Priority: 0, Driver: spec.DriverDocker,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return dockerFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(reg, backend.Config{})
+
+	dockerSpec := testSpec()
+	dockerSpec.Driver = spec.DriverDocker
+	if _, err := svc.Create(context.Background(), dockerSpec); err != nil {
+		t.Fatal(err)
+	}
+	// Exec/Info/Stats on the cached docker backend via auto driver.
+	if _, err := svc.Exec(context.Background(), exec.Request{SandboxID: "s", Argv: []string{"echo"}}); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if v, err := svc.Info(context.Background(), "s"); err != nil || v != "info" {
+		t.Fatalf("info = %v, %v", v, err)
+	}
+	if v, err := svc.Stats(context.Background(), "s"); err != nil || v != "stats" {
+		t.Fatalf("stats = %v, %v", v, err)
+	}
+}
+
 func TestService_TraceLogsCarryRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	l := logrus.New()

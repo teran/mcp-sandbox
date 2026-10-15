@@ -17,20 +17,35 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
-// yamlProfile mirrors the operator-authored YAML document. Field names follow
-// the profile schema (lowercased, snake_case for nested keys).
+// yamlProfile mirrors the operator-authored YAML document under the hybrid
+// driver-aware schema (SPEC §7.11/§7.12): a `driver` plus a single
+// `docker`/`seatbelt` block, with `cwd`/`shell` on the top level.
 type yamlProfile struct {
-	Name        string            `yaml:"name"`
-	Description string            `yaml:"description"`
-	Image       string            `yaml:"image"`
-	Env         map[string]string `yaml:"env"`
-	Mounts      []yamlMount       `yaml:"mounts"`
-	Cwd         yamlCwd           `yaml:"cwd"`
-	Network     yamlNetwork       `yaml:"network"`
-	Cgroups     yamlCgroups       `yaml:"cgroups"`
-	User        *yamlUser         `yaml:"user"`
-	Sudo        string            `yaml:"sudo"`
-	Shell       string            `yaml:"shell"`
+	Name        string        `yaml:"name"`
+	Description string        `yaml:"description"`
+	Driver      string        `yaml:"driver"`
+	Docker      *yamlDocker   `yaml:"docker"`
+	Seatbelt    *yamlSeatbelt `yaml:"seatbelt"`
+	Cwd         yamlCwd       `yaml:"cwd"`
+	Shell       string        `yaml:"shell"`
+}
+
+// yamlDocker is the Docker-backend block of a profile (SPEC §7.11).
+type yamlDocker struct {
+	Image   string            `yaml:"image"`
+	Env     map[string]string `yaml:"env"`
+	Mounts  []yamlMount       `yaml:"mounts"`
+	Network yamlNetwork       `yaml:"network"`
+	Cgroups yamlCgroups       `yaml:"cgroups"`
+	User    *yamlUser         `yaml:"user"`
+	Sudo    string            `yaml:"sudo"`
+}
+
+// yamlSeatbelt is the darwin/Seatbelt block of a profile (SPEC §7.12).
+type yamlSeatbelt struct {
+	SBPL        string   `yaml:"sbpl"`
+	MachLookups []string `yaml:"mach_lookups"`
+	Sysctls     []string `yaml:"sysctls"`
 }
 
 type yamlMount struct {
@@ -114,27 +129,45 @@ func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
 
 // toDomain converts the parsed YAML into a domain Profile.
 func (yp *yamlProfile) toDomain() *domainprofile.Profile {
+	driver := spec.Driver(yp.Driver)
+	if driver == "" {
+		driver = spec.DriverAuto
+	}
+
 	p := &domainprofile.Profile{
 		Name:        yp.Name,
 		Description: yp.Description,
-		Image:       yp.Image,
-		Env:         yp.Env,
+		Driver:      driver,
 		Cwd: domainprofile.CwdConfig{
 			Target: yp.Cwd.Target,
 			Mode:   yp.Cwd.Mode,
 		},
-		Network: domainprofile.Network{Mode: spec.NetworkMode(yp.Network.Mode)},
-		Cgroups: yp.Cgroups.toDomain(),
-		Sudo:    spec.SudoPolicy(yp.Sudo),
 	}
-	for _, m := range yp.Mounts {
-		p.Mounts = append(p.Mounts, domainprofile.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+	if yp.Docker != nil {
+		d := &domainprofile.DockerProfile{
+			Image:   yp.Docker.Image,
+			Env:     yp.Docker.Env,
+			Network: domainprofile.Network{Mode: spec.NetworkMode(yp.Docker.Network.Mode)},
+			Cgroups: yp.Docker.Cgroups.toDomain(),
+			Sudo:    spec.SudoPolicy(yp.Docker.Sudo),
+		}
+		for _, m := range yp.Docker.Mounts {
+			d.Mounts = append(d.Mounts, domainprofile.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+		}
+		for _, u := range yp.Docker.Cgroups.Ulimits {
+			d.Cgroups.Ulimits = append(d.Cgroups.Ulimits, spec.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
+		}
+		if yp.Docker.User != nil {
+			d.User = &spec.UIDGID{UID: yp.Docker.User.UID, GID: yp.Docker.User.GID}
+		}
+		p.Docker = d
 	}
-	for _, u := range yp.Cgroups.Ulimits {
-		p.Cgroups.Ulimits = append(p.Cgroups.Ulimits, spec.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
-	}
-	if yp.User != nil {
-		p.User = &spec.UIDGID{UID: yp.User.UID, GID: yp.User.GID}
+	if yp.Seatbelt != nil {
+		p.Seatbelt = &domainprofile.SeatbeltProfile{
+			SBPL:        yp.Seatbelt.SBPL,
+			MachLookups: yp.Seatbelt.MachLookups,
+			Sysctls:     yp.Seatbelt.Sysctls,
+		}
 	}
 	p.Shell = yp.Shell
 	if strings.TrimSpace(p.Shell) == "" {

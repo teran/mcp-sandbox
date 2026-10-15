@@ -11,6 +11,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -32,6 +33,10 @@ var needAll = role.CapabilitySet{
 	Executable:     true,
 	Introspectable: true,
 }
+
+// isAuto reports whether a requested driver means "defer to selection": the
+// DriverAuto value or its empty-string alias (SPEC §7.12).
+func isAuto(d spec.Driver) bool { return d == "" || d == spec.DriverAuto }
 
 // serviceLog is the base logrus entry for trace diagnostics. The session_id
 // and request_id from the context are attached per call (L09).
@@ -92,14 +97,24 @@ func (s *Service) entryFor(ctx context.Context, sessionID string) *logrus.Entry 
 func (s *Service) SetProfileStore(st *profile.Store) { s.profiles = st }
 
 // ensure lazily selects and constructs the backend and session manager exactly
-// once. Availability is evaluated here, on the first call (A02/N35).
-func (s *Service) ensure(ctx context.Context) (*session.Manager, role.Backend, error) {
+// once (one backend per process). Availability is evaluated here, on the first
+// call (A02/N35). When a backend is already cached:
+//
+//   - want == auto → the cached backend is reused as-is (auto never triggers a
+//     mismatch);
+//   - want is a concrete driver → the cached backend's driver must match, else
+//     the request is rejected (one backend per process, SPEC §7.12).
+func (s *Service) ensure(ctx context.Context, want spec.Driver) (*session.Manager, role.Backend, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mgr != nil {
+		if !isAuto(want) && s.be.Driver() != want {
+			return nil, nil, fmt.Errorf("backend driver %q does not match requested driver %q", s.be.Driver(), want)
+		}
+
 		return s.mgr, s.be, nil
 	}
-	f, err := s.reg.Select(ctx, needAll)
+	f, err := s.reg.Select(ctx, needAll, want)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -136,9 +151,10 @@ func (s *Service) Policy() sandboxtool.Policy {
 // single docker backend, so this is the policy backend name.
 func (s *Service) BackendName() string { return s.Policy().Backend }
 
-// Create builds a sandbox from a typed spec (search-before-create, X02).
+// Create builds a sandbox from a typed spec (search-before-create, X02). The
+// spec's driver drives backend selection (SPEC §7.12).
 func (s *Service) Create(ctx context.Context, sp spec.SandboxSpec) (*domainsession.Session, error) {
-	mgr, _, err := s.ensure(ctx)
+	mgr, _, err := s.ensure(ctx, sp.Driver)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +213,7 @@ func (s *Service) DestroyAll(ctx context.Context) error {
 // Exec runs a command as an argument array (S11) through the Executable role.
 func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, error) {
 	s.entryFor(ctx, req.SandboxID).WithField("operation", "exec").Trace("sandbox: exec")
-	_, be, err := s.ensure(ctx)
+	_, be, err := s.ensure(ctx, spec.DriverAuto)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +228,7 @@ func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, err
 // Info returns detailed state through the Introspectable role.
 func (s *Service) Info(ctx context.Context, id string) (any, error) {
 	s.entryFor(ctx, id).WithField("operation", "info").Trace("sandbox: info")
-	_, be, err := s.ensure(ctx)
+	_, be, err := s.ensure(ctx, spec.DriverAuto)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +243,7 @@ func (s *Service) Info(ctx context.Context, id string) (any, error) {
 // Stats returns live resource usage through the Introspectable role.
 func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 	s.entryFor(ctx, id).WithField("operation", "stats").Trace("sandbox: stats")
-	_, be, err := s.ensure(ctx)
+	_, be, err := s.ensure(ctx, spec.DriverAuto)
 	if err != nil {
 		return nil, err
 	}

@@ -36,17 +36,23 @@ func testProfiles() []*domainprofile.Profile {
 		{
 			Name:        "default",
 			Description: "the default profile",
-			Image:       "docker.io/library/alpine:3.20",
-			Env:         map[string]string{"SECRET": "envvalue"},
-			Mounts: []domainprofile.Mount{
-				{Source: "/host/secret-dir", Target: "/mnt", ReadOnly: true},
+			Driver:      spec.DriverDocker,
+			Docker: &domainprofile.DockerProfile{
+				Image: "docker.io/library/alpine:3.20",
+				Env:   map[string]string{"SECRET": "envvalue"},
+				Mounts: []domainprofile.Mount{
+					{Source: "/host/secret-dir", Target: "/mnt", ReadOnly: true},
+				},
+				User: &spec.UIDGID{UID: 1000, GID: 1000},
 			},
-			User: &spec.UIDGID{UID: 1000, GID: 1000},
 		},
 		{
 			Name:        "gpu",
 			Description: "gpu profile",
-			Image:       "ghcr.io/org/gpu:v1",
+			Driver:      spec.DriverDocker,
+			Docker: &domainprofile.DockerProfile{
+				Image: "ghcr.io/org/gpu:v1",
+			},
 		},
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/docker/docker/api/types"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
+	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
 )
 
@@ -18,6 +19,7 @@ func init() {
 	_ = backend.Register(backend.Factory{
 		Name:         name,
 		Priority:     priority,
+		Driver:       spec.DriverDocker,
 		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true},
 		Available:    dockerAvailable,
 		New:          newFromConfig,

@@ -13,14 +13,22 @@ type fakeBackend struct {
 	name     string
 	priority int
 	caps     CapabilitySet
+	driver   spec.Driver
 }
 
 func (f *fakeBackend) Name() string                { return f.name }
 func (f *fakeBackend) Priority() int               { return f.priority }
 func (f *fakeBackend) Capabilities() CapabilitySet { return f.caps }
+func (f *fakeBackend) Driver() spec.Driver {
+	if f.driver == "" {
+		return spec.DriverAuto
+	}
+
+	return f.driver
+}
 
 func TestBackendInterface(t *testing.T) {
-	var b Backend = &fakeBackend{name: "docker", priority: 0, caps: CapabilitySet{
+	var b Backend = &fakeBackend{name: "docker", priority: 0, driver: spec.DriverDocker, caps: CapabilitySet{
 		Lifecycle: true, Executable: true, Introspectable: true,
 	}}
 	if b.Name() != "docker" {
@@ -32,6 +40,23 @@ func TestBackendInterface(t *testing.T) {
 	caps := b.Capabilities()
 	if !caps.Lifecycle || !caps.Executable || !caps.Introspectable {
 		t.Fatalf("unexpected capabilities: %+v", caps)
+	}
+	if b.Driver() != spec.DriverDocker {
+		t.Fatalf("Driver() = %q, want docker", b.Driver())
+	}
+}
+
+// TestBackendDriver pins that a backend advertises the driver it runs on
+// (SPEC §7.12): the cached-driver mismatch check in the service and the
+// driver-aware registry selection both rely on it.
+func TestBackendDriver(t *testing.T) {
+	var b Backend = &fakeBackend{driver: spec.DriverSeatbelt}
+	if b.Driver() != spec.DriverSeatbelt {
+		t.Fatalf("Driver() = %q, want seatbelt", b.Driver())
+	}
+	var auto Backend = &fakeBackend{}
+	if auto.Driver() != spec.DriverAuto {
+		t.Fatalf("Driver() = %q, want auto (zero value)", auto.Driver())
 	}
 }
 

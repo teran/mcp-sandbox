@@ -25,6 +25,7 @@ func validIsolation() Isolation {
 
 func validSpec() *SandboxSpec {
 	return &SandboxSpec{
+		Driver:     DriverDocker,
 		Image:      "docker.io/library/alpine@sha256:abc",
 		WorkingDir: "/work",
 		Env:        map[string]string{"A": "1"},

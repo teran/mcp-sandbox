@@ -54,6 +54,35 @@ jobs:
       - name: Test (race + coverage ≥ 95%)
         run: make test
 
+  # Darwin (macOS) — explicit stage for `//go:build darwin` code (SPEC §7.12).
+  # The unit matrix above already runs `make test` on macOS, so darwin-tagged
+  # tests compile and execute there. This job additionally runs `make lint` on
+  # macOS: golangci-lint honours GOOS, so on a macOS runner it also lints
+  # `_darwin.go` files that the ubuntu-only `lint` job (GOOS=linux) excludes.
+  # Safe today (no darwin code yet): lint behaves like on Linux. Opt-in
+  # `make e2e-darwin` (real sandbox-exec smoke) is intentionally NOT declared
+  # until the darwin runner is implemented (N31 — no un-runnable targets).
+  darwin:
+    name: Darwin (macOS) — lint + test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Install linters
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          go install github.com/fe3dback/go-arch-lint@v1.19.0
+          go install mvdan.cc/gofumpt@v0.12.0
+      - name: Lint (incl. darwin-tagged files)
+        run: make lint
+      - name: Test (darwin — compiles & runs //go:build darwin tests)
+        run: make test
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

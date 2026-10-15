@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
+	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
 // writeProfile writes a profile file into dir and returns its path.
@@ -28,34 +29,37 @@ func writeProfile(t *testing.T, dir, filename, content string) string {
 }
 
 // validYAML is a complete, valid profile document matching the struct field
-// names (lowercased, snake_case for nested keys).
+// names (lowercased, snake_case for nested keys) under the hybrid driver-aware
+// schema: a `driver` plus a single `docker`/`seatbelt` block.
 const validYAML = `name: default
 description: the default profile
-image: docker.io/library/alpine:3.20
-env:
-  A: "1"
-mounts:
-  - source: /data
-    target: /data
-    read_only: true
+driver: docker
+docker:
+  image: docker.io/library/alpine:3.20
+  env:
+    A: "1"
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network:
+    mode: bridge
+  cgroups:
+    nano_cpus: 1000000000
+    memory: 536870912
+    memory_swap: 536870912
+    pids_limit: 256
+    ulimits:
+      - name: nofile
+        soft: 1024
+        hard: 1024
+  user:
+    uid: 1000
+    gid: 1000
+  sudo: never
 cwd:
   target: /work
   mode: ro
-network:
-  mode: bridge
-cgroups:
-  nano_cpus: 1000000000
-  memory: 536870912
-  memory_swap: 536870912
-  pids_limit: 256
-  ulimits:
-    - name: nofile
-      soft: 1024
-      hard: 1024
-user:
-  uid: 1000
-  gid: 1000
-sudo: never
 `
 
 // --- Get ---
@@ -89,14 +93,23 @@ func TestGet_ReturnsProfile(t *testing.T) {
 	if p == nil || p.Name != "default" {
 		t.Fatalf("Get(default) = %+v, want profile named default", p)
 	}
-	if p.Image != "docker.io/library/alpine:3.20" {
-		t.Fatalf("Image = %q", p.Image)
+	if p.Driver != spec.DriverDocker {
+		t.Fatalf("Driver = %q, want docker", p.Driver)
 	}
-	if len(p.Mounts) != 1 || p.Mounts[0].Source != "/data" {
-		t.Fatalf("Mounts = %+v", p.Mounts)
+	if p.Docker == nil {
+		t.Fatal("Docker block must be populated")
 	}
-	if p.User == nil || p.User.UID != 1000 {
-		t.Fatalf("User = %+v, want 1000", p.User)
+	if p.Docker.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q", p.Docker.Image)
+	}
+	if len(p.Docker.Mounts) != 1 || p.Docker.Mounts[0].Source != "/data" {
+		t.Fatalf("Mounts = %+v", p.Docker.Mounts)
+	}
+	if p.Docker.User == nil || p.Docker.User.UID != 1000 {
+		t.Fatalf("User = %+v, want 1000", p.Docker.User)
+	}
+	if p.Seatbelt != nil {
+		t.Fatal("Seatbelt block must be nil for a docker profile")
 	}
 }
 
@@ -139,8 +152,8 @@ func TestGet_ReadsOnDemand_ReflectsEdits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after overwrite: %v", err)
 	}
-	if p.Image != "ghcr.io/org/other:v2" {
-		t.Fatalf("Image = %q, want ghcr.io/org/other:v2 (overwrite must be visible on-demand)", p.Image)
+	if p.Docker.Image != "ghcr.io/org/other:v2" {
+		t.Fatalf("Image = %q, want ghcr.io/org/other:v2 (overwrite must be visible on-demand)", p.Docker.Image)
 	}
 
 	// Add → appears.
@@ -179,8 +192,8 @@ func TestList_ScansAndParsesYAML_Sorted(t *testing.T) {
 	if list[0].Name != "default" || list[1].Name != "extra" {
 		t.Fatalf("List order = %v, want [default extra]", []string{list[0].Name, list[1].Name})
 	}
-	if list[0].Image != "docker.io/library/alpine:3.20" {
-		t.Fatalf("Image = %q", list[0].Image)
+	if list[0].Docker.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q", list[0].Docker.Image)
 	}
 }
 
@@ -321,14 +334,16 @@ func TestConcurrent_GetList_RaceSafe(t *testing.T) {
 func TestGet_FriendlyCgroupsUnits(t *testing.T) {
 	const yaml = `name: friendly
 description: friendly units profile
-image: docker.io/library/alpine:3.20
-network:
-  mode: bridge
-cgroups:
-  cpu_cores: 4
-  memory_gb: 8
-  pids_limit: 256
-sudo: never
+driver: docker
+docker:
+  image: docker.io/library/alpine:3.20
+  network:
+    mode: bridge
+  cgroups:
+    cpu_cores: 4
+    memory_gb: 8
+    pids_limit: 256
+  sudo: never
 `
 	dir := t.TempDir()
 	writeProfile(t, dir, "friendly.yml", yaml)
@@ -338,16 +353,16 @@ sudo: never
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got := p.Cgroups.NanoCPUs; got != int64(4*1_000_000_000) {
+	if got := p.Docker.Cgroups.NanoCPUs; got != int64(4*1_000_000_000) {
 		t.Fatalf("NanoCPUs = %d, want %d", got, int64(4*1_000_000_000))
 	}
-	if got := p.Cgroups.Memory; got != int64(8*1024*1024*1024) {
+	if got := p.Docker.Cgroups.Memory; got != int64(8*1024*1024*1024) {
 		t.Fatalf("Memory = %d, want %d", got, int64(8*1024*1024*1024))
 	}
-	if got := p.Cgroups.MemorySwap; got != p.Cgroups.Memory {
-		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Cgroups.Memory)
+	if got := p.Docker.Cgroups.MemorySwap; got != p.Docker.Cgroups.Memory {
+		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Docker.Cgroups.Memory)
 	}
-	if got := p.Cgroups.PidsLimit; got != 256 {
+	if got := p.Docker.Cgroups.PidsLimit; got != 256 {
 		t.Fatalf("PidsLimit = %d, want 256", got)
 	}
 }
@@ -355,16 +370,18 @@ sudo: never
 func TestGet_FriendlyUnits_RawTakePrecedence(t *testing.T) {
 	const yaml = `name: raw-wins
 description: raw precedence profile
-image: docker.io/library/alpine:3.20
-network:
-  mode: bridge
-cgroups:
-  cpu_cores: 4
-  memory_gb: 8
-  nano_cpus: 2000000000
-  memory: 1073741824
-  pids_limit: 256
-sudo: never
+driver: docker
+docker:
+  image: docker.io/library/alpine:3.20
+  network:
+    mode: bridge
+  cgroups:
+    cpu_cores: 4
+    memory_gb: 8
+    nano_cpus: 2000000000
+    memory: 1073741824
+    pids_limit: 256
+  sudo: never
 `
 	dir := t.TempDir()
 	writeProfile(t, dir, "raw.yml", yaml)
@@ -374,14 +391,95 @@ sudo: never
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got := p.Cgroups.NanoCPUs; got != int64(2_000_000_000) {
+	if got := p.Docker.Cgroups.NanoCPUs; got != int64(2_000_000_000) {
 		t.Fatalf("NanoCPUs = %d, want %d (raw precedence)", got, int64(2_000_000_000))
 	}
-	if got := p.Cgroups.Memory; got != int64(1_073_741_824) {
+	if got := p.Docker.Cgroups.Memory; got != int64(1_073_741_824) {
 		t.Fatalf("Memory = %d, want %d (raw precedence)", got, int64(1_073_741_824))
 	}
-	if got := p.Cgroups.MemorySwap; got != p.Cgroups.Memory {
-		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Cgroups.Memory)
+	if got := p.Docker.Cgroups.MemorySwap; got != p.Docker.Cgroups.Memory {
+		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Docker.Cgroups.Memory)
+	}
+}
+
+// TestGet_SeatbeltSandboxBlockParsed pins that the hybrid schema parses a
+// seatbelt profile with a `seatbelt:` block (SBPL + mach_lookups + sysctls) into
+// the domain SeatbeltProfile, with the docker block nil (SPEC §7.12).
+func TestGet_SeatbeltSandboxBlockParsed(t *testing.T) {
+	const yaml = `name: mac
+description: a seatbelt profile
+driver: seatbelt
+seatbelt:
+  sbpl: |
+    (import "system.sb")
+    (allow process-fork)
+  mach_lookups:
+    - com.apple.system.logger
+  sysctls:
+    - kern.osversion
+cwd:
+  mode: ro
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "mac.yml", yaml)
+	st := New(dir)
+
+	p, err := st.Get("mac")
+	if err != nil {
+		t.Fatalf("Get(mac): %v", err)
+	}
+	if p.Driver != spec.DriverSeatbelt {
+		t.Fatalf("Driver = %q, want seatbelt", p.Driver)
+	}
+	if p.Docker != nil {
+		t.Fatal("Docker block must be nil for a seatbelt profile")
+	}
+	if p.Seatbelt == nil {
+		t.Fatal("Seatbelt block must be populated")
+	}
+	if !strings.Contains(p.Seatbelt.SBPL, "(allow process-fork)") {
+		t.Fatalf("SBPL = %q, want operator SBPL", p.Seatbelt.SBPL)
+	}
+	if len(p.Seatbelt.MachLookups) != 1 || p.Seatbelt.MachLookups[0] != "com.apple.system.logger" {
+		t.Fatalf("MachLookups = %+v", p.Seatbelt.MachLookups)
+	}
+	if len(p.Seatbelt.Sysctls) != 1 || p.Seatbelt.Sysctls[0] != "kern.osversion" {
+		t.Fatalf("Sysctls = %+v", p.Seatbelt.Sysctls)
+	}
+}
+
+// TestGet_AutoDriverAccepted pins that a profile omitting `driver` (or declaring
+// `auto`) still parses and defaults the driver to auto, resolved at BuildSpec.
+func TestGet_AutoDriverAccepted(t *testing.T) {
+	for _, driver := range []string{"", "auto"} {
+		yaml := `name: autop
+description: auto driver profile
+docker:
+  image: docker.io/library/alpine:3.20
+  network:
+    mode: bridge
+  cgroups:
+    nano_cpus: 1000000000
+    memory: 536870912
+    pids_limit: 256
+  sudo: never
+`
+		if driver != "" {
+			yaml = "driver: " + driver + "\n" + yaml
+		}
+		dir := t.TempDir()
+		writeProfile(t, dir, "autop.yml", yaml)
+		st := New(dir)
+		p, err := st.Get("autop")
+		if err != nil {
+			t.Fatalf("Get(autop) with driver %q: %v", driver, err)
+		}
+		if p.Driver != spec.DriverAuto {
+			t.Fatalf("Driver = %q, want auto for driver %q", p.Driver, driver)
+		}
+		if p.Docker == nil {
+			t.Fatal("Docker block must be populated for an auto docker profile")
+		}
 	}
 }
 

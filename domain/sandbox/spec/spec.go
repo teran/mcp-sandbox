@@ -8,6 +8,45 @@ import (
 	"strings"
 )
 
+// Driver identifies the backend driver a sandbox runs on (SPEC §7.12). The
+// profile schema and the backend registry both carry a Driver; "auto" (and the
+// empty string, its alias) defers the choice to backend selection.
+type Driver string
+
+const (
+	// DriverAuto defers the backend choice to selection: any available backend
+	// covering the required capabilities. An empty Driver is treated as auto.
+	DriverAuto Driver = "auto"
+	// DriverDocker selects the Docker backend.
+	DriverDocker Driver = "docker"
+	// DriverSeatbelt selects the macOS sandbox-exec (Seatbelt) backend.
+	DriverSeatbelt Driver = "seatbelt"
+)
+
+// AllDrivers returns every known driver (including auto).
+func AllDrivers() []Driver {
+	return []Driver{DriverAuto, DriverDocker, DriverSeatbelt}
+}
+
+// IsValidDriver reports whether d is a known driver. The empty string is
+// treated as auto and is therefore valid (fail-closed rejects anything else).
+func IsValidDriver(d Driver) bool {
+	return d == "" || d == DriverAuto || d == DriverDocker || d == DriverSeatbelt
+}
+
+// Sandbox carries the darwin/Seatbelt-specific knobs of a sandbox (SPEC §7.12).
+// It is ignored by the Docker backend, which emits a zero Sandbox block.
+type Sandbox struct {
+	// SBPL is the operator Seatbelt (SBPL) template merged after the
+	// server-hardening operations. NUL is rejected (it would terminate the
+	// SBPL string).
+	SBPL string
+	// MachLookups are extra (allow mach-lookup ...) services.
+	MachLookups []string
+	// Sysctls are extra (allow sysctl-read ...) keys.
+	Sysctls []string
+}
+
 // NetworkMode describes the network isolation of a sandbox.
 type NetworkMode string
 
@@ -121,6 +160,10 @@ const (
 // SandboxSpec is the typed specification used to create a sandbox (§6.5). It
 // is never a free-form blob; every field has an explicit type.
 type SandboxSpec struct {
+	// Driver is the backend driver this spec targets. It is never "auto" after
+	// BuildSpec resolves it (SPEC §7.12); a direct caller may leave it empty to
+	// defer selection.
+	Driver       Driver
 	Image        string
 	WorkingDir   string
 	Env          map[string]string
@@ -132,6 +175,9 @@ type SandboxSpec struct {
 	Secrets      []SecretRef
 	ReadOnlyRoot bool
 	Isolation    Isolation
+	// Sandbox carries the darwin/Seatbelt knobs (SPEC §7.12); it is zero for
+	// the Docker backend.
+	Sandbox Sandbox
 	// Shell is the profile-configured shell (with optional whitespace-separated
 	// args) used to build the sandbox_exec wrapper. Empty means "bash".
 	Shell string
@@ -150,8 +196,15 @@ type SandboxSpec struct {
 // mode (bridge, none, host) is accepted — the network source is the
 // operator-authored profile (Phase 7), not a server allowlist.
 func (s *SandboxSpec) Validate() error {
-	if strings.TrimSpace(s.Image) == "" {
+	// An image is required ONLY for the Docker driver. The Seatbelt driver runs
+	// on host libraries and has no image (SPEC §7.12); a direct caller leaves
+	// Driver empty to defer to backend selection, so no image is demanded.
+	if s.Driver == DriverDocker && strings.TrimSpace(s.Image) == "" {
 		return fmt.Errorf("sandbox: Image is required")
+	}
+	// A NUL byte in the Seatbelt SBPL would terminate the string (SPEC §7.12).
+	if s.Driver == DriverSeatbelt && strings.ContainsRune(s.Sandbox.SBPL, '\x00') {
+		return fmt.Errorf("sandbox: Sandbox.SBPL must not contain NUL")
 	}
 	if s.WorkingDir != "" && !strings.HasPrefix(s.WorkingDir, "/") {
 		return fmt.Errorf("sandbox: WorkingDir must be an absolute path")

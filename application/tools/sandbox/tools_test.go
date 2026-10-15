@@ -982,8 +982,8 @@ func TestBuildSpec_ProfileCwdAndClientSessionID(t *testing.T) {
 func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
-	p.Env = map[string]string{"A": "1"}
-	p.Mounts = []domainprofile.Mount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
+	p.Docker.Env = map[string]string{"A": "1"}
+	p.Docker.Mounts = []domainprofile.Mount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
@@ -1008,7 +1008,7 @@ func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
 func TestBuildSpec_ProfileUser(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
-	p.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	p.Docker.User = &spec.UIDGID{UID: 2000, GID: 2000}
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}

@@ -111,7 +111,10 @@ Highlights:
 ## Requirements
 
 - **Go 1.27.2+**
-- A **Docker daemon** (see [Security note](#security) on socket access).
+- A **Docker daemon** (see [Security note](#security) on socket access). On
+  **macOS**, sandboxing can alternatively use the **`sandbox-exec` (Seatbelt)
+  backend** without Docker — see
+  [macOS driver](#macos-driver-sandbox-exec-backend) (`SPEC.md` §7.12).
 
 ## Installation
 
@@ -247,6 +250,88 @@ Sandboxes follow `create → use → destroy`:
 otherwise it persists until then. There is no idle reaper and no orphan
 reclamation. An automatic idle reaper and orphan cleanup are **future work**
 (see `TODO.md`).
+
+## macOS driver (`sandbox-exec` backend)
+
+An **alternative backend** that isolates commands with Apple's **seatbelt
+sandbox** via the `/usr/bin/sandbox-exec` external binary, **without Docker**.
+It is a pure-Go implementation (no cgo) that spawns `sandbox-exec` as a child
+process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
+
+> **Status: designed, not yet merged.** The Docker backend remains the MVP.
+> This section documents the design contract the driver must meet; align names
+> and behaviour with the implementation before relying on it. The darwin
+> backend is **macOS-only** and provides **policy-based containment, not
+> kernel/container isolation** — it is strictly weaker than the Docker backend.
+
+**What it is**
+
+Unlike the Docker backend — which provisions a per-session container and
+executes inside it — the `sandbox-exec` driver has **no container, no daemon
+and no image**:
+
+- A **session is an in-memory record** (the SBPL profile + `env` + `cwd`) held
+  by the session manager; `sandbox_create` stores state in-process only.
+- **Every `sandbox_exec` spawns a fresh `sandbox-exec` child process**
+  (`os/exec`, `CGO_ENABLED=0`) running `<shell> -c <command>` under the profile
+  rules. There is no persistent container to enter.
+- `sandbox_destroy` / `sandbox_destroy_all` signal live child processes
+  (`SIGTERM`, then `SIGKILL` after a grace period) and drop the in-memory
+  session.
+
+**When to use it**
+
+- You are on **macOS** and want sandboxing **without running a Docker daemon**
+  (or a rootless one).
+- Commands need only **file/network restrictions at the process level** — not
+  full container isolation (no separate mount/net namespaces, no cgroups).
+- CI/runners where a Docker daemon is unavailable but the host is macOS.
+
+**Prerequisites**
+
+- **macOS** with `/usr/bin/sandbox-exec` present (default on modern macOS).
+- **No root required** — the sandboxed process runs under the invoking user's
+  credentials, confined by the seatbelt profile. The server refuses to run at
+  `uid 0`.
+
+**Differences from the Docker backend**
+
+| Aspect | Docker backend | `sandbox-exec` backend |
+|--------|----------------|------------------------|
+| Isolation | container (namespaces, cgroups, read-only rootfs, seccomp) | seatbelt/MAC profile on a plain process (policy-based) |
+| Runtime | image + mounts + tmpfs `/run`,`/tmp` | SBPL profile rules; `cwd`/`ALLOW_DIRS` as `(allow\|deny file-*)` rules |
+| Session | provisioned container | in-memory record (SBPL + env + cwd) |
+| Exec | exec into existing container | new `sandbox-exec` child per call |
+| Cleanup | explicit destroy; `AutoRemove` | explicit destroy; kill children on destroy/timeout |
+| `sandbox_stats` | cgroup resource usage | **not supported** (no cgroups) → `ErrCapabilityNotSupported` |
+| Resource limits | cgroup quotas | soft `setrlimit` only (`Memory`/`NanoCPUs`/`PidsLimit` not mappable) |
+| Root inside | scoped `exec -u 0` | subject to seatbelt policy / current user |
+| Portability | Linux/macOS (with daemon) | **macOS only** |
+
+**Example configuration**
+
+```bash
+export ALLOW_DIRS="/Users/me/projects/myapp"
+export LOG_LEVEL=info
+./mcp-sandbox
+```
+
+The backend is chosen **lazily** on the first `sandbox_create` (no outbound
+calls at startup): on macOS with `/usr/bin/sandbox-exec` present the
+`sandbox-exec` backend is selected; on Linux it is unavailable and the Docker
+backend (or an error) is used instead.
+
+> **Portability note:** the `sandbox-exec` backend is **macOS-only**. On Linux
+> there is **no `sandbox-exec`**; to sandbox there, use the Docker backend or a
+> Linux seatbelt equivalent such as **bubblewrap (`bwrap`)**. Backends are
+> **non-interchangeable isolation mechanisms**, not a portable abstraction
+> layer.
+
+> **Lifecycle & leaks (documented contract):** cleanup is **explicit only** —
+> there is no automatic GC. If the server process exits without an explicit
+> `sandbox_destroy`, any in-flight `sandbox-exec` child processes may be left
+> running. A `destroy` while an `exec` is active must signal the child before
+> dropping the session.
 
 ## OpenCode setup
 
@@ -419,6 +504,18 @@ The server mitigates this by preferring a **rootless Docker** daemon or running
 in an isolated environment with socket access confined to the server process.
 Review and choose the socket access model appropriate to your host. See
 `SPEC.md` §7.6.
+
+### macOS driver (security posture)
+
+The `sandbox-exec` backend (`SPEC.md` §7.12) is **policy-based containment,
+not kernel/container isolation** and is strictly **weaker** than the Docker
+backend: it shares the host kernel (no namespaces), has **no cgroup resource
+quotas** (only soft `setrlimit`), **no network isolation**, and no live
+`Introspectable` stats. It blocks direct access to disallowed paths (e.g.
+`cat ~/.secret`) at the kernel level via a deny-by-default SBPL profile, with
+**SBPL-injection validation** on every path. It is a convenience for macOS
+hosts — treat it as a lower-security alternative to the Docker backend, never
+as an equivalent.
 
 ## Development
 
