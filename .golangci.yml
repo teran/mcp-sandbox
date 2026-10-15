@@ -88,6 +88,12 @@ linters:
         - ^github\.com/teran/mcp-sandbox/application/tools/handler\.TraceLogger$
         - ^github\.com/modelcontextprotocol/go-sdk/mcp\.Transport$
         - ^github\.com/teran/mcp-sandbox/domain/sandbox/role\.Backend$
+        # The darwin backend's own package-local boundary interfaces: runner
+        # returns a Process, and newRunner returns a runner. These are the
+        # backend's test seam (fakeRunner substitutes for os/exec) and are
+        # deliberately interfaces, so they are allowlisted like role.Backend.
+        - ^github\.com/teran/mcp-sandbox/infrastructure/backend/darwin\.Process$
+        - ^github\.com/teran/mcp-sandbox/infrastructure/backend/darwin\.runner$
     nakedret:
       max-func-lines: 30
     lll:
