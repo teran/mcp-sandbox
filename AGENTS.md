@@ -142,9 +142,11 @@ See `SPEC.md` §7.
 
 ### Outbound HTTP / Docker client
 
-- **No general outbound HTTP** service calls exist. The only backend is the
+- **No general outbound HTTP** service calls exist. The default backend is the
   local Docker daemon via the **official `github.com/docker/docker` SDK**
-  (unix socket). Do **not** hand-roll a low-level `http.Client` for Docker
+  (unix socket); the experimental **darwin backend** (`SPEC.md` §7.12) spawns
+  `/usr/bin/sandbox-exec` children via `os/exec` and needs no daemon. Do **not**
+  hand-roll a low-level `http.Client` for Docker
   (N05GO) — resty is not suited to the unix-socket transport. If a future
   backend requires genuine remote HTTP, use `resty.dev/v3` (L02GO).
 - **No retry/backoff** — set an explicit timeout/context and **return the error

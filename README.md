@@ -25,8 +25,11 @@ commands **inside** that container, and destroys it via explicit
 **cleanup is explicit** — there is no automatic GC). **Security is the top
 priority** — the sandbox is *more* restrictive than the host, never less.
 
-- **MVP scope:** the **Docker** backend. Apple Container and other backends are
-  designed for but not yet implemented.
+- **MVP scope:** the **Docker** backend, plus an **experimental macOS
+  `sandbox-exec` (Seatbelt) backend** (implemented — portable core wired;
+  real-macOS e2e pending, see
+  [macOS driver](#macos-driver-sandbox-exec-backend)). Apple Container and
+  other backends are designed for but not yet implemented.
 - **Deployment:** Local / **stdio-only**. No HTTP, no
   observability endpoint, no container image.
 
@@ -258,11 +261,19 @@ sandbox** via the `/usr/bin/sandbox-exec` external binary, **without Docker**.
 It is a pure-Go implementation (no cgo) that spawns `sandbox-exec` as a child
 process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
 
-> **Status: designed, not yet merged.** The Docker backend remains the MVP.
-> This section documents the design contract the driver must meet; align names
-> and behaviour with the implementation before relying on it. The darwin
-> backend is **macOS-only** and provides **policy-based containment, not
-> kernel/container isolation** — it is strictly weaker than the Docker backend.
+> **Status: implemented (portable core), real-macOS e2e pending.** The Docker
+> backend remains the default. The darwin backend is implemented in
+> `infrastructure/backend/darwin` (portable core + build-tag `os/exec` runner +
+> policy-denial detection) and wired via the `seatbelt` profile block,
+> `spec.DriverSeatbelt` and the SBPL generator (`domain/sandbox/sbpl`); its
+> logic is covered by unit tests (mock runner/tailer, coverage ≥ 95%) on any
+> GOOS. **Not yet verified:** no live `/usr/bin/sandbox-exec` spawn and no real
+> unified-log `log stream` tail have been run on a real macOS host (they cannot
+> run inside a Docker/CI sandbox); the macOS-specific `log stream` tailer
+> wrapper is **not yet implemented** — only the portable classifier + `logTailer`
+> boundary exist. The darwin backend is **macOS-only** and provides
+> **policy-based containment, not kernel/container isolation** — it is strictly
+> weaker than the Docker backend.
 
 **What it is**
 
