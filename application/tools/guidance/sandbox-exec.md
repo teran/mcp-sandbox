@@ -42,6 +42,16 @@ deadline. When the deadline is hit, the command is cancelled.
 Fill `summary` with a short human-readable description of the command (one or
 two words, e.g. "run unit tests"). It is recorded for traceability.
 
+## Seatbelt (darwin) sessions
+
+Under the experimental **`sandbox-exec` (Seatbelt)** backend (`seatbelt`
+profile) some mechanics differ: there is **no container/tmpfs**, resource
+limits are **soft `setrlimit`** only, `sandbox_stats` is **not supported**, and
+the command runs under the **current host user**. The command must start under
+whatever the operator's `seatbelt.sbpl` grants (typically `(allow default)` for
+non-file operations plus a narrowed file scope). `user: root` is not applicable
+(sudo is always `never`).
+
 ## Streaming and output handling
 
 Long-running commands may stream live output through the progress channel.

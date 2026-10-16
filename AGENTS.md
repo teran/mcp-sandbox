@@ -22,14 +22,14 @@ Guidance for AI agents working in this repository. `AGENTS.md`, like
 
 ## Working agents
 
-| Agent | Role in this repo |
-|-------|-------------------|
-| **@architect** | Architecture, dependency and system-design decisions (DDD/Clean, Backend roles). |
-| **@qa** | Writes tests first (isolated context) — unit, mutation, e2e; owns the coverage gate. |
-| **@developer** | Writes the implementation (isolated context) to make the tests pass. |
-| **@security** | Reviews the security model (Isolation, ALLOW_DIRS, redaction, Docker socket). |
-| **@devops** | CI/CD, goreleaser release, Makefile interface. |
-| **@techwriter** | Keeps `SPEC.md`, `README.md`, `AGENTS.md` current and English. |
+| Agent           | Role in this repo                                                                    |
+| --------------- | ------------------------------------------------------------------------------------ |
+| **@architect**  | Architecture, dependency and system-design decisions (DDD/Clean, Backend roles).     |
+| **@qa**         | Writes tests first (isolated context) — unit, mutation, e2e; owns the coverage gate. |
+| **@developer**  | Writes the implementation (isolated context) to make the tests pass.                 |
+| **@security**   | Reviews the security model (Isolation, ALLOW_DIRS, redaction, Docker socket).        |
+| **@devops**     | CI/CD, goreleaser release, Makefile interface.                                       |
+| **@techwriter** | Keeps `SPEC.md`, `README.md`, `AGENTS.md` current and English.                       |
 
 **TDD workflow (T01):** tests first (@qa), implementation second (@developer).
 Never weaken tests to make the implementation pass.
@@ -99,6 +99,7 @@ See `SPEC.md` §7.
   > `exec` flag, so `/tmp` may not be executable even though it is writable.
   > Runtime code compilation (e.g. Go builds) therefore needs a writable
   > **bind-mount** (the session `cwd` with the profile's `cwd.mode=rw`) — not tmpfs.
+
 - **Operator-authored profiles (Phase 7) — trust model:** sandboxes are created
   from **read-only** YAML profiles in `SANDBOX_PROFILES_DIR`. **Operators author,
   the model references read-only** (by `profile` name on `sandbox_create`); a
@@ -139,6 +140,17 @@ See `SPEC.md` §7.
 - **Docker socket (documented limitation):** the socket is effectively root on
   the host. Prefer **rootless Docker** or confine socket access to the server
   process. Never expose the socket to output/tools.
+- **darwin backend (`sandbox-exec`, SPEC §7.12) — weaker security posture:**
+  policy-based containment, not kernel/container isolation. **`no-new-privileges`
+  / `read-only-rootfs` / `cap-drop` / `tmpfs-workdir` are validated by
+  `spec.Validate` but NOT enforced on darwin** (no mechanism; `SysProcAttr` is
+  `Setpgid` only). No uid change (runs as current host user, `euid != 0`
+  refused), no cgroup quotas (soft `setrlimit` only), no network isolation. The
+  operator `seatbelt.sbpl` is appended **verbatim** (last-match-wins) and does
+  **not** pass the `sbpl` metacharacter validators — only NUL is rejected; the
+  operator is trusted and a model-host can never supply SBPL. An operator
+  `(allow default)` re-opens surfaces the server baseline denied. Consolidated
+  threat model: `SPEC.md` §7.13.
 - **Supply chain (T7/C05):** sandbox images come from the **operator profile**
   (SPEC §7.11) with **parse-only** validation — the trusted-registry allowlist
   (`TRUSTED_REGISTRIES`) is **removed**; **digest-pinning is the recommended
@@ -161,12 +173,16 @@ See `SPEC.md` §7.
   backend requires genuine remote HTTP, use `resty.dev/v3` (L02GO).
 - **darwin exec limitation (SPEC §7.12):** the server-rendered SBPL is
   deny-default and emits **no `process-exec*`**, so an operator-authored
-  `seatbelt.sbpl` in the darwin profile MUST supply `(allow process-exec*)`
-  (plus the shell runtime's file/mach/sysctl allowances) before a command can
-  actually exec. The bundled `seatbelt` examples are illustrative for
-  create/list but **not yet sufficient to exec commands**; this gap is open
-  (the server generator does not yet emit `process-exec*`). The darwin e2e
-  drives `sandbox-exec` with an `(allow default)` SBPL directly, so it does not
+  `seatbelt.sbpl` in the darwin profile MUST grant exec — either an explicit
+  `(allow process-exec*)` (plus the shell runtime's file/mach/sysctl
+  allowances) or `(allow default)` for non-file operations with a narrowed file
+  scope. Both are valid; the bundled, verified file-deny-all example is
+  `examples/profiles/seatbelt.yml`. **Runtime wiring caveats:** the in-band
+  `IsPolicyDenial` classifier is wired into `Backend.Exec` (`darwin.go`), but
+  the `log stream` **tailer + `ConsumeDenials` are NOT wired into runtime**
+  (unit-tested only), and the production factory (`darwin.go:471`) does **not**
+  call `WithScratchDir` (so `scratchDir == ""` in prod). The darwin e2e drives
+  `sandbox-exec` with an `(allow default)` SBPL directly, so it does not
   validate exec under the server-generated baseline.
 - **No retry/backoff** — set an explicit timeout/context and **return the error
   to the model** (X03/L02GO). For `sandbox_exec`, the optional `req.Timeout`
@@ -197,7 +213,7 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
   backend first and uses its returned id — docker = **container id**, darwin =
   `darwin-N`; an empty backend id falls back to an opaque 64-hex id. The docker
   `dev.teran.sandbox.session` label is therefore **redundant** (the session id
-  *is* the container id); the `dev.teran.sandbox.owner` label remains.
+  _is_ the container id); the `dev.teran.sandbox.owner` label remains.
 - **Session cleanup (explicit only; reaper/orphan-GC are future work):**
   sandboxes are removed **only** by explicit `sandbox_destroy` /
   `sandbox_destroy_all`. There is **no automatic GC** — the idle reaper

@@ -4,6 +4,14 @@ mcp-sandbox is an isolated Docker sandbox that lets a model-host run arbitrary
 commands **without using the host shell**. The host shell is restricted; route
 every command through this sandbox server instead.
 
+> **Backends.** On macOS, commands can alternatively run under the experimental
+> **`sandbox-exec` (Seatbelt)** backend instead of Docker (a `seatbelt` profile,
+> no container/daemon/image). It is a policy-based, **strictly weaker**
+> containment — the mechanics described in this guide (mounts, `cwd`, tmpfs,
+> network, resources) are **Docker-centric** and differ for seatbelt sessions
+> (no tmpfs, soft `setrlimit` only, file/network SBPL rules). See `SPEC.md`
+> §7.12 and the `seatbelt` profile block.
+
 ## Tool grouping
 
 Tools are grouped by read, write, and delete intent so you can predict their
