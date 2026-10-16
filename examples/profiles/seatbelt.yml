@@ -1,0 +1,29 @@
+# Minimal operator profile for live-testing the darwin (sandbox-exec / Seatbelt)
+# backend on macOS. Hybrid driver-aware schema (SPEC §7.11/§7.12).
+#
+# `driver: seatbelt` selects the darwin backend and requires the matching
+# `seatbelt:` block (mutually exclusive with `docker:`). The darwin backend has
+# no container/image: the server renders the Seatbelt (SBPL) profile from the
+# typed SandboxSpec — imports → `(deny default)` → network → mach → sysctl →
+# file (ALLOW_DIRS + session cwd, S04) → operator `seatbelt.sbpl` below. The
+# operator template is appended LAST, so it is where an operator selectively
+# re-opens surfaces the server baseline denies.
+name: seatbelt
+description: >-
+  Minimal profile to live-test the darwin (sandbox-exec) backend on macOS.
+  driver=seatbelt; server-rendered SBPL + operator network-outbound extension;
+  read-only session cwd scoped to ALLOW_DIRS.
+driver: seatbelt
+seatbelt:
+  # Operator SBPL template, merged after the server's deny-default hardening.
+  # The baseline emits `(deny network*)` for the default no-network mode; in
+  # Seatbelt the LAST matching rule wins, so this `allow` selectively re-opens
+  # outbound network for the smoke (e.g. so a command can open a TCP socket).
+  # Keep this as restrictive as the live test needs — never `(allow default)`.
+  sbpl: |
+    (allow network-outbound)
+  mach_lookups: []
+  sysctls: []
+cwd:
+  mode: ro
+shell: bash
