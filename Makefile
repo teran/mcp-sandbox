@@ -6,7 +6,7 @@
 
 COVERAGE_THRESHOLD := 95
 
-.PHONY: build test lint mutate release security-scan arch clean coverage
+.PHONY: build test lint mutate release security-scan arch e2e clean coverage
 
 ## build — produce binaries for all architectures via goreleaser (B01/B02).
 ## Snapshot mode: verifies the release pipeline in CI without publishing.
@@ -29,6 +29,14 @@ test:
 coverage:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
+
+## e2e — build-tagged e2e smoke tests (C09GO/N07GO/T02/C04). The darwin
+## e2e tests live in platform-tagged files (//go:build e2e && darwin), so
+## this generic target picks them up automatically on a macOS runner and
+## excludes them elsewhere. Excluded from the default unit pass via the
+## `e2e` build tag; CI runs it on its dedicated `e2e` job (macos-latest).
+e2e:
+	go test -tags e2e ./...
 
 ## lint — static analysis gate (C03GO/C05GO/C06GO/C07GO).
 lint:

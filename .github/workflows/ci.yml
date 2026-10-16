@@ -59,9 +59,10 @@ jobs:
   # tests compile and execute there. This job additionally runs `make lint` on
   # macOS: golangci-lint honours GOOS, so on a macOS runner it also lints
   # `_darwin.go` files that the ubuntu-only `lint` job (GOOS=linux) excludes.
-  # Safe today (no darwin code yet): lint behaves like on Linux. Opt-in
-  # `make e2e-darwin` (real sandbox-exec smoke) is intentionally NOT declared
-  # until the darwin runner is implemented (N31 — no un-runnable targets).
+  # Safe today (no darwin code yet): lint behaves like on Linux. Darwin e2e
+  # smoke tests are `//go:build e2e && darwin` and run under the generic
+  # `make e2e` on the dedicated `e2e` job below (macos-latest); the separate
+  # `e2e-darwin` target is intentionally not needed (C09GO/N07GO/T02/N31).
   darwin:
     name: Darwin (macOS) — lint + test
     runs-on: macos-latest
@@ -82,6 +83,18 @@ jobs:
         run: make lint
       - name: Test (darwin — compiles & runs //go:build darwin tests)
         run: make test
+
+  e2e:
+    name: E2E (darwin smoke)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: E2E smoke (build-tagged, darwin sandbox-exec)
+        run: make e2e
 
   coverage:
     name: Coverage
