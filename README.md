@@ -26,8 +26,8 @@ commands **inside** that container, and destroys it via explicit
 priority** — the sandbox is *more* restrictive than the host, never less.
 
 - **MVP scope:** the **Docker** backend, plus an **experimental macOS
-  `sandbox-exec` (Seatbelt) backend** (implemented — portable core wired;
-  real-macOS e2e pending, see
+  `sandbox-exec` (Seatbelt) backend** (implemented — portable core wired +
+  darwin `log stream` tailer; real-macOS verification via the darwin e2e, see
   [macOS driver](#macos-driver-sandbox-exec-backend)). Apple Container and
   other backends are designed for but not yet implemented.
 - **Deployment:** Local / **stdio-only**. No HTTP, no
@@ -261,19 +261,21 @@ sandbox** via the `/usr/bin/sandbox-exec` external binary, **without Docker**.
 It is a pure-Go implementation (no cgo) that spawns `sandbox-exec` as a child
 process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
 
-> **Status: implemented (portable core), real-macOS e2e pending.** The Docker
-> backend remains the default. The darwin backend is implemented in
+> **Status: implemented (portable core + darwin `log stream` tailer);
+> real-macOS verification via the darwin e2e.** The Docker backend remains the
+> default. The darwin backend is implemented in
 > `infrastructure/backend/darwin` (portable core + build-tag `os/exec` runner +
-> policy-denial detection) and wired via the `seatbelt` profile block,
-> `spec.DriverSeatbelt` and the SBPL generator (`domain/sandbox/sbpl`); its
-> logic is covered by unit tests (mock runner/tailer, coverage ≥ 95%) on any
-> GOOS. **Not yet verified:** no live `/usr/bin/sandbox-exec` spawn and no real
-> unified-log `log stream` tail have been run on a real macOS host (they cannot
-> run inside a Docker/CI sandbox); the macOS-specific `log stream` tailer
-> wrapper is **not yet implemented** — only the portable classifier + `logTailer`
-> boundary exist. The darwin backend is **macOS-only** and provides
-> **policy-based containment, not kernel/container isolation** — it is strictly
-> weaker than the Docker backend.
+> policy-denial detection + the macOS-specific unified-log `log stream` tailer
+> wrapper behind the `darwin` build tag) and wired via the `seatbelt` profile
+> block, `spec.DriverSeatbelt` and the SBPL generator
+> (`domain/sandbox/sbpl`); its logic is covered by unit tests (mock
+> runner/tailer, coverage ≥ 95%) on any GOOS. **Real-macOS verification** (a
+> live `/usr/bin/sandbox-exec` spawn and a live unified-log `log stream` tail —
+> which cannot run inside a Docker/CI sandbox) is exercised by the **darwin e2e
+> smoke tests** (`//go:build e2e && darwin`) under `make e2e` on a dedicated
+> macOS CI `e2e` job (see Development). The darwin backend is **macOS-only** and
+> provides **policy-based containment, not kernel/container isolation** — it is
+> strictly weaker than the Docker backend.
 
 **What it is**
 
@@ -539,15 +541,20 @@ Tests are never weakened to make the implementation pass.
 - **Unit tests:** `make test` — `go test -race` + **coverage ≥ 95%** gate
   (fails below).
 - **Mutation testing:** gremlins as a hard gate (80/80) — dedicated CI job.
-- **e2e:** out of scope for this Local server (no e2e suite, no `make e2e` —
-  a real e2e would need Docker-in-Docker, conflicting with the immutable
-  sandbox hardening; the handler→backend path is covered by unit tests).
+- **e2e:** **scoped** — a **darwin e2e smoke suite** exists (`//go:build e2e &&
+  darwin`) and runs under the generic **`make e2e`** (`go test -tags e2e ./...`)
+  on a **dedicated macOS CI `e2e` job**; on Linux it is excluded by the `darwin`
+  build tag (there is **no `e2e-darwin` target** by design). **Docker-in-Docker
+  e2e remains out of scope** — a real Docker e2e would need a nested/rootless
+  daemon or socket access, conflicting with the immutable sandbox hardening; the
+  handler→backend path is covered by unit tests + the coverage gate.
 
 ### Quality gates
 
 CI (GitHub Actions) binds to the **make interface** (R07) and enforces:
 `make lint` (golangci-lint, gosec, govulncheck, go-arch-lint), `make test`
-(race + coverage ≥ 95%), `make build` (goreleaser), plus hard-gate
+(race + coverage ≥ 95%), `make e2e` (darwin e2e smoke on a dedicated macOS
+`e2e` job), `make build` (goreleaser), plus hard-gate
 jobs for **gremlins** (mutation) and **gitleaks** (secret scan). Findings are
 **fixed, not suppressed**. CI never mutates repository state.
 

@@ -38,7 +38,7 @@ encoded in an **immutable `Isolation` block** that a caller cannot weaken.
 | Scope | Status |
 |-------|--------|
 | **Docker backend** | ✅ **MVP — implemented** |
-| Apple Container (and other backends) | ⏳ **Future extension** — the `Backend` abstraction is designed for it (see [Architecture](#6-architecture)) but is **not** implemented in the MVP. An **experimental macOS `sandbox-exec` (Seatbelt) driver** is **implemented (portable core wired; real-macOS e2e pending)** — see [§7.12](#712-apple--sandbox-exec-driver-darwin-backend--experimental). |
+| Apple Container (and other backends) | ⏳ **Future extension** — the `Backend` abstraction is designed for it (see [Architecture](#6-architecture)) but is **not** implemented in the MVP. An **experimental macOS `sandbox-exec` (Seatbelt) driver** is **implemented (portable core wired + darwin `log stream` tailer; darwin e2e run via `make e2e` on macOS)** — see [§7.12](#712-apple--sandbox-exec-driver-darwin-backend--experimental). |
 | `CapStream` / `Mountable` capabilities | ⏳ Future — **not** implemented in the MVP |
 
 The rationale for Docker-first: *"Docker is everywhere"* — it is the most
@@ -805,7 +805,7 @@ itself can **never** be weakened (by profile or caller).
 | AppArmor profiles | Roadmap. |
 | **gVisor / runsc** | **Target state** for kernel-escape containment (**T1 kernel-escape**). |
 | Rootless Docker | Roadmap (reduces the §7.6 socket risk). |
-| **Darwin backend (`sandbox-exec`/Seatbelt)** | **Experimental (implemented — portable core wired; real-macOS e2e pending)** — **policy-based containment, NOT a kernel-escape equivalent** (see §7.12). |
+| **Darwin backend (`sandbox-exec`/Seatbelt)** | **Experimental (implemented — portable core wired + darwin `log stream` tailer; darwin e2e run via `make e2e` on macOS)** — **policy-based containment, NOT a kernel-escape equivalent** (see §7.12). |
 | Backend abstraction | Ready — a future `gvisor`/`apple` backend implements the same `Backend` roles. |
 
 ### 7.8 Session identifiers & ownership
@@ -1029,8 +1029,9 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 
 ### 7.12 Apple / `sandbox-exec` driver (darwin backend) — experimental
 
-> **Status: experimental alternative driver — implemented (portable core),
-> real-macOS e2e pending.** This section documents a **second** backend that,
+> **Status: experimental alternative driver — implemented (portable core +
+> darwin `log stream` tailer), real-macOS verification via the darwin e2e.** This
+> section documents a **second** backend that,
 > unlike the Docker MVP (§1), is **macOS-only** and runs on **Apple's Seatbelt**
 > via the external `/usr/bin/sandbox-exec` binary — **pure Go, no cgo, no
 > root**. It realizes the same `Backend` roles on Apple platforms and is a
@@ -1043,11 +1044,14 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 > `infrastructure/backend/darwin` (`darwin.go` — portable core; `runner_darwin.go`
 > — the real `/usr/bin/sandbox-exec` runner behind the `darwin` build tag;
 > `runner_other.go` — non-darwin stand-in; `deny.go` — portable policy-denial
-> classifier), wired end-to-end via the `seatbelt` profile block
+> classifier; `tailer_darwin.go` — the **macOS-specific unified-log `log stream`
+> tailer wrapper** behind the `darwin` build tag, `//go:build darwin`), wired
+> end-to-end via the `seatbelt` profile block
 > (`application/profile`), `spec.Sandbox` / `spec.DriverSeatbelt`
 > (`domain/sandbox/spec`), the SBPL generator+validator
 > (`domain/sandbox/sbpl`), and factory registration through `init()`
-> (`Driver: seatbelt`, `Priority` 10). The full backend logic is exercised by
+> (`Driver: seatbelt`, `Priority` 10). The full backend logic — including the
+> `log stream` tailer wrapper behind its injectable boundary — is exercised by
 > unit tests in CI (mock runner/tailer, coverage ≥ 95%) on **any** GOOS.
 > Recent fixes (all TDD-verified, unit-tested): the child command is the
 > **BSD-portable `sleep 2147483647`** (not the GNU-ism `sleep infinity`); the
@@ -1059,13 +1063,14 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 > `rlimitRestore`, with rollback) is wired into `realRunner.Start` with a
 > deferred restore, so the parent's limits are always restored and the child
 > inherits the lowered limits at fork.
-> **Not yet verified:** no **real-macOS e2e/smoke** has been run — spawning a
-> live `/usr/bin/sandbox-exec` child and tailing the **unified log** via
+> **Real-macOS verification (darwin e2e):** spawning a live
+> `/usr/bin/sandbox-exec` child and tailing the **unified log** via
 > `log stream` require a real macOS host and cannot be exercised inside a
-> Docker/CI sandbox. The macOS-specific `log stream` tailer wrapper (as opposed
-> to the portable classifier + `logTailer` boundary in `deny.go`) is **still not
-> implemented**; treat the unified-log tailing path as pending manual
-> verification on macOS.
+> Docker/CI sandbox, so this is now exercised by the **darwin e2e smoke tests**
+> (`//go:build e2e && darwin`), which run under the generic **`make e2e`**
+> (`go test -tags e2e ./...`) on a **dedicated macOS CI `e2e` job** (§11). There
+> is **no separate `e2e-darwin` target** by design; on Linux the darwin e2e is
+> excluded by the `darwin` build tag.
 
 #### Mechanism
 
@@ -1239,10 +1244,11 @@ no-shell-concat preserved.
   Docker backend is unaffected). **Implementation status:**
   the portable, fail-closed classifier (`ClassifyDeny` / `ConsumeDenials` /
   `IsPolicyDenial`, `deny.go`) and the `logTailer` boundary interface are
-  **implemented and unit-tested** (in-memory tailer, no secrets, S02), but the
-  **macOS-specific `log stream` tailer wrapper is not yet implemented** — the
-  real unified-log tail and its live run on a macOS host are **pending manual
-  verification**.
+  **implemented and unit-tested** (in-memory tailer, no secrets, S02), and the
+  **macOS-specific `log stream` tailer wrapper** (`tailer_darwin.go`, behind the
+  `darwin` build tag) is now **implemented** behind that injectable boundary.
+  The live unified-log tail on a real macOS host is exercised by the **darwin
+  e2e** (§11): it runs under `make e2e` on a dedicated macOS runner.
 - **Portability (declared break).** The `sandbox-exec` backend is
   **macOS-only**; a Linux host has no `sandbox-exec` and must fall back to
   Docker (or a future `bwrap` backend). Backends are **non-interchangeable
@@ -1336,6 +1342,7 @@ exposes:
 | `build` | Produce binary artifacts for all intended architectures (via goreleaser, **B01/B02**). |
 | `release` | Publish real goreleaser binaries + GitHub Release on `v*` tags (**B01**) — used by the release CI job only. |
 | `test` | Unit tests (`go test -race`, **C04GO**) + **coverage ≥ 95% gate** (**C01**). |
+| `e2e` | **darwin e2e smoke tests** (`go test -tags e2e ./...`, **C04/T02/C09GO**) — runs on a dedicated macOS CI `e2e` job; excluded by the `darwin` build tag on Linux. There is **no separate `e2e-darwin` target** by design. |
 | `lint` | golangci-lint (`golangci-lint run ./...`, **C03GO**), gosec (**C05GO**), govulncheck (**C06GO**), go-arch-lint (**C07GO**). |
 | `container-image` | **NOT declared** — Local stdio-only server produces no image (**B03/R01/N31/N17**). |
 
@@ -1349,6 +1356,10 @@ provider-agnostic; here it is realized in GitHub Actions:
   --threshold-mcover=80` (C02/C08GO) and **gitleaks** secret scan over git
   history (C03/N28). These are dedicated hard-gate jobs, not part of the make
   interface.
+- **e2e** stage: a **dedicated macOS CI `e2e` job** runs `make e2e` (`go test
+  -tags e2e ./...`) — the **darwin e2e smoke suite** (`//go:build e2e && darwin`)
+  spawns a live `/usr/bin/sandbox-exec` and tails the unified log on a real
+  macOS runner; on Linux the `darwin` build tag excludes it.
 - **build** stage: **dedicated `build` CI job** running `make build` (goreleaser
   snapshot → single binary per platform, ldflags-embedded build metadata **B02**).
 - **release artifacts:** for a Local stdio-only server there is **no container
@@ -1356,15 +1367,20 @@ provider-agnostic; here it is realized in GitHub Actions:
   release` on every `v*` tag to publish binary release artifacts via goreleaser
   (**B01/B02**).
 
-> **e2e (C09GO / N07GO / T02 / C04) is N/A — declared out of scope.** There is
-> **no e2e test suite** and no `make e2e` target. Reasoning: a meaningful e2e
-> would have to drive the real Docker daemon from inside a sandbox, which
-> conflicts with the immutable `Isolation` hardening (Docker-in-Docker needs a
-> nested/rootless daemon or socket access and is not part of the MVP). The
-> full tool-handler → Docker-backend path is covered by unit tests (coverage
+> **e2e (C09GO / N07GO / T02 / C04) — scoped: darwin e2e exists; Docker-backed
+> e2e remains N/A.** There **is** now a darwin **e2e smoke suite**: files guarded
+> by `//go:build e2e && darwin` run under the generic **`make e2e`**
+> (`go test -tags e2e ./...`) on a **dedicated macOS CI `e2e` job**. On Linux
+> the darwin e2e is excluded by the `darwin` build tag; there is **no separate
+> `e2e-darwin` target** by design (darwin e2e rides the generic `make e2e` on
+> macOS runners). **Docker-backed e2e remains out of scope / N/A**: a meaningful
+> Docker e2e would have to drive the real Docker daemon from inside a sandbox,
+> which conflicts with the immutable `Isolation` hardening (Docker-in-Docker
+> needs a nested/rootless daemon or socket access and is not part of the MVP).
+> The full tool-handler → Docker-backend path is covered by unit tests (coverage
 > gate C01 ≥ 95%) and the `go-docker-testsuite` harness is **not** a dependency.
-> No e2e CI job exists; **N30 is not violated** because there are no e2e tests
-> to run or tag.
+> N30 is not violated: e2e tests exist only under the `e2e && darwin` tag and
+> are run only on macOS runners where they are applicable.
 
 **Coverage gate (C01):** ≥ 95%, fails the build below.
 **Mutation gate (C02/C08GO):** gremlins hard gate at 80/80.
@@ -1416,8 +1432,8 @@ socket**, accessed through the **official `github.com/docker/docker` SDK**.
 
 ## 13. Conformance summary (MUST / MUST-NOT)
 
-**MUST satisfied:** M01–M07, C01, C02, C05, C01GO–C08GO, T01, S01–S12,
-R02, R05, R06, R07, B01, B02, B05, L01–L09,
+**MUST satisfied:** M01–M07, C01, C02, C04, C05, T01, T02, C01GO–C09GO,
+S01–S12, R02, R05, R06, R07, B01, B02, B05, L01–L09,
 L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 
 **Explicitly not applicable (documented):**
@@ -1426,9 +1442,16 @@ L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 - **R01/R03/R04/B03/B04/N14/N17/N18** — no container image for a Local server.
 - **M03 OAuth2** — no upstream HTTP API to authorize against (justified).
 - **X04** — stateful-but-in-memory; no persistence/migration.
-- **C04/T02/C09GO/N07GO/N30** — e2e is declared out of scope (no e2e tests, no
-  `make e2e`, no e2e CI job); the full tool-handler → backend path is covered by
-  unit tests + the C01 coverage gate (§11).
+- **C04/T02/C09GO** — satisfied by the **darwin e2e smoke suite** (`//go:build
+  e2e && darwin`, `make e2e` on a dedicated macOS CI `e2e` job, §11); listed as
+  MUST-satisfied above (was previously grouped under "e2e N/A").
+- **N07GO/N30 (Docker-backed e2e) — N/A / not violated.** The
+  **Docker-in-Docker e2e** remains out of scope (driving the real Docker daemon
+  from inside a sandbox conflicts with the immutable `Isolation` hardening); the
+  full tool-handler → Docker-backend path is covered by unit tests + the C01
+  coverage gate (§11). N30 is not violated: e2e tests exist only under the
+  `e2e && darwin` tag and are run only on macOS runners where they are
+  applicable.
 - **S06/S07/S10/S13** — not applicable: public GitHub.com repo (S06); every
   tool is a closed-world `openWorldHint:false` tool (S07/S10); Go is not a
   high-risk TS/JS ecosystem (S13).
@@ -1438,6 +1461,6 @@ undeclared optional Makefile targets; N36 — CI read-only; N05GO — official
 Docker SDK, not low-level `http.Client`).
 
 > **§7.12 note:** the darwin/`sandbox-exec` driver section does **not** change
-> any existing MUST/NOT; it records an **additional** contract for a future,
+> any existing MUST/NOT; it records an **additional** contract for the
 > macOS-only backend with a strictly reduced threat model (policy-based
 > containment, not kernel isolation).

@@ -25,9 +25,11 @@ documented in `SPEC.md` / `README.md` / `AGENTS.md`. Summary:
   output); minimal 7-tool read→write→delete surface (`sandbox_list`,
   `sandbox_info`, `sandbox_stats`, `profile_list`, `sandbox_create`,
   `sandbox_exec`, `sandbox_destroy`, `sandbox_destroy_all`).
-- **Phase 4 — e2e:** **N/A** — no e2e suite (a real e2e needs Docker-in-Docker,
-  conflicting with the immutable hardening); the handler→backend path is covered
-  by unit tests + the coverage gate.
+- **Phase 4 — e2e (darwin):** a **darwin e2e smoke suite** exists as
+  `//go:build e2e && darwin` files, run under the generic `make e2e`
+  (`go test -tags e2e ./...`) on a dedicated macOS CI `e2e` job. Docker-in-Docker
+  e2e remains **N/A** (would conflict with the immutable hardening); the Docker
+  handler→backend path is covered by unit tests + the coverage gate.
 - **Phase 5 — Security verification:** security review, redaction-completeness,
   digest-pinning, privileges / rootless-docker decision.
 - **Phase 6 — Streaming:** `domain/progress` + `notifications/progress` from
@@ -111,7 +113,8 @@ parallel-link race, not a code bug. Workaround today: retry (warm cache) or
 ### Docker from inside the sandbox (backlog — design open)
 
 Running container-based e2e from inside a hardened sandbox needs a live Docker
-daemon. Today this is out of scope (Phase 4, e2e N/A).
+daemon. Today this is out of scope (Phase 4, Docker-in-Docker e2e N/A; the
+darwin e2e does not need a daemon).
 
 - [ ] **Security review** of the socket-passthrough lane (host-root equivalence,
       `ALLOW_DIRS` gating of the socket path, default sandboxes stay isolated) —
@@ -122,14 +125,15 @@ daemon. Today this is out of scope (Phase 4, e2e N/A).
 - [ ] **Docs:** update `AGENTS.md`/`TODO.md` Phase-4 N/A note if the lane is
       adopted — English, `D01 D02`
 
-### Darwin backend — `sandbox-exec` (Seatbelt) driver (implemented — portable core; real-macOS e2e pending)
+### Darwin backend — `sandbox-exec` (Seatbelt) driver (implemented — portable core + darwin `log stream` tailer + darwin e2e)
 
 Designed in `SPEC.md` §7.12 and `README.md` "macOS driver". macOS-only,
 policy-based containment (deny-by-default SBPL), pure Go via `/usr/bin/
 sandbox-exec` (no cgo, no root). Docker remains the default backend. The
-portable core is **implemented and unit-tested** (mock runner/tailer, coverage
-≥ 95%) and runs in CI on any GOOS; the remaining items are the real-macOS-only
-verification.
+portable core, the darwin `log stream` tailer wrapper and the darwin e2e smoke
+suite are **implemented and exercised**: unit tests (mock runner/tailer,
+coverage ≥ 95%) run in CI on any GOOS, and the live real-macOS verification
+runs via `make e2e` on a dedicated macOS runner.
 
 - [x] **`spec.Sandbox` type + profile `seatbelt:` block:** `domain/sandbox/
       spec.Sandbox{SBPL, MachLookups, Sysctls}` and `Profile.Sandbox`/`Seatbelt`
@@ -170,18 +174,20 @@ verification.
       with rollback) wired into `realRunner.Start` with a deferred restore —
       parent limits always restored, child inherits the lowered limits at fork —
       `@developer`, `C01`
-- [ ] **darwin `log stream` tailer wrapper (still open):** the macOS-specific
-      unified-log tail (`subsystem == "com.apple.sandbox"`, spawned via
-      `log stream`) behind the `darwin` build tag is **still not implemented** —
-      the portable `ConsumeDenials`/`logTailer` boundary exists and is
-      unit-tested with in-memory tailers, but the macOS-specific tailer and live
-      deny-classification on a real host remain pending manual verification —
+- [x] **darwin `log stream` tailer wrapper:** the macOS-specific unified-log tail
+      (`subsystem == "com.apple.sandbox"`, spawned via `log stream`) behind the
+      `darwin` build tag (`tailer_darwin.go`, `//go:build darwin`) is now
+      **implemented** behind the portable `ConsumeDenials`/`logTailer` boundary
+      (which is unit-tested with in-memory tailers); the live
+      deny-classification on a real host is exercised by the darwin e2e —
       `@sre`/`@developer`, `L08 L09`
-- [ ] **e2e on macos-latest (optional):** smoke-test spawning a real
-      `sandbox-exec` on a macOS runner via an added `make` target, plus a live
-      unified-log `log stream` tail run — `@devops`, `N31 N36`
-- [x] **Docs:** §7.12 / README "macOS driver" marked implemented (portable core),
-      real-macOS e2e flagged as pending — English, `D01 D02`
+- [x] **darwin e2e on macOS:** a real-macOS smoke suite (`//go:build e2e &&
+      darwin`) spawns a live `/usr/bin/sandbox-exec` and runs a live unified-log
+      `log stream` tail; it runs under the generic **`make e2e`**
+      (`go test -tags e2e ./...`) on a dedicated macOS CI `e2e` job — there is
+      **no `e2e-darwin` target** by design — `@devops`, `N31 N36`
+- [x] **Docs:** §7.12 / README "macOS driver" updated to reflect the implemented
+      darwin `log stream` tailer and the darwin e2e — English, `D01 D02`
 
 ### Deferred / open questions (discuss later, non-blocking)
 

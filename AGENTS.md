@@ -41,18 +41,28 @@ raw language-specific commands. Interface targets:
 
 - `make build` — binaries for all architectures via goreleaser (B01/B02).
 - `make test` — `go test -race` + **coverage ≥ 95%** (C01/C04GO).
+- `make e2e` — **darwin e2e smoke tests** (`go test -tags e2e ./...`,
+  **C04/T02/C09GO**) — runs on a dedicated macOS CI `e2e` job; excluded by the
+  `darwin` build tag on Linux. There is **no separate `e2e-darwin` target** by
+  design.
 - `make lint` — golangci-lint, gosec, govulncheck, go-arch-lint.
 - `container-image` is **NOT declared** — this is a **Local stdio-only**
   server; no image (B03/R01). A CI job must never invoke an undeclared optional
   target (N31).
 
-> **e2e (C09GO / N07GO / T02 / C04) is N/A.** There is **no e2e suite** and no
-> `make e2e` target. A meaningful e2e would require driving the real Docker
-> daemon from inside a sandbox, which conflicts with the immutable `Isolation`
-> hardening (Docker-in-Docker needs a nested/rootless daemon or socket access,
-> outside the MVP scope). The full tool-handler → Docker-backend path is covered
-> by unit tests + the coverage gate. `go-docker-testsuite` is **not** a
-> dependency. No e2e CI job; N30 not violated (no e2e tests exist).
+> **e2e (C09GO / N07GO / T02 / C04) — scoped.** A **darwin e2e smoke suite**
+> exists as `//go:build e2e && darwin` files, run under the generic **`make e2e`**
+> (`go test -tags e2e ./...`) on a **dedicated macOS CI `e2e` job**. On Linux the
+> darwin e2e is excluded by the `darwin` build tag; there is **no separate
+> `e2e-darwin` target** by design (darwin e2e rides the generic `make e2e` on
+> macOS runners). **Docker-backed e2e (Docker-in-Docker) remains out of scope /
+> N/A**: it would require driving the real Docker daemon from inside a sandbox,
+> which conflicts with the immutable `Isolation` hardening (a nested/rootless
+> daemon or socket access, outside the MVP scope); the full tool-handler →
+> Docker-backend path is covered by unit tests + the coverage gate.
+> `go-docker-testsuite` is **not** a dependency. N30 is not violated: e2e tests
+> exist only under the `e2e && darwin` tag and are run only on macOS runners
+> where applicable.
 
 Additional hard-gate jobs (not part of the make interface): **gremlins**
 mutation testing at **80/80** (C08GO) and **gitleaks** secret scan over git
@@ -225,6 +235,8 @@ A change is done **only when CI is green**:
 - `make lint` — golangci-lint, gofmt/gofumpt, gosec, govulncheck, go-arch-lint;
   findings fixed, not suppressed.
 - `make test` — `go test -race` with **coverage ≥ 95%**.
+- `make e2e` — the darwin e2e smoke tests pass on a macOS `e2e` job
+  (Docker-backed e2e remains out of scope).
 - **gremlins** mutation gate (80/80) — no survivors.
 - **gitleaks** secret scan over git history — clean.
 - `make build` — goreleaser produces the release binaries (when a build is
