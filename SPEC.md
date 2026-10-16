@@ -1207,6 +1207,45 @@ imports → `(deny default)` → network → mach → sysctl → file → operat
 > bypassing the server generator, so it does **not** validate exec under the
 > server-rendered deny-default baseline.
 
+> **Practical file-deny-all (validated on macOS 26, SBPL version 3).** A pure
+> deny-all across **every** operation is not practical for running arbitrary
+> commands: `/bin/bash` and dyld require **dozens** of system operations
+> (`process-exec`, `mach-*`, `iokit-*`, `ipc-posix-*`, `system-socket`,
+> `syscall-*` …) that cannot be hand-listed without breaking startup. This is
+> exactly why Bazel's `DarwinSandboxedSpawnRunner` builds its profile on
+> `(allow default)` + targeted `deny` rather than a hand-listed deny-all. The
+> pragmatic, **verified** model (passes `make lint`/`make test`/`make build`
+> under the sandbox) is therefore:
+>   - `(allow default)` **only** for non-file system operations (process/mach/
+>     iokit/ipc/syscall) — unavoidable for the shell to start;
+>   - **FILE access is deny-all**: `(deny file-read*)` + `(deny file-write*)`,
+>     with explicit `(allow file-read* …)` for the system toolchain dirs
+>     (`/usr/lib`, `/usr/share`, `/System/Library`, `/bin`, `/usr/bin`, `/dev`,
+>     `/private/etc/ssl`, homebrew/go paths) and the **single repo root (cwd)**;
+>     write allowed only in cwd + `/dev` + temp dirs. Every other host path
+>     (`.ssh`, `.aws`, `Movies`, `Documents`, `/etc/hosts`, `~/.config/…`) is
+>     denied **without** listing each one.
+>   - `(allow file-read-metadata)` is granted **globally** — it exposes only
+>     `stat`/`readlink`, never file contents, so it is safe to grant broadly and
+>     lets tools (`go`, `golangci-lint`, `make`, `git`) resolve path components
+>     (`EvalSymlinks`, `realpath`, cache dirs) without whitelisting every
+>     intermediate directory.
+>   - `(allow network-outbound)` for outbound connectivity.
+>   - `shell` MUST be an **absolute** path (`/bin/bash`), because
+>     `sandbox-exec` does `execvp(shell)` against the **server** process `PATH`
+>     (not the per-exec env) — a bare `bash` yields
+>     `execvp() of 'bash' failed: No such file or directory` even under
+>     `(allow default)` when the server `PATH` omits `/bin`.
+>
+> **`(debug deny)` is unavailable on macOS 26.** The `debug` macro is absent
+> from `system.sb` (SBPL version 3), so emitting `(debug deny)` — either first
+> or after `(import "system.sb")` — fails to compile with
+> `unbound variable: debug`. Diagnostics must instead rely on the unified log
+> (`log stream --predicate 'subsystem == "com.apple.sandbox"'`) and a
+> `file-read-metadata`-granted environment. The `seatbelt` example profile
+> documents this working file-deny-all template (with `/Users/<username>`
+> placeholder).
+
 **SBPL injection is a real new vector** (an S11-analog absent from the Docker
 backend). No raw user/profile string is ever interpolated into SBPL; only
 typed, validated absolute paths are used, and each path is rejected if it

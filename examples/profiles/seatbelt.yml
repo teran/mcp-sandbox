@@ -10,7 +10,10 @@
 # re-opens surfaces the server baseline denies.
 #
 # This is a VERIFIED file-deny-all profile (validated live against a real
-# macOS host). Scope decisions (understand before widening):
+# macOS host; `make lint` + `make test` + `make build` all pass under it).
+# Replace `/Users/<username>` below with the real repo owner's home path.
+#
+# Scope decisions (understand before widening):
 #   - `(allow default)` is required at the top for NON-file system operations
 #     (process-exec, mach-lookup, iokit, syscall, ipc). macOS 26 (SBPL version
 #     3) cannot start /bin/bash under a hand-listed deny-all of those — the
@@ -20,11 +23,16 @@
 #   - FILE access IS deny-all: `(deny file-read*)` + `(deny file-write*)` close
 #     everything, and only the explicit `(allow ...)` lists below re-open:
 #       * file-read: system dylib/toolchain dirs (unavoidable for macOS to load
-#         ANY binary), /private/etc/ssl (TLS config for curl/openssl), and the
-#         single repo root this sandbox works on (cwd). Nothing else on the
-#         host is readable — .ssh, .aws, Movies, Documents, /etc/hosts,
-#         ~/.config/... are all denied without listing each one.
+#         ANY binary), /private/etc/ssl (TLS config for curl/openssl), the
+#         homebrew + go toolchain, and the single repo root this sandbox works
+#         on (cwd). Nothing else on the host is readable — .ssh, .aws, Movies,
+#         Documents, /etc/hosts, ~/.config/... are all denied without listing
+#         each one.
 #       * file-write: only the cwd (repo root), /dev and temp dirs.
+#   - `(allow file-read-metadata)` is granted GLOBALLY: it exposes only stat /
+#     readlink (no file contents), which tools need to resolve path components
+#     (EvalSymlinks, realpath, go/golangci-lint, make). It is safe to grant
+#     broadly because it never reveals data.
 #   - `(allow network-outbound)` permits outbound connections (curl/git fetch).
 #
 # Two hard constraints from the darwin backend (SPEC §7.12):
@@ -51,6 +59,7 @@ seatbelt:
   # In Seatbelt the LAST matching rule wins, so these rules override the
   # baseline. FILE access is deny-all (only the listed paths re-open); the
   # `(allow default)` covers only non-file system operations (unavoidable).
+  # file-read-metadata is granted globally (safe: metadata only, no contents).
   sbpl: |
     (allow default)
     (allow network-outbound)
@@ -63,13 +72,23 @@ seatbelt:
       (subpath "/usr/bin")
       (subpath "/dev")
       (subpath "/private/etc/ssl")
-      (subpath "/Users/teran/Downloads/Code/Git"))
+      (subpath "/var/select")
+      (subpath "/Library/Developer")
+      (subpath "/opt/homebrew")
+      (subpath "/usr/local/go")
+      (subpath "/usr/local/bin")
+      (subpath "/Users/<username>/go")
+      (subpath "/Users/<username>/Downloads/Code/Git")
+      (subpath "/private")
+      (literal "/Users/<username>/.gitconfig"))
+    (allow file-read-metadata)
     (deny file-write*)
     (allow file-write*
-      (subpath "/Users/teran/Downloads/Code/Git")
+      (subpath "/Users/<username>/Downloads/Code/Git")
       (subpath "/dev")
       (subpath "/private/tmp")
-      (subpath "/private/var/folders"))
+      (subpath "/private/var/folders")
+      (subpath "/tmp"))
   mach_lookups: []
   sysctls: []
 cwd:
