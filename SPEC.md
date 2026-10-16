@@ -434,13 +434,28 @@ type Factory struct {
 ```
 
 - **Docker registers itself** via package `init()`.
-- A future **darwin** backend (macOS Seatbelt via `/usr/bin/sandbox-exec`,
-  §7.12) registers the same way with `Priority` 10 (docker preferred) and an
+- The **darwin** backend (macOS Seatbelt via `/usr/bin/sandbox-exec`, §7.12)
+  registers the same way with `Priority` 10 (docker preferred) and an
   `Available()` gated on `runtime.GOOS == "darwin"`, the presence of
-  `/usr/bin/sandbox-exec`, and `euid != 0`.
+  `/usr/bin/sandbox-exec`, and `euid != 0`. It is now **selectable**: the
+  capability set required to create/drive a sandbox is `Lifecycle + Executable`
+  (not `Introspectable`), which the darwin backend satisfies even though it
+  lacks `Introspectable` (no cgroups on macOS; `Info`/`Stats` →
+  `ErrCapabilityNotSupported`). Previously `needAll` also required
+  `Introspectable`, which made darwin fail `covers()` in `registry.Select` and
+  thus unselectable everywhere.
 - `Available()` is evaluated **lazily inside `sandbox_create`** — never at
   startup (**A02/N35**: no outbound calls at startup). Backend selection happens
   on the first tool call that needs a backend.
+- **Multi-backend `Service` (one runtime per driver).** The MCP `Service`
+  (`infrastructure/mcp`) does **not** cache a single backend. It keeps **one
+  runtime (backend + session manager) per concrete driver**, created lazily on
+  first use (A02/N35), and maps each live **session id → owning driver** so
+  `Exec`/`Info`/`Stats`/`Destroy`/`Get` route to the correct backend while
+  `List`/`DestroyAll` aggregate across all of them. A single `mcp-sandbox`
+  process therefore holds **docker and seatbelt sandboxes simultaneously** —
+  there is no longer a one-backend-per-process coupling. `Create` resolves an
+  auto/empty driver to a concrete one before routing to the owning runtime.
 
 ### 6.4 Declarative tool framework
 
@@ -525,6 +540,13 @@ create → use (exec/read/write/copy/install) → destroy
 
 - **Mounts are immutable** — changing a mount requires `destroy` + `create`
   (recreate). This is enforced by the session manager (X01 state model).
+- **Session id = backend id (not a server-generated opaque id).** The session
+  manager calls the backend **first** and uses the returned id as the session
+  id: for docker that is the **container id** (a sandbox is directly traceable
+  to its container via `docker ps`), for darwin it is the backend-generated
+  `darwin-N` id. A backend that returns an **empty** id falls back to a
+  generated opaque 64-hex (`crypto/rand`) id. The post-create duplicate check
+  enforces uniqueness on that id (X02; see §7.8).
 - **Cleanup is explicit only — idle reaper & orphan-GC are future work.**
   Sandboxes are removed **only** by explicit `sandbox_destroy` /
   `sandbox_destroy_all`; there is **no automatic GC** today. An in-process idle
@@ -810,20 +832,30 @@ itself can **never** be weakened (by profile or caller).
 
 ### 7.8 Session identifiers & ownership
 
-- `session_id` is generated with **`crypto/rand`** — **opaque**, unpredictable.
-- Ownership uses **label-based ownership** in Docker (containers are labelled
-  with the session id) so the server can identify, reap and destroy exactly its
-  own containers.
+- **Session id = backend id.** The session manager calls the backend **first**
+  and uses the **backend's returned id** as the session id (§6.6). For the
+  **docker** backend that is the **container id**, so a sandbox is directly
+  traceable to its container via `docker ps`; for the **darwin** backend it is
+  the backend-generated `darwin-N` id. A backend returning an **empty** id
+  falls back to a generated opaque 64-hex `crypto/rand` id (the previous
+  default, now only a fallback). The id is returned by `sandbox_create` as
+  `id` and is the handle used by every other tool.
+- **Owner label is retained; the session label is redundant.** The docker
+  backend always applies the owner label (`dev.teran.sandbox.owner =
+  mcp-sandbox`) so the server can identify, reap and destroy exactly its own
+  containers. The per-session label `dev.teran.sandbox.session` is **now
+  redundant** because the session id *is* the container id; the docker backend
+  sets it only when a caller passes a session id via context, which the session
+  manager no longer does.
 - **OpenCode session id (`session_id`):** `sandbox_create` takes a **required**
   `session_id` parameter carrying the OpenCode client session id that created
-  the sandbox. The backend records it as a dedicated container label
+  the sandbox. The docker backend records it as a dedicated container label
   (`dev.teran.sandbox.opencode_session`, set only when non-empty) so each
   sandbox container is traceable to the OpenCode session that created it. This
-  is **distinct** from the internal sandbox session id (the opaque `crypto/rand`
-  id above, returned by `sandbox_create` as `id` and never passed as a tool
-  parameter). The required-ness is enforced at the tool input boundary; the
-  domain-level `SandboxSpec.ClientSessionID` is optional so internal callers and
-  e2e specs that build a spec directly can omit it.
+  is **distinct** from the sandbox session id above (the backend/container id).
+  The required-ness is enforced at the tool input boundary; the domain-level
+  `SandboxSpec.ClientSessionID` is optional so internal callers and e2e specs
+  that build a spec directly can omit it.
 - Each session has a **per-session mutex**; `destroy` is **idempotent** (X02).
 
 ### 7.9 Supply-chain (T7 / C05 / S05)
@@ -1039,6 +1071,10 @@ If the requested `profile` is not in the store, `sandbox_create` returns a
 > future-extension slot (§1) and the backend-abstraction roadmap (§7.7).
 > **Docker remains the default/preferred backend** (lower `Priority`); the
 > darwin backend is selected only on macOS when Docker is unavailable.
+> **It is now selectable**: the create/exec/destroy capability set
+> (`Lifecycle + Executable`) no longer includes `Introspectable`, which the
+> darwin backend legitimately lacks (no cgroups on macOS), so it passes
+> capability-based selection on macOS (§6.3).
 >
 > **Implementation status:** the backend is **implemented** in
 > `infrastructure/backend/darwin` (`darwin.go` — portable core; `runner_darwin.go`
@@ -1152,6 +1188,24 @@ imports → `(deny default)` → network → mach → sysctl → file → operat
 | `UIDGID` | **not applied** (self-sandbox runs as the current host user) |
 | mach | `(deny mach-lookup)` + allow-list |
 | sysctl | `(deny sysctl*)` + allow-list |
+
+> **Deny-all default — every allowance is operator-authored.** The server-rendered
+> baseline for the darwin backend is a **single default `(deny default)`** — there
+> is **no** implicit `allow` in the generated profile. **Every** allowance,
+> including the **`(allow process-exec*)`** needed to run a command, **must be
+> explicitly authored by the operator** in the profile's `seatbelt.sbpl`. Without
+> a `process-exec` (and the file-read/mach/sysctl grants for the shell and its
+> runtime, e.g. `/bin`, `/usr/bin`, `/usr/lib`, dyld), `sandbox_exec` cannot run
+> anything — the shell itself is denied by `(deny default)` and `execvp` fails.
+> This is **by design**: `deny-all` is the only default; the operator owns all
+> grants. The `seatbelt` example profile above only grants `network-outbound`,
+> so it is illustrative for `sandbox_create`/`sandbox_list` but **not** sufficient
+> to `sandbox_exec` — add the shell-exec allowances to run commands. **This gap
+> is open**: the server generator does not yet emit `process-exec*`; supplying it
+> is an operator requirement, not something the server does. The darwin e2e
+> (`§11`) drives `sandbox-exec` with an `(allow default)` SBPL directly,
+> bypassing the server generator, so it does **not** validate exec under the
+> server-rendered deny-default baseline.
 
 **SBPL injection is a real new vector** (an S11-analog absent from the Docker
 backend). No raw user/profile string is ever interpolated into SBPL; only

@@ -277,6 +277,20 @@ process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
 > provides **policy-based containment, not kernel/container isolation** — it is
 > strictly weaker than the Docker backend.
 
+> **Current limitation (darwin exec):** the **server-rendered SBPL baseline is
+> deny-default and does NOT grant `process-exec*`** — `sbpl.Generate` emits
+> `(deny default)` + network + mach + sysctl + file + the operator
+> `seatbelt.sbpl`, but no `process-exec*`. Without it, `sandbox-exec` fails at
+> `execvp()` of the shell. To actually run a command, the **operator-authored
+> `seatbelt.sbpl` in the darwin profile MUST include `(allow process-exec*)`**
+> (plus the file-read/mach/sysctl allowances the shell and its runtime need —
+> `/bin`, `/usr/bin`, `/usr/lib`, dyld). The bundled `seatbelt` examples only
+> grant `network-outbound`/`process-fork`, so they are **illustrative for
+> create/list but not yet sufficient to exec commands** on a live host. This gap
+> is open (see `SPEC.md` §7.12). The darwin e2e drives `sandbox-exec` with an
+> `(allow default)` SBPL directly, so it does **not** validate exec under the
+> server-generated baseline.
+
 **What it is**
 
 Unlike the Docker backend — which provisions a per-session container and
@@ -333,6 +347,13 @@ The backend is chosen **lazily** on the first `sandbox_create` (no outbound
 calls at startup): on macOS with `/usr/bin/sandbox-exec` present the
 `sandbox-exec` backend is selected; on Linux it is unavailable and the Docker
 backend (or an error) is used instead.
+
+> **Multi-backend:** the server is **not** limited to one backend per process.
+> It keeps a separate runtime (backend + session manager) **per concrete
+> driver** and routes each session to the backend that owns it, so a single
+> `mcp-sandbox` process can hold **docker and seatbelt sandboxes
+> simultaneously** (`SPEC.md` §6.3). Auto/empty driver selection resolves to a
+> concrete driver per `sandbox_create` (docker preferred when available).
 
 > **Portability note:** the `sandbox-exec` backend is **macOS-only**. On Linux
 > there is **no `sandbox-exec`**; to sandbox there, use the Docker backend or a
@@ -395,9 +416,12 @@ server:
   session working directory (mounted **1:1** at the same absolute path) and
   every profile mount source (see `SPEC.md` §7.2).
 - opencode passes its session id as a **required** `session_id` parameter to
-  `sandbox_create`; the server records it as a container label so each sandbox
-  is traceable to the OpenCode session that created it. `sandbox_create` also
-  takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
+  `sandbox_create`; the server records it as an `opencode_session` container
+  label so each sandbox is traceable to the OpenCode session that created it.
+  The sandbox's own `id` returned by `sandbox_create` is the **container id**
+  for the Docker backend (so a sandbox is directly traceable via `docker ps`)
+  and a `darwin-N` id for the darwin backend (`SPEC.md` §7.8). `sandbox_create`
+  also takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
   **required** `cwd`. The session `cwd` is mounted 1:1 read-only by default (see
   `SPEC.md` §7.2, §7.11).
 - Use `opencode mcp list` / `/mcps` to check the server is connected.

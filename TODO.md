@@ -189,6 +189,62 @@ runs via `make e2e` on a dedicated macOS runner.
 - [x] **Docs:** §7.12 / README "macOS driver" updated to reflect the implemented
       darwin `log stream` tailer and the darwin e2e — English, `D01 D02`
 
+### Docker backend — container resolution after the session-id change (BUG — fixed in code + tests, CI pending)
+
+Introduced by the "session id = backend id" refactor (SPEC §6.6/§7.8): the session
+manager now calls the backend first and uses its returned id as the session id
+(docker = **container id**) and no longer passes a generated session id via
+`WithSessionID`, so docker containers are created **without** the
+`dev.teran.sandbox.session` label.
+
+- [x] **Bug:** `Destroy`/`Exec`/`Info`/`Stats` (`infrastructure/backend/docker/
+      docker.go:313,552,683,697`) still resolve the container via
+      `containerIDBySession`, which filters by the `dev.teran.sandbox.session`
+      label. Since the manager no longer sets that label, the filter matches
+      nothing and every docker operation returns `ErrNotFound` in the
+      integrated manager → backend flow. The docker unit tests pass only because
+      they drive the backend directly with a session id in context (exercising
+      the label path), not the integrated flow.
+- [x] **Fix (TDD):** because the session id IS the container id, use the passed
+      id directly as the container id in `Destroy`/`Exec`/`Info`/`Stats` (the
+      Docker API errors naturally for an unknown id); drop the now-obsolete
+      `containerIDBySession` label lookup; update the docker tests that assert
+      the label path. The `dev.teran.sandbox.owner` label remains for
+      orphan-identification. Criteria: `X01 X02 S04`.
+      **Status:** code + tests **done** (`@qa` updated `docker_test.go`,
+      `fake_client_test.go`, `docker_error_test.go`, `docker_logging_test.go`,
+      `progress_test.go` and added `manager_integration_test.go`; `@developer`
+      changed `docker.go`). **CI verification still pending** — `go test` could
+      not be run in the working environment (see next section: the short-id
+      routing bug blocks all sandbox tool exec). Run `make test` + `make e2e`
+      to confirm coverage ≥ 95% and the lint/mutation gates.
+
+### Docker / tool layer — short-id routing bug (NEW — open, blocks tool exec)
+
+`sandbox_create` returns `domainsession.ShortID(s.ID())` (12 chars) and
+`sandbox_list`/`sandbox_info` display `ShortID` too
+(`application/tools/sandbox/{write,read}.go`), but `Service.Exec/Info/Stats/
+Destroy` route via `runtimeFor(id)` (`infrastructure/mcp/service.go:172`) which
+does an **exact** `sessionDriver[id]` lookup keyed by the **full** session id
+(registered as `sess.ID()` in `Service.Create`, service.go:220). So a client
+that echoes the returned/displayed short id always gets `ErrSessionNotFound`
+(or a silent no-op destroy) — **no docker tool op can ever route through the
+tools**. This is independent of the (fixed) docker label bug above.
+
+- [ ] **Fix (TDD):** make tool-id routing resolve short ids — either have
+      `runtimeFor` do prefix resolution against live session ids (mirroring
+      `Manager.resolveID`, SPEC §6.6), or return/pass the full id. Keep
+      `Destroy` idempotent and preserve prefix-ambiguity handling. Criteria:
+      `X01 X02`. `@architect`/`@developer`/`@qa`. This also unblocks running
+      `make test` from inside a docker sandbox.
+      **Status: code + tests done** (`@qa` added `TestService_ShortID_*`,
+      `TestService_PrefixAmbiguous`, etc.; `@developer` added prefix-resolving
+      `Service.resolveID` in `infrastructure/mcp/service.go` returning the
+      owning runtime + full id, routed through `Get`/`Destroy`/`Exec`/`Info`/
+      `Stats`, `runtimeFor` removed, full id passed to backends). **CI
+      verification pending** — requires the server to be rebuilt + restarted so
+      tool exec unblocks; then `make test` + `make e2e`.
+
 ### Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).

@@ -11,7 +11,9 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -27,11 +29,16 @@ import (
 	"github.com/teran/mcp-sandbox/infrastructure/logging"
 )
 
-// needAll is the capability set required to create and drive a sandbox.
+// needAll is the capability set required to create and drive a sandbox
+// (create/exec/destroy): Lifecycle + Executable. Introspectable is deliberately
+// NOT required — the darwin (sandbox-exec) backend legitimately lacks it (no
+// cgroups on macOS; Info/Stats return ErrCapabilityNotSupported, SPEC §6.2 "no
+// stubs"), and it must still be selectable. Requiring Introspectable here made
+// darwin never pass covers() in registry.Select, so it was unselectable
+// everywhere.
 var needAll = role.CapabilitySet{
-	Lifecycle:      true,
-	Executable:     true,
-	Introspectable: true,
+	Lifecycle:  true,
+	Executable: true,
 }
 
 // isAuto reports whether a requested driver means "defer to selection": the
@@ -52,15 +59,22 @@ type Option func(*Service)
 func WithLogger(e *logrus.Entry) Option { return func(s *Service) { s.log = e } }
 
 // Service implements the application-layer sandbox.Service port. It lazily
-// selects and constructs a backend on the first call that needs one (A02/N35 —
-// no startup probing) and drives the in-memory session manager (X01/X05).
+// selects and constructs a backend per concrete driver (A02/N35 — no startup
+// probing) and drives an in-memory session manager per backend (X01/X05).
+// Multiple drivers (e.g. docker + seatbelt) coexist in one Service; a session
+// is routed to the backend that owns it by its id.
 type Service struct {
 	reg *backend.Registry
 	cfg backend.Config
 
-	mu  sync.Mutex
-	mgr *session.Manager
-	be  role.Backend
+	mu sync.Mutex
+	// runtimes holds one backend + session manager per concrete driver, created
+	// lazily on first use (A02/N35). Multiple drivers coexist.
+	runtimes map[spec.Driver]*driverRuntime
+	// sessionDriver maps a live session id to the driver that owns it, so
+	// session-id-addressed ops (Exec/Info/Stats/Destroy/Get) route to the
+	// correct backend.
+	sessionDriver map[string]spec.Driver
 
 	// log is the base logrus entry for trace diagnostics (L09).
 	log *logrus.Entry
@@ -70,9 +84,21 @@ type Service struct {
 	profiles *profile.Store
 }
 
+// driverRuntime couples a constructed backend with its session manager.
+type driverRuntime struct {
+	be  role.Backend
+	mgr *session.Manager
+}
+
 // NewService returns a sandbox Service backed by the given backend registry.
 func NewService(reg *backend.Registry, cfg backend.Config, opts ...Option) *Service {
-	s := &Service{reg: reg, cfg: cfg, log: serviceLog}
+	s := &Service{
+		reg:           reg,
+		cfg:           cfg,
+		log:           serviceLog,
+		runtimes:      make(map[spec.Driver]*driverRuntime),
+		sessionDriver: make(map[string]spec.Driver),
+	}
 	for _, o := range opts {
 		if o != nil {
 			o(s)
@@ -96,40 +122,94 @@ func (s *Service) entryFor(ctx context.Context, sessionID string) *logrus.Entry 
 // SetProfileStore attaches the read-only operator profile store (Phase 7).
 func (s *Service) SetProfileStore(st *profile.Store) { s.profiles = st }
 
-// ensure lazily selects and constructs the backend and session manager exactly
-// once (one backend per process). Availability is evaluated here, on the first
-// call (A02/N35). When a backend is already cached:
-//
-//   - want == auto → the cached backend is reused as-is (auto never triggers a
-//     mismatch);
-//   - want is a concrete driver → the cached backend's driver must match, else
-//     the request is rejected (one backend per process, SPEC §7.12).
-func (s *Service) ensure(ctx context.Context, want spec.Driver) (*session.Manager, role.Backend, error) {
+// ensure returns the runtime (backend + session manager) for a concrete driver,
+// lazily constructing it on first use (A02/N35). Multiple drivers coexist, each
+// with its own runtime. `want` must be a concrete driver (auto is resolved by
+// resolveDriver before Create).
+func (s *Service) ensure(ctx context.Context, want spec.Driver) (*driverRuntime, error) {
+	if isAuto(want) {
+		return nil, fmt.Errorf("backend: auto driver must be resolved to a concrete driver")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.mgr != nil {
-		if !isAuto(want) && s.be.Driver() != want {
-			return nil, nil, fmt.Errorf("backend driver %q does not match requested driver %q", s.be.Driver(), want)
-		}
-
-		return s.mgr, s.be, nil
+	if rt, ok := s.runtimes[want]; ok {
+		return rt, nil
 	}
 	f, err := s.reg.Select(ctx, needAll, want)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	be, err := f.New(s.cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	life, ok := be.(role.Lifecycle)
 	if !ok {
-		return nil, nil, role.ErrCapabilityNotSupported
+		return nil, role.ErrCapabilityNotSupported
 	}
-	s.be = be
-	s.mgr = session.NewManager(life)
+	rt := &driverRuntime{be: be, mgr: session.NewManager(life)}
+	s.runtimes[want] = rt
 
-	return s.mgr, be, nil
+	return rt, nil
+}
+
+// resolveDriver resolves an auto (or empty) driver to a concrete one by
+// selecting the best available backend; a concrete driver passes through
+// unchanged. It is used by Create, since the resulting spec's driver is never
+// auto (SPEC §7.12) but callers/tests may pass an empty driver.
+func (s *Service) resolveDriver(ctx context.Context, want spec.Driver) (spec.Driver, error) {
+	if !isAuto(want) {
+		return want, nil
+	}
+	f, err := s.reg.Select(ctx, needAll, spec.DriverAuto)
+	if err != nil {
+		return "", err
+	}
+
+	return f.Driver, nil
+}
+
+// resolveID resolves a caller-supplied id to the owning runtime and the full
+// session id (SPEC §6.6). It must be called with s.mu held (Lock). An exact
+// full id fast-paths O(1) via sessionDriver; otherwise every live session id
+// (the sessionDriver keys) is scanned for a unique prefix match, mirroring
+// Manager.resolveID. Zero matches returns ErrSessionNotFound, more than one
+// match returns ErrAmbiguousSessionID, and an empty id is never a valid
+// resolution (a real session id is always non-empty, §7.8).
+func (s *Service) resolveID(prefix string) (*driverRuntime, string, error) {
+	if prefix == "" {
+		return nil, "", session.ErrSessionNotFound
+	}
+	if d, ok := s.sessionDriver[prefix]; ok {
+		rt, ok := s.runtimes[d]
+		if !ok {
+			return nil, "", session.ErrSessionNotFound
+		}
+
+		return rt, prefix, nil
+	}
+
+	var matchDriver spec.Driver
+	var match string
+	for id, d := range s.sessionDriver {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		if match != "" {
+			return nil, "", session.ErrAmbiguousSessionID
+		}
+		match = id
+		matchDriver = d
+	}
+	if match == "" {
+		return nil, "", session.ErrSessionNotFound
+	}
+	rt, ok := s.runtimes[matchDriver]
+	if !ok {
+		return nil, "", session.ErrSessionNotFound
+	}
+
+	return rt, match, nil
 }
 
 // Policy returns the server-enforced sandbox policy.
@@ -152,107 +232,159 @@ func (s *Service) Policy() sandboxtool.Policy {
 func (s *Service) BackendName() string { return s.Policy().Backend }
 
 // Create builds a sandbox from a typed spec (search-before-create, X02). The
-// spec's driver drives backend selection (SPEC §7.12).
+// spec's driver drives backend selection (SPEC §7.12); each driver has its own
+// runtime, so docker and seatbelt sandboxes coexist.
 func (s *Service) Create(ctx context.Context, sp spec.SandboxSpec) (*domainsession.Session, error) {
-	mgr, _, err := s.ensure(ctx, sp.Driver)
+	d, err := s.resolveDriver(ctx, sp.Driver)
 	if err != nil {
 		return nil, err
 	}
+	rt, err := s.ensure(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := rt.mgr.Create(ctx, sp)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.sessionDriver[sess.ID()] = d
+	s.mu.Unlock()
 
-	return mgr.Create(ctx, sp)
+	return sess, nil
 }
 
-// Get returns the session with the given id.
+// Get returns the session with the given id, routing a unique short/prefix id
+// to the owning backend and the full id (SPEC §6.6).
 func (s *Service) Get(id string) (*domainsession.Session, error) {
 	s.mu.Lock()
-	mgr := s.mgr
+	runtime, full, err := s.resolveID(id)
 	s.mu.Unlock()
-	if mgr == nil {
-		return nil, session.ErrSessionNotFound
+	if err != nil {
+		return nil, err
 	}
 
-	return mgr.Get(id)
+	return runtime.mgr.Get(full)
 }
 
-// List returns every live session.
+// List returns every live session across all backends.
 func (s *Service) List(ctx context.Context) []*domainsession.Session {
 	s.mu.Lock()
-	mgr := s.mgr
+	rts := make([]*driverRuntime, 0, len(s.runtimes))
+	for _, rt := range s.runtimes {
+		rts = append(rts, rt)
+	}
 	s.mu.Unlock()
-	if mgr == nil {
-		return nil
+
+	var out []*domainsession.Session
+	for _, rt := range rts {
+		out = append(out, rt.mgr.List(ctx)...)
 	}
 
-	return mgr.List(ctx)
+	return out
 }
 
-// Destroy tears down one session (idempotent, X02).
+// Destroy tears down one session (idempotent, X02), routing a unique
+// short/prefix id to the owning backend and the full id. An unknown id is a
+// no-op; an ambiguous prefix is propagated as ErrAmbiguousSessionID.
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	s.mu.Lock()
-	mgr := s.mgr
+	runtime, full, err := s.resolveID(id)
 	s.mu.Unlock()
-	if mgr == nil {
-		return nil
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			// Idempotent no-op (X02): a zero-match id/prefix is not an error.
+			return nil
+		}
+
+		return err
 	}
 
-	return mgr.Destroy(ctx, id)
+	if err := runtime.mgr.Destroy(ctx, full); err != nil {
+		return err
+	}
+
+	// The session is gone; drop its id from the routing table so a subsequent
+	// short/prefix lookup no longer resolves to the destroyed backend session.
+	s.mu.Lock()
+	delete(s.sessionDriver, full)
+	s.mu.Unlock()
+
+	return nil
 }
 
-// DestroyAll tears down every session (idempotent).
+// DestroyAll tears down every session across all backends (idempotent).
 func (s *Service) DestroyAll(ctx context.Context) error {
 	s.mu.Lock()
-	mgr := s.mgr
+	rts := make([]*driverRuntime, 0, len(s.runtimes))
+	for _, rt := range s.runtimes {
+		rts = append(rts, rt)
+	}
 	s.mu.Unlock()
-	if mgr == nil {
-		return nil
+
+	for _, rt := range rts {
+		if err := rt.mgr.DestroyAll(ctx); err != nil {
+			return err
+		}
 	}
 
-	return mgr.DestroyAll(ctx)
+	return nil
 }
 
-// Exec runs a command as an argument array (S11) through the Executable role.
+// Exec runs a command as an argument array (S11) through the Executable role of
+// the backend that owns the session (routed by session id; a unique short id is
+// resolved to the full id before it reaches the backend).
 func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, error) {
 	s.entryFor(ctx, req.SandboxID).WithField("operation", "exec").Trace("sandbox: exec")
-	_, be, err := s.ensure(ctx, spec.DriverAuto)
+	s.mu.Lock()
+	runtime, full, err := s.resolveID(req.SandboxID)
+	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	ex, ok := be.(role.Executable)
+	executor, ok := runtime.be.(role.Executable)
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
+	req.SandboxID = full
 
-	return ex.Exec(ctx, req.SandboxID, req)
+	return executor.Exec(ctx, full, req)
 }
 
-// Info returns detailed state through the Introspectable role.
+// Info returns detailed state through the Introspectable role of the backend
+// that owns the session (a unique short id is resolved to the full id).
 func (s *Service) Info(ctx context.Context, id string) (any, error) {
 	s.entryFor(ctx, id).WithField("operation", "info").Trace("sandbox: info")
-	_, be, err := s.ensure(ctx, spec.DriverAuto)
+	s.mu.Lock()
+	runtime, full, err := s.resolveID(id)
+	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	ins, ok := be.(role.Introspectable)
+	ins, ok := runtime.be.(role.Introspectable)
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
 
-	return ins.Info(ctx, id)
+	return ins.Info(ctx, full)
 }
 
-// Stats returns live resource usage through the Introspectable role.
+// Stats returns live resource usage through the Introspectable role of the
+// backend that owns the session (a unique short id is resolved to the full id).
 func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 	s.entryFor(ctx, id).WithField("operation", "stats").Trace("sandbox: stats")
-	_, be, err := s.ensure(ctx, spec.DriverAuto)
+	s.mu.Lock()
+	runtime, full, err := s.resolveID(id)
+	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	ins, ok := be.(role.Introspectable)
+	ins, ok := runtime.be.(role.Introspectable)
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
 
-	return ins.Stats(ctx, id)
+	return ins.Stats(ctx, full)
 }
 
 // defaultIsolation is the immutable, server-enforced hardening block (SPEC
