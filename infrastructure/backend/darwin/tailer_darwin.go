@@ -84,14 +84,14 @@ func (t *unifiedLogTailer) Lines(ctx context.Context) (<-chan string, error) {
 // on context cancellation or EOF, and closes ch exactly once. The child is
 // SIGKILLed (no-op once it has exited) and then reaped with cmd.Wait, so no
 // zombie process is left behind on any exit path.
-func streamTailer(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, ch chan<- string) {
+func streamTailer(ctx context.Context, cmd *exec.Cmd, stdout io.ReadCloser, ch chan<- string) {
 	defer close(ch)
 	defer func() { _ = cmd.Wait() }() // reap the child; runs after killLogGroup (LIFO)
 	defer killLogGroup(cmd)
 
 	stop := make(chan struct{})
 	defer close(stop)
-	go cancelWatcher(ctx, cmd, stop)
+	go cancelWatcher(ctx, cmd, stdout, stop)
 
 	scanner := bufio.NewScanner(stdout)
 	// Raise the token limit well above the 64 KiB default so an over-long
@@ -108,13 +108,17 @@ func streamTailer(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, ch chan<
 	}
 }
 
-// cancelWatcher SIGKILLs the child's process group when ctx is done, or exits
-// when stop is closed (the stream goroutine is already finishing). It never
+// cancelWatcher kills the child's process group and closes the stdout pipe read
+// end when ctx is done, or exits when stop is closed (the stream goroutine is
+// already finishing). Closing the pipe deterministically unblocks a scanner
+// blocked on it even if the child group has not fully died yet, so Lines always
+// closes its channel on cancel regardless of child/pipe timing. It never
 // outlives the stream goroutine, so no goroutine leaks.
-func cancelWatcher(ctx context.Context, cmd *exec.Cmd, stop <-chan struct{}) {
+func cancelWatcher(ctx context.Context, cmd *exec.Cmd, stdout io.Closer, stop <-chan struct{}) {
 	select {
 	case <-ctx.Done():
 		killLogGroup(cmd)
+		_ = stdout.Close()
 	case <-stop:
 	}
 }
