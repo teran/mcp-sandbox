@@ -114,16 +114,28 @@ func (p *osProcess) KillGroup(sig syscall.Signal) error {
 // SIGKILLs the group and returns ctx.Err(). On a normal exit it returns the
 // exit code and captured output.
 func (p *osProcess) Wait(ctx context.Context) (*Result, error) {
-	errCh := make(chan error, 1)
-	go func() { errCh <- p.cmd.Wait() }()
+	// done is closed when cmd.Wait returns; waitErr is written before close,
+	// so receiving from done establishes happens-before and makes the read of
+	// waitErr race-free.
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = p.cmd.Wait()
+		close(done)
+	}()
 
 	select {
 	case <-ctx.Done():
 		_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
-		<-errCh
+		// Reap the child (block until cmd.Wait returns). waitErr is expected
+		// to be a non-nil signal error here (the group was SIGKILLed on
+		// cancellation) and is deliberately ignored — the caller receives
+		// ctx.Err(), not the exit error.
+		<-done
 
 		return nil, ctx.Err()
-	case err := <-errCh:
+	case <-done:
+		err := waitErr
 		if err != nil {
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				if ws, ok := ee.Sys().(syscall.WaitStatus); ok {

@@ -72,14 +72,16 @@ func TestBackend_TraceLogsCarrySessionIDArg(t *testing.T) {
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
 	b := New(api, nil, WithLogger(newBufferLogger(&buf)))
 
-	ctx := logging.WithRequestID(context.Background(), "req-exec")
-	// Seed a container owned by session "sess-exec" so Exec can resolve it.
+	// Seed a container so Exec can run against a real container id (the session
+	// id IS the container id).
 	s := baseSpec()
-	if _, err := b.Create(domainsession.WithSessionID(context.Background(), "sess-exec"), s); err != nil {
+	id, err := b.Create(context.Background(), s)
+	if err != nil {
 		t.Fatalf("seed Create: %v", err)
 	}
 
-	res, err := b.Exec(ctx, "sess-exec", exec.Request{Argv: []string{"echo", "hi"}, User: "1000:1000"})
+	ctx := logging.WithRequestID(context.Background(), "req-exec")
+	res, err := b.Exec(ctx, id, exec.Request{Argv: []string{"echo", "hi"}, User: "1000:1000"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -91,8 +93,8 @@ func TestBackend_TraceLogsCarrySessionIDArg(t *testing.T) {
 	if !strings.Contains(out, "req-exec") {
 		t.Fatalf("trace output missing request_id:\n%s", out)
 	}
-	if !strings.Contains(out, "sess-exec") {
-		t.Fatalf("trace output missing session_id:\n%s", out)
+	if !strings.Contains(out, id) {
+		t.Fatalf("trace output missing session_id %q:\n%s", id, out)
 	}
 	if !strings.Contains(out, "docker: exec done") {
 		t.Fatalf("trace output missing exec done log:\n%s", out)

@@ -25,7 +25,6 @@ import (
 	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -82,9 +81,6 @@ const (
 	// without guessing.
 	defaultWorkdir = tmpfsTmpDir
 )
-
-// ErrNotFound is returned when no container is owned by the given session id.
-var ErrNotFound = errors.New("docker: sandbox not found")
 
 // log is the package logger for non-fatal diagnostics (e.g. a missing or
 // unreadable Docker client config while pulling). It uses logrus directly — the
@@ -308,17 +304,19 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 
 // Destroy removes the container owned by the given session id. It is
 // idempotent: destroying a session with no backing container is a no-op (X02).
+// Because the session id IS the container id (§7.8), the id is passed directly
+// to the Docker remove API; an unknown id surfaces the daemon's "no such
+// container" error, which is treated as an idempotent no-op.
 func (b *Backend) Destroy(ctx context.Context, id string) error {
 	b.entryFor(ctx, id).Trace("docker: destroy")
-	cid, err := b.containerIDBySession(ctx, id)
-	if errors.Is(err, ErrNotFound) {
+	err := b.api.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	if isNoSuchContainer(err) {
+		// Idempotent no-op (X02): destroying a session with no backing
+		// container is not an error.
 		return nil
 	}
-	if err != nil {
-		return err
-	}
 
-	return b.api.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	return err
 }
 
 // buildConfig maps the spec into the docker container.Config. The non-root
@@ -549,10 +547,6 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 
 	entry := b.entryFor(execCtx, id)
 	entry.Trace("docker: exec create")
-	cid, err := b.containerIDBySession(execCtx, id)
-	if err != nil {
-		return nil, err
-	}
 
 	opts := container.ExecOptions{
 		Cmd:          req.Argv,
@@ -564,7 +558,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		Tty:          false,
 		Privileged:   false, // never --privileged (N21)
 	}
-	execResp, err := b.api.ContainerExecCreate(execCtx, cid, opts)
+	execResp, err := b.api.ContainerExecCreate(execCtx, id, opts)
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec create: %w", err)
 	}
@@ -680,11 +674,7 @@ func (s *execStream) flush(execCtx context.Context) {
 
 // Info returns detailed state of the sandbox.
 func (b *Backend) Info(ctx context.Context, id string) (any, error) {
-	cid, err := b.containerIDBySession(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	inspect, err := b.api.ContainerInspect(ctx, cid)
+	inspect, err := b.api.ContainerInspect(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("docker: inspect: %w", err)
 	}
@@ -694,11 +684,7 @@ func (b *Backend) Info(ctx context.Context, id string) (any, error) {
 
 // Stats returns live resource usage of the sandbox.
 func (b *Backend) Stats(ctx context.Context, id string) (any, error) {
-	cid, err := b.containerIDBySession(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	reader, err := b.api.ContainerStats(ctx, cid, false)
+	reader, err := b.api.ContainerStats(ctx, id, false)
 	if err != nil {
 		return nil, fmt.Errorf("docker: stats: %w", err)
 	}
@@ -715,25 +701,6 @@ func (b *Backend) Stats(ctx context.Context, id string) (any, error) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-// containerIDBySession resolves the container id owning the given session id
-// via label-based ownership (§7.8). It returns ErrNotFound when no container
-// is owned by the session.
-func (b *Backend) containerIDBySession(ctx context.Context, id string) (string, error) {
-	if id == "" {
-		return "", fmt.Errorf("docker: empty session id")
-	}
-	args := filters.NewArgs(filters.Arg("label", sessionLabelKey+"="+id))
-	list, err := b.api.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
-	if err != nil {
-		return "", fmt.Errorf("docker: list containers: %w", err)
-	}
-	if len(list) == 0 {
-		return "", ErrNotFound
-	}
-
-	return list[0].ID, nil
-}
 
 // verifyHostPath ensures a host path stays within ALLOW_DIRS (S04). When
 // symlinks are disallowed it resolves symlinks, checks the real path against
@@ -807,6 +774,15 @@ func (b *Backend) validateImageRef(ref string) error {
 // reference.
 func isNoSuchImage(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "No such image")
+}
+
+// isNoSuchContainer reports whether an error means the container does not exist
+// ("No such container"). Because the session id IS the container id (§7.8), the
+// Docker API errors naturally for an unknown id; this classifier lets Destroy
+// treat a missing container as an idempotent no-op (X02). Like isNoSuchImage it
+// relies on the daemon's stable error message rather than error-type assertion.
+func isNoSuchContainer(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "No such container")
 }
 
 // pullImage pulls the given image reference from its registry (§7.9, C05/T7).

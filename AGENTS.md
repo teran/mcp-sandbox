@@ -159,6 +159,15 @@ See `SPEC.md` §7.
   hand-roll a low-level `http.Client` for Docker
   (N05GO) — resty is not suited to the unix-socket transport. If a future
   backend requires genuine remote HTTP, use `resty.dev/v3` (L02GO).
+- **darwin exec limitation (SPEC §7.12):** the server-rendered SBPL is
+  deny-default and emits **no `process-exec*`**, so an operator-authored
+  `seatbelt.sbpl` in the darwin profile MUST supply `(allow process-exec*)`
+  (plus the shell runtime's file/mach/sysctl allowances) before a command can
+  actually exec. The bundled `seatbelt` examples are illustrative for
+  create/list but **not yet sufficient to exec commands**; this gap is open
+  (the server generator does not yet emit `process-exec*`). The darwin e2e
+  drives `sandbox-exec` with an `(allow default)` SBPL directly, so it does not
+  validate exec under the server-generated baseline.
 - **No retry/backoff** — set an explicit timeout/context and **return the error
   to the model** (X03/L02GO). For `sandbox_exec`, the optional `req.Timeout`
   (seconds) is applied as a `context.WithTimeout` cancellation that reaches the
@@ -180,6 +189,15 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
   No persistence, no DB, no encryption-at-rest, no migration (X04 N/A).
   Each `mcp-sandbox` process tracks **only its own** sessions; concurrent copies
   do not coordinate.
+- **Multi-backend, one runtime per driver (SPEC §6.3):** the MCP `Service`
+  keeps a backend + session manager **per concrete driver**, created lazily
+  (A02/N35), and routes each session to its owning backend — a single process
+  can hold docker and seatbelt sandboxes simultaneously.
+- **Session id = backend id (SPEC §7.8):** the session manager calls the
+  backend first and uses its returned id — docker = **container id**, darwin =
+  `darwin-N`; an empty backend id falls back to an opaque 64-hex id. The docker
+  `dev.teran.sandbox.session` label is therefore **redundant** (the session id
+  *is* the container id); the `dev.teran.sandbox.owner` label remains.
 - **Session cleanup (explicit only; reaper/orphan-GC are future work):**
   sandboxes are removed **only** by explicit `sandbox_destroy` /
   `sandbox_destroy_all`. There is **no automatic GC** — the idle reaper

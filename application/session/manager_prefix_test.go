@@ -46,22 +46,14 @@ func makeIDs() (id1, id2, id3 string) {
 }
 
 // newManagerWithIDs returns a manager whose sessions carry exactly the given
-// ids (in order), created via a deterministic newID. The fake lifecycle is
-// returned too so tests can assert on backend side-effects.
+// ids (in order), assigned by the lifecycle backend (idSeq) — mirroring the
+// backend-owned-id design where the session id IS the backend-returned id. The
+// fake lifecycle is returned too so tests can assert on backend side-effects.
 func newManagerWithIDs(t *testing.T, ids ...string) (*Manager, *fakeLife) {
 	t.Helper()
 	life := newFakeLife()
+	life.idSeq = ids
 	m := NewManager(life)
-	var i int
-	m.newID = func() (string, error) {
-		if i >= len(ids) {
-			return "", errors.New("no more ids")
-		}
-		id := ids[i]
-		i++
-
-		return id, nil
-	}
 	for range ids {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatalf("Create: %v", err)

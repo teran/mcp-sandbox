@@ -8,7 +8,6 @@ import (
 
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
-	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
 // progressSink is a thread-safe Sink recording every event.
@@ -50,13 +49,13 @@ func TestExec_ProgressStreamingOrderedStartChunkDone(t *testing.T) {
 	api.execResults = []execResult{{stdout: "hello\nworld\n", stderr: "boom\n", exitCode: 3}}
 	api.execExitCode = 3 // ContainerExecAttach consumes the execResult; inspect uses this
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-p")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	ps := &progressSink{}
-	res, err := b.Exec(progress.WithSink(ctx, ps.sink), "sess-p", exec.Request{Argv: []string{"echo", "hi"}})
+	res, err := b.Exec(progress.WithSink(context.Background(), ps.sink), id, exec.Request{Argv: []string{"echo", "hi"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -115,14 +114,14 @@ func TestExec_ProgressStartShowsCommand(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "ok\n", exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-cmd")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	ps := &progressSink{}
 	req := exec.Request{Command: "git status", Argv: []string{"/bin/sh", "-c", "git status"}}
-	if _, err := b.Exec(progress.WithSink(ctx, ps.sink), "sess-cmd", req); err != nil {
+	if _, err := b.Exec(progress.WithSink(context.Background(), ps.sink), id, req); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	ev := ps.got()
@@ -141,14 +140,14 @@ func TestExec_ProgressStartFallsBackToArgv(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "ok\n", exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-fb")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	ps := &progressSink{}
 	req := exec.Request{Argv: []string{"bash", "-c", "echo hi"}} // Command empty
-	if _, err := b.Exec(progress.WithSink(ctx, ps.sink), "sess-fb", req); err != nil {
+	if _, err := b.Exec(progress.WithSink(context.Background(), ps.sink), id, req); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	ev := ps.got()
@@ -166,8 +165,8 @@ func TestExec_ProgressCancelEmitsTerminalCancelled(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "partial", exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-c")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -175,7 +174,7 @@ func TestExec_ProgressCancelEmitsTerminalCancelled(t *testing.T) {
 	cancel() // cancelled before the call; the fake ignores ctx so Exec still runs
 
 	ps := &progressSink{}
-	_, _ = b.Exec(progress.WithSink(cctx, ps.sink), "sess-c", exec.Request{Argv: []string{"x"}})
+	_, _ = b.Exec(progress.WithSink(cctx, ps.sink), id, exec.Request{Argv: []string{"x"}})
 
 	ev := ps.got()
 	if len(ev) == 0 {
@@ -194,13 +193,13 @@ func TestExec_NoSink_ResultUnchanged(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hello\nworld\n", stderr: "err\n", exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-n")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	// No sink in context.
-	res, err := b.Exec(context.Background(), "sess-n", exec.Request{Argv: []string{"echo", "hi"}})
+	res, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"echo", "hi"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -221,12 +220,12 @@ func TestExec_NilSinkIsNilSafe(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "out\n", exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-n2")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	res, err := b.Exec(progress.WithSink(ctx, nil), "sess-n2", exec.Request{Argv: []string{"echo", "hi"}})
+	res, err := b.Exec(progress.WithSink(context.Background(), nil), id, exec.Request{Argv: []string{"echo", "hi"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}

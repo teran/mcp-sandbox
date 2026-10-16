@@ -132,32 +132,32 @@ func (m *Manager) Create(ctx context.Context, s spec.SandboxSpec) (*domainsessio
 		return nil, err
 	}
 
-	id, err := m.newID()
+	// The backend creates the sandbox FIRST and returns its id; that id IS the
+	// session id (docker = container id, so a sandbox is directly traceable to
+	// its container; seatbelt = the backend's generated id). A backend that
+	// returns an empty id falls back to a generated opaque id (§7.8).
+	id, err := m.life.Create(ctx, s)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("session: create sandbox: %w", err)
+	}
+	if id == "" {
+		id, err = m.newID()
+		if err != nil {
+			return nil, err
+		}
 	}
 	m.entryFor(ctx, id).WithField("operation", "create").Trace("session: created")
 
-	// search-before-create (X02): a duplicate id is surfaced as an error
-	// before any backend side-effect happens.
-	m.mu.RLock()
-	_, exists := m.sessions[id]
-	m.mu.RUnlock()
-	if exists {
+	// search-before-register (X02): a duplicate backend id is surfaced as an
+	// error rather than registering a second session.
+	m.mu.Lock()
+	if _, exists := m.sessions[id]; exists {
+		m.mu.Unlock()
+
 		return nil, fmt.Errorf("session: duplicate id %q", id)
 	}
-
-	// The backend labels the sandbox with the session id (label-based
-	// ownership, §7.8). We key the session by the generated id so all
-	// subsequent role calls reference the same sandbox.
-	if _, err := m.life.Create(domainsession.WithSessionID(ctx, id), s); err != nil {
-		return nil, fmt.Errorf("session: create sandbox: %w", err)
-	}
-
 	sess := domainsession.New(id, s)
 	sess.MarkRunning()
-
-	m.mu.Lock()
 	m.sessions[id] = sess
 	m.mu.Unlock()
 

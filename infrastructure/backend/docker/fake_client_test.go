@@ -121,6 +121,7 @@ type fakeClient struct {
 	removes            []string
 	removedOpts        []container.RemoveOptions
 	execCreates        []container.ExecOptions
+	execContainerIDs   []string
 	execAttaches       []string
 	execStdin          [][]byte
 	inspects           []string
@@ -310,7 +311,14 @@ func (f *fakeClient) ContainerExecCreate(
 		return container.ExecCreateResponse{}, f.execErr
 	}
 	f.execCreates = append(f.execCreates, options)
+	f.execContainerIDs = append(f.execContainerIDs, containerID)
 	f.execCtxDeadlines = append(f.execCtxDeadlines, execDeadlineFromContext(ctx))
+	if _, ok := f.containers[containerID]; !ok {
+		// Mirror the docker daemon: exec into an unknown container errors
+		// naturally. The backend uses the passed id directly as the container
+		// id (session id == container id, §7.8).
+		return container.ExecCreateResponse{}, fmt.Errorf("Error response from daemon: No such container: %s", containerID)
+	}
 
 	return container.ExecCreateResponse{ID: "exec-" + containerID}, nil
 }
@@ -381,6 +389,12 @@ func (f *fakeClient) ContainerRemove(_ context.Context, containerID string, opti
 	}
 	f.removes = append(f.removes, containerID)
 	f.removedOpts = append(f.removedOpts, options)
+	if _, ok := f.containers[containerID]; !ok {
+		// Mirror the docker daemon: removing an unknown container errors
+		// naturally ("no such container"). The backend treats this as an
+		// idempotent no-op (X02) so destroying a missing session does not fail.
+		return fmt.Errorf("Error response from daemon: No such container: %s", containerID)
+	}
 	delete(f.containers, containerID)
 
 	return nil

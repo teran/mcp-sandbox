@@ -391,32 +391,42 @@ func TestCreate_StartError(t *testing.T) {
 	}
 }
 
-func TestDestroy_RemovesByLabel(t *testing.T) {
+// TestDestroy_RemovesContainerByID pins the §7.8 contract: the session id IS the
+// container id, so Destroy uses the passed id directly as the container id (no
+// label lookup). The returned id from Create is what a caller passes back.
+func TestDestroy_RemovesContainerByID(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-1")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := b.Destroy(context.Background(), "sess-1"); err != nil {
+	if id == "" {
+		t.Fatal("empty container id")
+	}
+	if err := b.Destroy(context.Background(), id); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 	if len(api.removes) != 1 {
 		t.Fatalf("removes = %d, want 1", len(api.removes))
+	}
+	if api.removes[0] != id {
+		t.Fatalf("removed container id = %q, want %q (container id == session id)", api.removes[0], id)
 	}
 	if len(api.removedOpts) != 1 || !api.removedOpts[0].Force {
 		t.Error("remove should be forced")
 	}
 }
 
+// TestDestroy_IdempotentWhenMissing pins X02: destroying a session with no
+// backing container is a no-op. Because the session id IS the container id, the
+// backend attempts a docker remove of the unknown id and must treat the daemon's
+// "no such container" error as an idempotent no-op.
 func TestDestroy_IdempotentWhenMissing(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
 	if err := b.Destroy(context.Background(), "nope"); err != nil {
 		t.Fatalf("Destroy of missing should be no-op, got %v", err)
-	}
-	if len(api.removes) != 0 {
-		t.Fatal("no remove should have happened")
 	}
 }
 
@@ -424,11 +434,11 @@ func TestExec_ArgumentArrayAndResult(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-e")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	res, err := b.Exec(context.Background(), "sess-e", exec.Request{Argv: []string{"echo", "hi"}})
+	res, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"echo", "hi"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -442,6 +452,11 @@ func TestExec_ArgumentArrayAndResult(t *testing.T) {
 	if opts.Privileged {
 		t.Error("--privileged must never be used")
 	}
+	// The container id used by Exec must equal the id returned from Create
+	// (session id == container id, §7.8).
+	if len(api.execContainerIDs) != 1 || api.execContainerIDs[0] != id {
+		t.Fatalf("exec container id = %v, want exactly [%q]", api.execContainerIDs, id)
+	}
 }
 
 // TestExec_TimeoutIsAppliedAsContextCancellation verifies that req.Timeout
@@ -453,14 +468,14 @@ func TestExec_TimeoutIsAppliedAsContextCancellation(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-to")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	const timeout uint64 = 42
 	before := time.Now()
-	if _, err := b.Exec(context.Background(), "sess-to", exec.Request{Argv: []string{"echo", "hi"}, Timeout: timeout}); err != nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"echo", "hi"}, Timeout: timeout}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	after := time.Now()
@@ -486,12 +501,12 @@ func TestExec_TimeoutZeroNoDeadline(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-t0")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if _, err := b.Exec(context.Background(), "sess-t0", exec.Request{Argv: []string{"echo", "hi"}}); err != nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"echo", "hi"}}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	if dl := api.lastExecDeadline(); !dl.IsZero() {
@@ -503,11 +518,11 @@ func TestExec_SudoUser(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-u")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Exec(context.Background(), "sess-u", exec.Request{Argv: []string{"id"}, User: "0"}); err != nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"id"}, User: "0"}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	if opts := api.execCreates[0]; opts.User != "0" {
@@ -516,9 +531,12 @@ func TestExec_SudoUser(t *testing.T) {
 }
 
 func TestExec_UnknownSession(t *testing.T) {
+	// Because the session id IS the container id, Exec of an unknown id reaches
+	// the Docker API directly and fails naturally ("no such container") rather
+	// than through a session-existence pre-check.
 	b := newBackendForDirs(newFakeClient())
-	if _, err := b.Exec(context.Background(), "ghost", exec.Request{Argv: []string{"x"}}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
+	if _, err := b.Exec(context.Background(), "ghost", exec.Request{Argv: []string{"x"}}); err == nil {
+		t.Fatal("expected an error for an unknown container id")
 	}
 }
 
@@ -528,12 +546,12 @@ func TestExec_EnvSetSorted(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-env")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	req := exec.Request{Argv: []string{"bash", "-c", "env"}, Env: map[string]string{"Z": "last", "A": "first", "B": "mid"}}
-	if _, err := b.Exec(context.Background(), "sess-env", req); err != nil {
+	if _, err := b.Exec(context.Background(), id, req); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	opts := api.execCreates[0]
@@ -549,11 +567,11 @@ func TestExec_EnvNilWhenEmpty(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-env0")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Exec(context.Background(), "sess-env0", exec.Request{Argv: []string{"bash", "-c", "env"}}); err != nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"bash", "-c", "env"}}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	if opts := api.execCreates[0]; opts.Env != nil {
@@ -567,12 +585,12 @@ func TestExec_CmdWrapperPassThrough(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-w")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	wrapper := []string{"bash", "-l", "-c", "git status"}
-	if _, err := b.Exec(context.Background(), "sess-w", exec.Request{Command: "git status", Argv: wrapper}); err != nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Command: "git status", Argv: wrapper}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	opts := api.execCreates[0]
@@ -584,32 +602,40 @@ func TestExec_CmdWrapperPassThrough(t *testing.T) {
 func TestInfo(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-i")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	info, err := b.Info(context.Background(), "sess-i")
+	info, err := b.Info(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Info: %v", err)
 	}
 	if info == nil {
 		t.Fatal("nil info")
 	}
+	// The container id used by Info must equal the id returned from Create.
+	if len(api.inspects) != 1 || api.inspects[0] != id {
+		t.Fatalf("inspected container id = %v, want exactly [%q]", api.inspects, id)
+	}
 }
 
 func TestStats(t *testing.T) {
 	api := newFakeClient()
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-st")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	st, err := b.Stats(context.Background(), "sess-st")
+	st, err := b.Stats(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	if st == nil {
 		t.Fatal("nil stats")
+	}
+	// The container id used by Stats must equal the id returned from Create.
+	if len(api.statsCalls) != 1 || api.statsCalls[0] != id {
+		t.Fatalf("stats container id = %v, want exactly [%q]", api.statsCalls, id)
 	}
 }
 
@@ -617,11 +643,11 @@ func TestStatsError(t *testing.T) {
 	api := newFakeClient()
 	api.statsErr = errors.New("stats fail")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-st2")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Stats(context.Background(), "sess-st2"); err == nil {
+	if _, err := b.Stats(context.Background(), id); err == nil {
 		t.Fatal("expected stats error")
 	}
 }
@@ -639,11 +665,11 @@ func TestExec_ErrFromCreate(t *testing.T) {
 	api := newFakeClient()
 	api.execErr = errors.New("exec create fail")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-x")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Exec(context.Background(), "sess-x", exec.Request{Argv: []string{"x"}}); err == nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"x"}}); err == nil {
 		t.Fatal("expected exec create error")
 	}
 }
@@ -652,39 +678,29 @@ func TestExec_AttachError(t *testing.T) {
 	api := newFakeClient()
 	api.execAttachErr = errors.New("attach fail")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-at")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Exec(context.Background(), "sess-at", exec.Request{Argv: []string{"x"}}); err == nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"x"}}); err == nil {
 		t.Fatal("expected attach error")
 	}
 }
 
 func TestInfo_UnknownSession(t *testing.T) {
+	// The session id IS the container id: Info of an unknown id reaches the
+	// Docker inspect API and fails naturally rather than via a session-existence
+	// pre-check.
 	b := newBackendForDirs(newFakeClient())
-	if _, err := b.Info(context.Background(), "ghost"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
+	if _, err := b.Info(context.Background(), "ghost"); err == nil {
+		t.Fatal("expected an error for an unknown container id")
 	}
 }
 
 func TestStats_UnknownSession(t *testing.T) {
 	b := newBackendForDirs(newFakeClient())
-	if _, err := b.Stats(context.Background(), "ghost"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestContainerListError(t *testing.T) {
-	api := newFakeClient()
-	api.listErr = errors.New("list fail")
-	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-l")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := b.Destroy(context.Background(), "sess-l"); err == nil {
-		t.Fatal("expected list error on destroy")
+	if _, err := b.Stats(context.Background(), "ghost"); err == nil {
+		t.Fatal("expected an error for an unknown container id")
 	}
 }
 
@@ -692,11 +708,11 @@ func TestDestroy_RemoveError(t *testing.T) {
 	api := newFakeClient()
 	api.removeErr = errors.New("remove fail")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-r")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := b.Destroy(context.Background(), "sess-r"); err == nil {
+	if err := b.Destroy(context.Background(), id); err == nil {
 		t.Fatal("expected remove error")
 	}
 }
@@ -705,11 +721,11 @@ func TestInfo_InspectError(t *testing.T) {
 	api := newFakeClient()
 	api.inspectErr = errors.New("inspect fail")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-inf")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Info(context.Background(), "sess-inf"); err == nil {
+	if _, err := b.Info(context.Background(), id); err == nil {
 		t.Fatal("expected inspect error")
 	}
 }
@@ -770,11 +786,11 @@ func TestStats_DecodeError(t *testing.T) {
 	api := newFakeClient()
 	api.statsBody = "not-json{"
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-dec")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Stats(context.Background(), "sess-dec"); err == nil {
+	if _, err := b.Stats(context.Background(), id); err == nil {
 		t.Fatal("expected stats decode error")
 	}
 }
@@ -784,19 +800,12 @@ func TestExec_InspectError(t *testing.T) {
 	api.execResults = []execResult{{exitCode: 0}}
 	api.execInspectErr = errors.New("inspect fail")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-insp")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Exec(context.Background(), "sess-insp", exec.Request{Argv: []string{"x"}}); err == nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"x"}}); err == nil {
 		t.Fatal("expected exec inspect error")
-	}
-}
-
-func TestContainerIDBySession_EmptyID(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
-	if _, err := b.containerIDBySession(context.Background(), ""); err == nil {
-		t.Fatal("expected error for empty id")
 	}
 }
 

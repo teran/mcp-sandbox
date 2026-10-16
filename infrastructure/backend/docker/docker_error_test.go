@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
-	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
 // TestCreate_ContainerCreateError covers the container-create error branch of
@@ -26,11 +25,11 @@ func TestExec_StdCopyReadError(t *testing.T) {
 	api := newFakeClient()
 	api.execReaderErr = errors.New("stream broken")
 	b := newBackendForDirs(api)
-	ctx := domainsession.WithSessionID(context.Background(), "sess-sc")
-	if _, err := b.Create(ctx, baseSpec()); err != nil {
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := b.Exec(context.Background(), "sess-sc", exec.Request{Argv: []string{"x"}}); err == nil {
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"x"}}); err == nil {
 		t.Fatal("expected exec read error")
 	}
 }

@@ -19,6 +19,10 @@ import (
 )
 
 // fakeLife implements role.Lifecycle with recording and injectable errors.
+// Its Create returns a backend-assigned id (the source of the session id under
+// the backend-owned-id design): by default a unique "ctr-<letter>" per call,
+// or a configurable fixed id / empty id / fixed id-sequence when a test needs
+// those scenarios.
 type fakeLife struct {
 	mu         sync.Mutex
 	nextID     int
@@ -27,6 +31,20 @@ type fakeLife struct {
 	createErr  error
 	destroyErr error
 	createdIDs map[string]bool
+
+	// fixedID, when non-empty, is returned verbatim on every Create (used to
+	// simulate a backend that assigns the same container id to two requests,
+	// which the manager must surface as a duplicate-id error).
+	fixedID string
+	// emptyID, when true, makes Create return ("", nil), simulating a backend
+	// that supplies no id and thus triggering the manager's generated-id
+	// fallback (m.newID).
+	emptyID bool
+	// idSeq, when non-nil, is a fixed list of ids returned in order on each
+	// Create (used to drive deterministic prefix-resolution tests from
+	// backend-returned ids rather than a forced m.newID).
+	idSeq  []string
+	idSeqN int
 }
 
 func newFakeLife() *fakeLife {
@@ -38,6 +56,26 @@ func (f *fakeLife) Create(_ context.Context, s spec.SandboxSpec) (string, error)
 	defer f.mu.Unlock()
 	if f.createErr != nil {
 		return "", f.createErr
+	}
+	if f.emptyID {
+		return "", nil
+	}
+	if f.fixedID != "" {
+		f.created = append(f.created, s)
+		f.createdIDs[f.fixedID] = true
+
+		return f.fixedID, nil
+	}
+	if f.idSeq != nil {
+		if f.idSeqN >= len(f.idSeq) {
+			return "", errors.New("no more ids")
+		}
+		id := f.idSeq[f.idSeqN]
+		f.idSeqN++
+		f.created = append(f.created, s)
+		f.createdIDs[id] = true
+
+		return id, nil
 	}
 	f.nextID++
 	id := "ctr-" + string(rune('a'+f.nextID-1))
@@ -76,6 +114,36 @@ func validSpec() spec.SandboxSpec {
 			TmpfsWorkdir:    true,
 			AutoRemove:      true,
 		},
+	}
+}
+
+// TestCreate_SessionIDIsBackendID pins the backend-owned-id design: the session
+// id MUST be the id returned by the lifecycle backend (the docker container id
+// / darwin "darwin-N"), not a manager-generated opaque id. fakeLife returns
+// "ctr-a", "ctr-b", ... so the first and second creates must carry exactly
+// those ids.
+func TestCreate_SessionIDIsBackendID(t *testing.T) {
+	life := newFakeLife()
+	m := NewManager(life)
+
+	sess1, err := m.Create(context.Background(), validSpec())
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if sess1.ID() != "ctr-a" {
+		t.Fatalf("first session id = %q, want backend-returned \"ctr-a\"", sess1.ID())
+	}
+
+	sess2, err := m.Create(context.Background(), validSpec())
+	if err != nil {
+		t.Fatalf("second Create: %v", err)
+	}
+	if sess2.ID() != "ctr-b" {
+		t.Fatalf("second session id = %q, want backend-returned \"ctr-b\"", sess2.ID())
+	}
+
+	if len(life.created) != 2 {
+		t.Fatalf("created = %d, want 2", len(life.created))
 	}
 }
 
@@ -365,8 +433,13 @@ func TestDestroyAll_Error(t *testing.T) {
 	}
 }
 
+// TestCreate_NewIDError pins that the manager's generated-id fallback (m.newID)
+// runs ONLY when the backend returns an empty id: a backend returning ("", nil)
+// delegates id generation to newID, and a newID failure surfaces as an error.
 func TestCreate_NewIDError(t *testing.T) {
-	m := NewManager(newFakeLife())
+	life := newFakeLife()
+	life.emptyID = true // backend supplies no id -> fall back to m.newID
+	m := NewManager(life)
 	m.newID = func() (string, error) { return "", errors.New("rand fail") }
 	if _, err := m.Create(context.Background(), validSpec()); err == nil {
 		t.Fatal("expected id generation error")
@@ -376,20 +449,42 @@ func TestCreate_NewIDError(t *testing.T) {
 	}
 }
 
+// TestCreate_BackendIDBypassesNewID pins that when the backend returns a
+// NON-empty id, the generated-id fallback is never consulted: even if newID
+// would fail, Create must succeed using the backend-returned id. This guards
+// the design against a regression that always calls newID (or discards the
+// backend id).
+func TestCreate_BackendIDBypassesNewID(t *testing.T) {
+	life := newFakeLife() // returns "ctr-a"
+	m := NewManager(life)
+	m.newID = func() (string, error) { return "", errors.New("rand fail") }
+	sess, err := m.Create(context.Background(), validSpec())
+	if err != nil {
+		t.Fatalf("Create must succeed via the backend-returned id even when newID fails: %v", err)
+	}
+	if sess.ID() != "ctr-a" {
+		t.Fatalf("session id = %q, want backend-returned \"ctr-a\"", sess.ID())
+	}
+}
+
+// TestCreate_DuplicateIDSurfaced pins the post-create duplicate check (X02)
+// under the backend-owned-id design: when the backend returns the SAME id for
+// two creates, the second must be surfaced as a duplicate-id error and must
+// NOT register a second session.
 func TestCreate_DuplicateIDSurfaced(t *testing.T) {
 	life := newFakeLife()
+	life.fixedID = "fixed" // backend returns the same container id every time
 	m := NewManager(life)
-	m.newID = func() (string, error) { return "fixed-id", nil }
 	if _, err := m.Create(context.Background(), validSpec()); err != nil {
 		t.Fatal(err)
 	}
-	// Second create with the same fixed id must be surfaced as an error
-	// (search-before-create, X02), and the backend must not be called again.
+	// Second create returns the same backend id -> duplicate error, and only
+	// one session is registered.
 	if _, err := m.Create(context.Background(), validSpec()); err == nil {
 		t.Fatal("expected duplicate id error")
 	}
-	if len(life.created) != 1 {
-		t.Fatalf("backend created = %d, want 1", len(life.created))
+	if len(m.List(context.Background())) != 1 {
+		t.Fatalf("registered sessions = %d, want 1", len(m.List(context.Background())))
 	}
 }
 
