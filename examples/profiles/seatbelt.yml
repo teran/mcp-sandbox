@@ -1,4 +1,4 @@
-# Minimal operator profile for live-testing the darwin (sandbox-exec / Seatbelt)
+# Working operator profile for live-testing the darwin (sandbox-exec / Seatbelt)
 # backend on macOS. Hybrid driver-aware schema (SPEC §7.11/§7.12).
 #
 # `driver: seatbelt` selects the darwin backend and requires the matching
@@ -8,22 +8,70 @@
 # file (ALLOW_DIRS + session cwd, S04) → operator `seatbelt.sbpl` below. The
 # operator template is appended LAST, so it is where an operator selectively
 # re-opens surfaces the server baseline denies.
+#
+# This is a VERIFIED file-deny-all profile (validated live against a real
+# macOS host). Scope decisions (understand before widening):
+#   - `(allow default)` is required at the top for NON-file system operations
+#     (process-exec, mach-lookup, iokit, syscall, ipc). macOS 26 (SBPL version
+#     3) cannot start /bin/bash under a hand-listed deny-all of those — the
+#     runtime requires dozens of operations. This mirrors Bazel's own
+#     DarwinSandboxedSpawnRunner profile. The `(deny default)` baseline is
+#     overridden only by this operator template, which is appended last.
+#   - FILE access IS deny-all: `(deny file-read*)` + `(deny file-write*)` close
+#     everything, and only the explicit `(allow ...)` lists below re-open:
+#       * file-read: system dylib/toolchain dirs (unavoidable for macOS to load
+#         ANY binary), /private/etc/ssl (TLS config for curl/openssl), and the
+#         single repo root this sandbox works on (cwd). Nothing else on the
+#         host is readable — .ssh, .aws, Movies, Documents, /etc/hosts,
+#         ~/.config/... are all denied without listing each one.
+#       * file-write: only the cwd (repo root), /dev and temp dirs.
+#   - `(allow network-outbound)` permits outbound connections (curl/git fetch).
+#
+# Two hard constraints from the darwin backend (SPEC §7.12):
+#   1. `shell` MUST be an ABSOLUTE path. sandbox-exec does `execvp("bash")`
+#      against the SERVER process PATH (not the per-exec env), so a bare
+#      `bash` fails with `execvp() of 'bash' failed: No such file or directory`
+#      even under `(allow default)` when the server PATH omits /bin.
+#   2. macOS cannot start ANY binary unless the dyld chain is readable, so the
+#      system dirs (/usr/lib, /System/Library, /usr/bin, /bin) must remain in
+#      file-read scope. This is inherent to sandbox-exec on macOS, not a leak.
+#
+# Note: `(debug deny)` / `seatbelt.debug_deny` does NOT work on macOS 26 — the
+# `debug` macro is absent from system.sb (SBPL version 3) and fails to compile.
+# Do not rely on it for diagnostics.
 name: seatbelt
 description: >-
-  Minimal profile to live-test the darwin (sandbox-exec) backend on macOS.
-  driver=seatbelt; server-rendered SBPL + operator network-outbound extension;
-  read-only session cwd scoped to ALLOW_DIRS.
+  Verified file-deny-all profile for the darwin (sandbox-exec) backend on macOS.
+  driver=seatbelt; server-rendered SBPL + operator template. File access is
+  deny-all: read/write only in the repo root (cwd) plus the system dirs macOS
+  needs to load binaries; outbound network allowed.
 driver: seatbelt
 seatbelt:
-  # Operator SBPL template, merged after the server's deny-default hardening.
-  # The baseline emits `(deny network*)` for the default no-network mode; in
-  # Seatbelt the LAST matching rule wins, so this `allow` selectively re-opens
-  # outbound network for the smoke (e.g. so a command can open a TCP socket).
-  # Keep this as restrictive as the live test needs — never `(allow default)`.
+  # Operator SBPL template, merged AFTER the server's deny-default hardening.
+  # In Seatbelt the LAST matching rule wins, so these rules override the
+  # baseline. FILE access is deny-all (only the listed paths re-open); the
+  # `(allow default)` covers only non-file system operations (unavoidable).
   sbpl: |
+    (allow default)
     (allow network-outbound)
+    (deny file-read*)
+    (allow file-read*
+      (subpath "/usr/lib")
+      (subpath "/usr/share")
+      (subpath "/System/Library")
+      (subpath "/bin")
+      (subpath "/usr/bin")
+      (subpath "/dev")
+      (subpath "/private/etc/ssl")
+      (subpath "/Users/teran/Downloads/Code/Git"))
+    (deny file-write*)
+    (allow file-write*
+      (subpath "/Users/teran/Downloads/Code/Git")
+      (subpath "/dev")
+      (subpath "/private/tmp")
+      (subpath "/private/var/folders"))
   mach_lookups: []
   sysctls: []
 cwd:
-  mode: ro
-shell: bash
+  mode: rw
+shell: /bin/bash

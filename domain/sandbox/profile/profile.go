@@ -408,12 +408,12 @@ func (p *Profile) applyDocker(sp *spec.SandboxSpec, pol spec.Isolation) {
 // the server policy (there is no profile resource block); only the auto cwd
 // mount. Isolation hardening stays from `pol`.
 func (p *Profile) applySeatbelt(sp *spec.SandboxSpec) {
-	sb := p.Seatbelt
+	seatbelt := p.Seatbelt
 
 	sp.Sandbox = spec.Sandbox{
-		SBPL:        sb.SBPL,
-		MachLookups: sb.MachLookups,
-		Sysctls:     sb.Sysctls,
+		SBPL:        seatbelt.SBPL,
+		MachLookups: seatbelt.MachLookups,
+		Sysctls:     seatbelt.Sysctls,
 	}
 	sp.UIDGID = sp.Isolation.User
 	sp.Sudo = spec.SudoNever
