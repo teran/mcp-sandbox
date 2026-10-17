@@ -5,9 +5,11 @@
 > This document is **strictly English** (D02). It is the application-level
 > architecture and conformance reference for the **mcp-sandbox** MCP server.
 > Every section carries the criteria codes it satisfies so a reviewer can trace
-> a `MUST` back to a section. Codes resolve against
-> `reference/criteria/common.md` and `reference/criteria/go.md` of the
-> `mcp-server-spec` skill; pinned versions come from `reference/versions.md`.
+> a `MUST` back to a section. Codes resolve against the `reference/criteria/`
+> files of the external **`mcp-server-spec` skill** (not a repo directory); the
+> pinned versions (Go, go-sdk, logrus) come from that skill's
+> `reference/versions.md`. None of these `reference/` paths exist in this repo —
+> they belong to the external skill.
 
 ---
 
@@ -45,8 +47,8 @@ The rationale for Docker-first: _"Docker is everywhere"_ — it is the most
 widely available container runtime and the fastest path to a safe MVP.
 
 **Language:** Go (**C02GO**), pinned to the latest stable **Go 1.27.2**
-(**C01GO**; see `reference/versions.md`). Official MCP SDK: **go-sdk v1.8.0**
-(**M01**).
+(**C01GO**; pinned version from the external `mcp-server-spec` skill).
+Official MCP SDK: **go-sdk v1.8.0** (**M01**).
 
 ---
 
@@ -666,6 +668,237 @@ The timeout is applied at the **backend** layer, so it works uniformly for the
 Docker API calls and the streaming progress channel, independent of whether the
 client supplied a progress token. Criteria: **X03**.
 
+### 6.11 Driver registry & external drivers — design direction (NOT yet implemented)
+
+> **Status: PROPOSED / DIRECTIONAL — not yet implemented.** This subsection
+> records the agreed design direction for generalizing the backend model into a
+> **driver registry + opaque `options:`** so new drivers can be added **without a
+> commit to mcp-sandbox** and without linking proprietary code into the binary.
+> **None of the new identifiers below exist in the code yet**; they are the
+> target shape the implementation should move toward. It cross-references the
+> existing role interfaces (§6.2), the factory registry (§6.3) and the profile
+> schema (§7.11) rather than restating them. This is the design that motivates
+> the §7.11 schema direction.
+>
+> **Delivery roadmap (settled, user decision):** **Phase 1 = in-process Go
+> plugins only** (same language, no IPC, no loader); **Phase 2 (later) =
+> out-of-process IPC** (a STDIO child + protobuf-like encoding) that opens other
+> languages. The **driver contract is defined so it is realizable both
+> in-process (Go) and, later, over IPC without changing the contract**; the
+> wire/framing details are deferred to Phase 2. The **loader/manifest/entrypoint
+> and IPC content below is the Phase-2 realization**; Phase 1 is in-process Go
+> plugins that implement the same `DriverBuilder`/role contract directly.
+
+#### Driver = a single-sandbox primitive
+
+A **driver** is the primitive that implements the interface to work with **ONE
+sandbox**. Its responsibilities map 1:1 onto the existing ISP role interfaces
+(§6.2, `domain/sandbox/role`):
+
+| Existing role interface | Driver method | Driver responsibility                                           |
+| ----------------------- | ------------- | ---------------------------------------------------------------- |
+| `Backend`               | `Name`/`Priority`/`Capabilities`/`Driver` | identity + capability advertisement          |
+| `Lifecycle`             | `Create` / `Destroy` | create a sandbox from a spec; destroy it                    |
+| `Executable`            | `Exec`        | run a command inside an existing sandbox                        |
+| `Introspectable`        | `Info` / `Stats` | sandbox detail / live resource usage                         |
+| (via `Factory`)         | `Available()` | is this driver usable right now (lazy, A02/N35)                 |
+
+- **`List` is NOT a single-sandbox primitive (QA P1).** It is an **optional
+  reconciliation seam** — for the future orphan-GC (§6.6) — and is **not part of
+  the core "one sandbox" role set**. The server's session manager already owns
+  `List`/`DestroyAll` aggregation (§6.3); a driver does not need `List` to be
+  usable.
+- **`Delete` is renamed `Destroy` (QA P1).** The `Lifecycle` role already uses
+  `Destroy` (§6.2, `domain/sandbox/role.Lifecycle`); the driver contract uses
+  the same verb — there is **no `Delete`**.
+- **`Driver()` vs `Slug()` (QA P2).** `role.Backend` already exposes `Driver()`
+  (`spec.Driver`, §6.2) — the runtime capability selector. A future **`Slug()`**
+  — a **stable, allowlist-validated** identifier used to build a namespaced
+  session id (`slug:internalID`, §7.8) — is a **distinct concept and must not be
+  conflated** with `Driver()`. `Slug()` is a stable, collision-free namespace
+  token validated exactly like `profile.ValidName` (fail-closed on anything
+  outside the allowlist). See §7.8 for the namespaced-id step.
+
+The driver is **not** responsible for orchestrating multiple sandboxes. All
+**orchestration** is the **MCP server's** job — the session manager, per-driver
+routing, session lifecycle, HITL, streaming/redaction and `sandbox_list`
+aggregation (§6.3, §6.6). The server calls the driver **per sandbox**, exactly
+as the `Service` (`infrastructure/mcp/service.go`) routes today.
+
+#### DriverBuilder / DriverOptions abstraction
+
+The proposed construction abstraction separates the **fixed contract** (how a
+driver is built) from the **driver-owned config** (what it means). A
+**`DriverBuilder`** constructs a concrete backend for a named driver from an
+opaque **`DriverOptions`** blob:
+
+```go
+// DriverBuilder constructs a backend for a named driver from an opaque,
+// driver-owned options blob. It is the registry entry point (analogous to
+// backend.Factory, §6.3). It returns a role.Backend — it does NOT build a
+// SandboxSpec; that is profile.BuildSpec's job (domain, §6.5/Developer G).
+type DriverBuilder func(opts DriverOptions, cfg backend.Config) (role.Backend, error)
+
+// DriverOptions is the opaque per-driver config. It is interpreted ONLY by the
+// driver matched by `driver`; the core never inspects its contents.
+type DriverOptions map[string]any
+```
+
+- The **`driver` name is the registry key** — the map lookup / `switch` key for
+  selecting the builder, and the key that owns the profile `options:` block.
+- The core registers builders **by name**; an unknown name **fails closed**
+  (`ErrNoAvailableBackend`, §6.3) — there is **no silent fallback** to another
+  driver.
+- **SandboxSpec provenance is unchanged (Developer G).** The typed `SandboxSpec`
+  is built by `domain/sandbox/profile.BuildSpec` (§6.5) — **NOT by the driver**.
+  `DriverBuilder` returns a `role.Backend` (the runtime adapter); the spec that
+  backend consumes is always produced by the domain and carries the immutable
+  `Isolation` block.
+
+#### Driver registry keyed by `driver`
+
+The existing constructor-register (`infrastructure/backend/registry.go`) already
+registers backends by name with a `Driver` and lazy `Available()`. The direction
+extends it so the registry key is the **`driver` name** from the profile, and a
+profile's `options:` blob is handed to that driver's builder verbatim (validated
+by the driver, not the core).
+
+#### Reserved built-in names & fail-closed loading (Security B, HIGH)
+
+- **`docker` and `seatbelt` are reserved.** An external driver **MUST NOT** be
+  able to shadow or override them. Registration **fails closed on a duplicate
+  name** — an external driver registering `driver: docker` or `driver: seatbelt`
+  is **rejected**, never silently overriding the built-in.
+- **Fail-closed loading (F3):** a driver that registers but produces a
+  `SandboxSpec` that **fails post-build `Validate()`** (§6.5) is **REJECTED**,
+  not coerced or patched by the core. The core never "fixes up" a driver's spec
+  to make it valid — an invalid spec is an error.
+
+#### Hardening-on-result = DATA-PLANE only (Security A/F1, critical)
+
+The core owns a **uniform security floor**. For **first-party / auditable**
+drivers this is **defense-in-depth + DRY**: after the driver path produces a
+`SandboxSpec`, the core **re-asserts** the immutable `Isolation` hardening
+fields (§7.1) so every driver holds the same invariant without each
+re-implementing it.
+
+**For EXTERNAL, non-auditable drivers the guarantee is narrower — it is
+DATA-PLANE only.** The core can re-assert the **declared** `Isolation` fields of
+a returned spec, but the **MECHANISM-plane** — whether the backend actually
+enforces read-only-rootfs / cap-drop / no-new-privileges / cgroup quotas — is in
+a **"not audited" trust zone**. The driver's manifest is **self-attestation**:
+the core **cannot distinguish a truthful manifest from a lying one**. A hostile
+external driver can always *claim* it enforces hardening it does not. Therefore:
+
+> **One-liner (data-plane):** "Trust the driver to apply isolation, but
+> guarantee a uniform security floor at the *input* that does not depend on
+> whose driver it is or how careful it is." This holds **only** for the
+> **data-plane** (re-asserting declared fields); it does **NOT** extend to the
+> **mechanism-plane**, which for external drivers is self-attested and
+> unaudited.
+
+**Capability vs. weakness — closed enum, pessimistic default (Security F2).** A
+driver's manifest must fill an explicit **CLOSED enum of isolation guarantees**
+— `readonly-rootfs`, `cap-drop`, `no-new-privileges`, `non-root`,
+`cgroup-quotas`, `network-isolation`, `tmpfs`, `autoremove` — one entry per
+guarantee, declared honestly:
+
+- **Pessimistic default:** a driver is considered **weak until it declares
+  otherwise**; a **missing field = "not guaranteed"**.
+- **A declared weakness must NOT silently pass.** It produces an honest
+  **REDUCED-POSTURE marker** that (a) propagates to tool output/warnings (e.g.
+  the `sandbox_create`/`sandbox_info` result), (b) is **never silently ignored**,
+  and (c) is **never presented as full isolation** — directly analogous to the
+  darwin backend's "MUST NOT be presented as equivalent" rule (§7.12/§7.13).
+- **Fail-closed-reject** applies to **data-plane fields the core CAN enforce**
+  but the driver returned wrong (e.g. a spec whose
+  `Isolation.ReadOnlyRootfs=false` fails `Validate()` → rejected, F3). For
+  mechanism-plane fields the core cannot verify, the honest REDUCED-POSTURE
+  marker is the correct outcome — not silent acceptance, and not a false claim
+  of enforcement.
+
+Rationale for the data-plane / mechanism-plane split:
+
+1. a single choke-point means **first-party** drivers hold the same invariant
+   without each re-implementing it (DRY / defense-in-depth);
+2. the least-trusted party is the **input** (operator profile `options`, which
+   may be influenced by the model-host the sandbox contains) — input must never
+   weaken driver-applied isolation, the same as today's `BuildSpec` /
+   `applyDocker` re-applying `pol` last (§6.5);
+3. for **non-auditable external/proprietary drivers** the data-plane floor plus
+   the honest REDUCED-POSTURE marker is what lets the server admit them
+   **without falsely claiming** a bar they may not actually meet.
+
+#### EnforceHardening — the single core-owned choke-point (Developer G)
+
+The re-assertion is a **pure domain function** in `domain/sandbox/spec`:
+
+```go
+// EnforceHardening re-asserts the immutable Isolation hardening on a spec (built
+// by profile.BuildSpec, §6.5) and gates every mount source by allowDirs (S04).
+// It is the single core-owned choke-point for the data-plane security floor.
+// Pure — no I/O, no driver — so it is fully unit-testable without a driver.
+func EnforceHardening(pol Isolation, s *SandboxSpec, allowDirs []string) error
+```
+
+- It is called from **`Service.Create` before the backend `Create`**
+  (`infrastructure/mcp/service.go`), on the spec produced by
+  `profile.BuildSpec` (§6.5).
+- It re-asserts read-only rootfs, cap-drop ALL, no-new-privileges, non-root,
+  bounded cgroups, tmpfs, `AutoRemove`; validates network mode / control chars;
+  and **gates every mount `source` by `ALLOW_DIRS` (S04)**.
+- **The `ALLOW_DIRS` mount gate is LIFTED to the Service level** (the
+  choke-point), **not duplicated** in the backends. Backends consume an
+  already-hardened, already-gated spec. (Today the gate lives inside the
+  docker/darwin adapters; the direction consolidates it here as the single
+  core-owned choke-point.)
+
+#### Loader & tamper control (Security E/F6, MED) — Phase 2 IPC realization
+
+- **Loader is traversal-safe (F6):** the driver `entrypoint` is restricted to
+  the drivers directory (e.g. `SANDBOX_DRIVERS_DIR`) or an operator-approved
+  area, opened via **`os.OpenRoot`**; the driver `name` is validated like
+  `profile.ValidName` (fail-closed on anything outside the allowlist / any path
+  traversal). An unloadable/hostile driver **fails closed** — no silent skip, no
+  fallback.
+- **Tamper control:** the manifest carries a **digest and/or signature** of the
+  driver binary, verified before load — analogous to image **digest-pinning
+  (§7.9)**. A driver whose binary does not match its declared digest/signature
+  is rejected.
+- **Lazy (A02/N35):** `Available()` / driver **spawn** stays lazy — a driver is
+  **never spawned at startup**. Only the first tool call that needs the driver
+  triggers its load/spawn.
+
+#### IPC/stream boundary (Security C, SRE) — Phase 2 IPC realization
+
+- **Frame size limits** (DoS/memory protection): a per-frame maximum is
+  enforced; oversized frames are rejected.
+- **Framing integrity:** negative / overflowing / huge lengths, premature EOF and
+  partial frames are **rejected fail-closed** — never partially interpreted.
+- **Every byte originating from a driver** passes **S09 `sanitizeANSI` + S02
+  redaction** before it reaches the client, log, or stream. The server
+  **re-redacts streamed chunks** — it does **not trust a non-auditable driver to
+  redact its own output** (§5.1 contract preserved).
+- **`request_id` in every frame** (L09): each driver frame carries the server's
+  per-request id for correlation.
+- **Cancel/abort frame:** so `req.Timeout` becomes a **wire deadline** — the
+  server sends a cancel frame the driver must honor (analogous to §6.10 / §5.1
+  `cancelled`).
+- **Secrets never echo:** secrets sent to a driver (tmpfs `0600` files, §7.3)
+  are **never echoed back over IPC and never logged** (S02/N02/L05).
+
+#### Testability (QA P1/H)
+
+The design deliberately leaves **testable seams**: the registry (register-by-name
++ reserved-name + duplicate rejection), the loader (traversal-safe resolution +
+digest verification), the IPC codec (framing/size/EOF fail-closed), supervision
+(lazy spawn, cancel frame) and the **enforcement floor** (`EnforceHardening`).
+The security floor is a **pure function testable without any concrete driver** —
+feed it a fake/malicious spec and assert the hardened result — reusing the
+existing **fake-driver pattern** (`infrastructure/backend/docker/fake_client_test.go`,
+the darwin mock runner/tailer, and `application/tools/sandbox/fake_test.go`).
+See §7.14 for what remains open.
+
 ---
 
 ## 7. Security
@@ -899,6 +1132,20 @@ mcp-sandbox`) so the server can identify, reap and destroy exactly its own
   that build a spec directly can omit it.
 - Each session has a **per-session mutex**; `destroy` is **idempotent** (X02).
 
+> **Namespaced session id (`slug:internalID`) — planned as a SEPARATE FIRST
+> implementation step (user decision, J4).** The driver-registry + `options:`
+> work (§6.11/§7.11/§7.14) is being finalized in these docs as design direction,
+> but the **namespaced-id change is a distinct, earlier step** that will be
+> implemented first — it is a breaking change to the **sandbox id schema** of
+> this section, independent of the registry. Requirements recorded for that step:
+> a **stable, allowlist-validated `slug`** (the `Slug()` token, §6.11 I) joined
+> to an **opaque internal id** by a single `:` (`slug:internalID`);
+> **fail-closed parsing on the first `:`**; rework of `ShortID` (§6.6),
+> `resolveID` (both `application/session/manager.go` and
+> `infrastructure/mcp/service.go`) and their tests. This step is **not part of
+> the docs being finalized here** — it is tracked as its own breaking change to
+> this section.
+
 ### 7.9 Supply-chain (T7 / C05 / S05)
 
 > **Phase 7 change:** the **trusted-registry allowlist (`TRUSTED_REGISTRIES`) and
@@ -1006,6 +1253,12 @@ mechanism and **no** profile tool that writes — profiles exist only as files.
 
 #### Schema
 
+> **Schema status (design direction, not yet implemented):** the schema below
+> (with the typed `docker:` / `seatbelt:` blocks) is the **current / migrating**
+> form. The agreed **target** is a `driver: <name>` + opaque **`options:`** form
+> (see the end of this section) so new drivers can be added **without a commit to
+> mcp-sandbox** (§6.11). The typed blocks below migrate into `options:`.
+
 ```yaml
 name: default # required; store key; [a-zA-Z0-9._-], no path separators
 description: the default profile # required
@@ -1103,6 +1356,78 @@ Secrets, ClientSessionID})` produces the typed `SandboxSpec` (§6.5) with:
 
 If the requested `profile` is not in the store, `sandbox_create` returns a
 "not found" error.
+
+#### Target schema — `driver` + opaque `options:` (design direction, not yet implemented)
+
+The agreed direction is a **breaking schema migration** from the hybrid
+driver-aware form above to a **driver registry + opaque `options:`** form
+(§6.11). The `driver` name stays the registry key; the typed `docker:` /
+`seatbelt:` blocks migrate into an opaque **`options:`** blob whose keys are
+**driver-owned** (interpreted only by the driver matched by `driver`). Top-level
+`name` / `description` / `cwd` / `shell` remain.
+
+> **This is a BREAKING schema change.** The exact key names inside `options:`
+> are owned by the driver, not by mcp-sandbox — so a Docker block keyed
+> `options.image` is a driver convention, not a server contract.
+
+**Before (current / migrating):**
+
+```yaml
+name: default
+description: the default profile
+driver: docker
+docker:
+  image: alpine@sha256:…
+  env: { FOO: bar }
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network: { mode: bridge }
+  cgroups: { cpu_cores: 1, memory_gb: 1, pids_limit: 256 }
+  user: { uid: 1000, gid: 1000 }
+  sudo: never
+cwd: { target: "", mode: ro }
+shell: bash
+```
+
+**After (target form):**
+
+```yaml
+name: default
+description: the default profile
+driver: docker # REQUIRED; the registry key; selects the builder (auto/empty removed)
+options:        # opaque; interpreted ONLY by the docker driver
+  image: alpine@sha256:…
+  env: { FOO: bar }
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network: { mode: bridge }
+  cgroups: { cpu_cores: 1, memory_gb: 1, pids_limit: 256 }
+  user: { uid: 1000, gid: 1000 }
+  sudo: never
+cwd: { target: "", mode: ro }
+shell: bash
+```
+
+**Migration note (settled — ONE-SHOT breaking, no compat shim):** existing
+profiles must move their `docker:` / `seatbelt:` keys into `options:` and set an
+explicit **`driver:`** (required). In the target schema `driver` is **REQUIRED**
+and **`auto` / empty is REMOVED** — there is **no typed block to auto-resolve**
+and no implicit selection. The migration is a **one-shot breaking change**: there
+is **no translation shim** that still reads the old `docker:`/`seatbelt:` blocks.
+A README **migration guide / helper** documents and automates converting a
+profile to the target form. `Service.resolveDriver` (which today resolves
+auto/empty to a concrete driver, `infrastructure/mcp/service.go`) may **remain
+only for internal/built-in compatibility**, not for stored profiles — a stored
+profile must always carry an explicit `driver:`.
+
+The core's hardening enforcement is **unchanged** and is the **data-plane floor
+(§6.11)**: the immutable `Isolation` block is re-asserted on the result via
+`EnforceHardening` (§6.11, G), and every mount `source` inside `options` is still
+gated by `ALLOW_DIRS` (§6.11).
 
 ### 7.12 Apple / `sandbox-exec` driver (darwin backend) — experimental
 
@@ -1427,8 +1752,9 @@ no-shell-concat preserved.
 ### 7.13 Domain security audit — Docker MVP & darwin / `sandbox-exec` backend (S14)
 
 This subsection is the **consolidated, authoritative** threat model. It covers
-**both** backends: the **Docker MVP** (default) and the **darwin / `sandbox-exec`**
-backend. It supersedes the scattered per-item notes in §7.1–§7.12 as the single
+the **Docker MVP** (default), the **darwin / `sandbox-exec`** backend, and (as a
+**design-direction** trust zone, §6.11) **external / non-auditable drivers**. It
+supersedes the scattered per-item notes in §7.1–§7.12 as the single
 source of truth for security review, and cross-references §7.12 (mechanism /
 projection / lifecycle) and §8 (data & state).
 
@@ -1543,6 +1869,136 @@ equivalent to Docker/gVisor isolation. The dominant residual risks are **T1**
 `(allow default)` boundary reduction). Any hardening work on this backend
 should prioritize closing T3 (enforce what the immutable `Isolation` block
 declares) and constraining the operator tail (T8).
+
+#### External / non-auditable drivers — trust zone & threat model (S14, Security D/F5, HIGH)
+
+This is a **design-direction trust zone** for the driver-registry design (§6.11)
+— it does **not** describe shipped behavior. The moment an **external, non-
+auditable driver** is admitted (Phase 1 Go plugins, Phase 2 IPC, §6.11), it adds
+a new trust zone and threat surface. **This is the key distinction:** the core
+can re-assert the *data-plane* (declared `Isolation` fields) but the
+*mechanism-plane* is **self-attestation** and **unaudited** — a driver can lie
+(§6.11 F1/F2).
+
+##### Trust zones (external drivers)
+
+| Zone | Trust | Notes |
+| ---- | ----- | ----- |
+| **External driver process / plugin** | **Trusted for mechanism, self-attested** | The driver *claims* to enforce the declared isolation; the core **cannot audit** that claim. Data-plane fields are re-asserted (§6.11 F1), mechanism-plane is self-attestation (unaudited). |
+| **Driver manifest** | **Self-attestation, unverifiable** | The core cannot distinguish a truthful manifest from a lying one (§6.11 F1). |
+| **Driver binary** | **Digest/signature-verified** | Tamper-controlled via manifest digest/signature before load (§6.11 E/F6, analog of §7.9). |
+| **Driver IPC/stream** | **Untrusted bytes** | Every driver-originated byte is ANSI-sanitized (S09) and redacted (S02) server-side before reaching client/log/stream (§6.11 C). |
+| **Sandbox container/process** | **Untrusted** | Same as the Docker/darwin sandbox — a possibly-hostile command. |
+
+##### Threat vectors (external drivers, X1–X4)
+
+| ID | Threat | Exposure |
+| --- | ------ | -------- |
+| **X1** | **Lying self-attestation** | **HIGH.** A hostile driver declares it enforces read-only-rootfs / cap-drop / no-new-privileges / quotas but does not. The core's data-plane floor re-asserts declared fields but cannot verify the mechanism — a lie yields a REDUCED-POSTURE marker at best, and an effective hardening bypass at worst. Mitigation: treat external drivers as **not-audited**; surface the honest reduced-posture marker; prefer first-party/auditable drivers for untrusted workloads. |
+| **X2** | **Sandbox → driver → server escalation** | **HIGH (Phase 2 IPC).** A compromised sandbox could compromise its driver process and, over IPC, reach the **server with server privileges** (the driver child may run with higher privileges than the sandbox). The IPC boundary must treat the driver as **untrusted bytes**, apply frame limits / fail-closed framing / re-redaction (§6.11 C), and run the driver child with the **least privilege** consistent with its job. |
+| **X3** | **DoS via IPC** | **MED-HIGH.** Unbounded frames, partial/hostile streams, or a driver that floods output can exhaust server memory or CPU. Mitigation: frame size limits, fail-closed framing (negative/overflow/huge lengths, premature EOF), and server-side re-redaction/ANSI sanitization (§6.11 C). |
+| **X4** | **Driver-name shadowing** | **MED.** An external driver registering a **reserved** built-in name (`docker`/`seatbelt`) could shadow/override a trusted backend. Mitigation: reserved names, **fail-closed on duplicate registration** (§6.11 B). |
+
+##### Data-sensitivity (external drivers, C-I-A)
+
+| Property | Assessment |
+| -------- | ----------- |
+| **Confidentiality** | Depends on the driver. Secrets sent to a driver (tmpfs `0600`, §7.3) must **never echo back over IPC or be logged** (§6.11 C). Driver output is re-redacted server-side (S02). |
+| **Integrity** | The data-plane floor re-asserts declared `Isolation` fields; the mechanism-plane is self-attested and unaudited — a dishonest driver can undermine integrity (§6.11 F1). |
+| **Availability** | DoS via IPC (X3) is bounded by frame limits / fail-closed framing; driver crash/liveness is a supervision concern (lazy spawn, §6.11 E). |
+
+##### Auditor checklist (external drivers, to be filled at implementation)
+
+| Check | Result |
+| ----- | ------ |
+| Reserved built-in names cannot be shadowed; duplicate registration fails closed (X4)? | ⏳ **Design direction** — §6.11 B. |
+| Driver spec failing post-build `Validate()` is rejected, not patched? | ⏳ **Design direction** — §6.11 B/F3. |
+| Data-plane hardening re-asserted via `EnforceHardening` before backend `Create`? | ⏳ **Design direction** — §6.11 G. |
+| Every mount `source` gated by `ALLOW_DIRS` at the Service choke-point? | ⏳ **Design direction** — §6.11 G/S04. |
+| Capability/weakness closed enum, pessimistic default, REDUCED-POSTURE marker never silently ignored / never presented as full isolation? | ⏳ **Design direction** — §6.11 F2. |
+| Loader traversal-safe (`os.OpenRoot`), name validated like `profile.ValidName`; driver binary digest/signature verified before load? | ⏳ **Design direction** — §6.11 E/F6. |
+| IPC: frame size limits, fail-closed framing, every driver byte ANSI-sanitized + redacted, `request_id` per frame, cancel/abort frame, secrets never echo? | ⏳ **Design direction** — §6.11 C (Phase 2). |
+| Driver spawn / `Available()` stays lazy (never at startup)? | ⏳ **Design direction** — §6.11 E/A02. |
+| Sandbox→driver→server escalation (X2) mitigated via least-privilege driver child + untrusted-bytes IPC? | ⏳ **Design direction** — §6.11 C. |
+
+**Verdict (S14, external drivers):** an external, non-auditable driver is a
+**trusted-for-mechanism / self-attested** component. The core guarantees only a
+**data-plane floor** (re-asserted declared fields + honest REDUCED-POSTURE
+marker); the **mechanism-plane is unaudited**. The dominant residual risks are
+**X1** (lying self-attestation) and **X2** (sandbox→driver→server escalation via
+IPC). External drivers should be treated as **not-audited** and used only where
+that reduced trust is acceptable; the honest reduced-posture marker must never be
+silently ignored or presented as full isolation (§6.11 F2, analog of §7.12).
+
+### 7.14 Driver-registry design — settled decisions & remaining open questions (design direction — NOT yet implemented)
+
+The design-direction in §6.11/§7.11/§7.13 was reviewed by qa, devops, sre,
+developer and security (all approve-with-changes). The **settled decisions** below
+are recorded for traceability; the genuinely **open questions** remain for the
+implementation phase.
+
+#### Settled decisions (J1–J5 + reviewer F1–F6)
+
+1. **Delivery roadmap (J1):** **Phase 1 = in-process Go plugins**; **Phase 2
+   (later) = out-of-process IPC** (STDIO child + protobuf-like encoding) opening
+   other languages. The contract is defined to be realizable both ways; wire/
+   framing details are deferred to Phase 2 (§6.11).
+2. **Migration (J2):** the `docker:`/`seatbelt:` → `options:` migration is a
+   **ONE-SHOT breaking change** — **no compat shim**. A README migration guide /
+   helper documents and automates conversion (§7.11).
+3. **Registry-key semantics (J3):** in the target schema `driver` is **REQUIRED**
+   and **`auto` / empty is REMOVED** — no typed block to auto-resolve.
+   `Service.resolveDriver` remains **only for internal/built-in compatibility**,
+   not for stored profiles (§7.11).
+4. **Capability vs. weakness (Security F2):** **closed enum** of isolation
+   guarantees; **pessimistic default** (missing = "not guaranteed"); a declared
+   weakness produces an honest **REDUCED-POSTURE marker** (propagates to tool
+   output, never silently ignored, never presented as full isolation);
+   **fail-closed-reject** for data-plane fields the core can enforce (§6.11).
+5. **Fail-closed loading (Security B/F3):** a driver spec failing post-build
+   `Validate()` is **rejected**, not patched; **reserved built-in names**
+   (`docker`/`seatbelt`) cannot be shadowed; duplicate registration fails closed
+   (§6.11).
+6. **Enforcement = data-plane only (Security A/F1):** for external non-auditable
+   drivers the core re-asserts only declared `Isolation` fields; the
+   mechanism-plane is **self-attestation / unaudited**. `EnforceHardening` is the
+   single core-owned choke-point, and the `ALLOW_DIRS` mount gate is lifted to
+   the Service level (§6.11 G).
+7. **Loader / tamper (Security E/F6):** traversal-safe loader (`os.OpenRoot`,
+   name validated like `profile.ValidName`), driver binary digest/signature in
+   the manifest (analog of §7.9), lazy spawn/Available (A02/N35) (§6.11).
+8. **IPC/stream boundary (Security C/F4):** frame size limits, fail-closed
+   framing, every driver byte ANSI-sanitized + redacted server-side, `request_id`
+   per frame, cancel/abort frame for `req.Timeout` wire deadline, secrets never
+   echo (§6.11 C).
+9. **New trust zone (Security F5):** "external drivers" trust zone added to the
+   §7.13 S14 audit (lying self-attestation, sandbox→driver→server escalation,
+   DoS via IPC, name shadowing; X1–X4) with an auditor checklist (§7.13).
+10. **Role alignment (QA P1):** `List` is an **optional reconciliation seam**
+    (not a single-sandbox primitive); `Delete` → **`Destroy`** (§6.11 F).
+11. **`Driver()` vs `Slug()` (QA P2):** distinct concepts; a future `Slug()` is a
+    stable, allowlist-validated namespace token, not conflated with `Driver()`
+    (§6.11 I; §7.8).
+12. **Testability (QA P1/H):** seams documented (registry / loader / IPC codec /
+    supervision / enforcement floor); the security floor is a pure function
+    testable without a concrete driver (fake-driver pattern) (§6.11 H).
+
+#### Remaining open questions (implementation phase)
+
+1. **Wire/encoding (Phase 2):** exact encoding of the IPC stream. **Settled:** it
+   is a **STDIO child + protobuf-like** encoding, and the **process boundary is a
+   STDIO child** (not necessarily a long-lived daemon). **Open:** the concrete
+   **framing** (length-delimited vs. other) and the exact field/error schema
+   mapping `Create`/`Destroy`/`Exec`/`Info`/`Stats`/`Available`.
+2. **Driver supervision (Phase 2):** how a crashed/stuck driver child is
+   detected, restarted or failed — while keeping `Available()`/spawn lazy
+   (A02/N35) and preserving fail-closed framing (§6.11 C/E).
+3. **Go-plugin ABI (Phase 1):** the concrete in-process Go-plugin interface /
+   ABI for Phase 1 (how a plugin registers its `DriverBuilder`, version/platform
+   coupling constraints for in-process loading).
+
+These three remain open because they are implementation-stage details deferred
+by the settled roadmap (§6.11); none changes the driver contract itself.
 
 ---
 
@@ -1682,7 +2138,8 @@ binaries on GitHub Release). For this Local server there are no registry image
 publications.
 
 **Go / dependency currency (C05/N33):** pinned to latest stable — **Go 1.27.2**,
-**go-sdk v1.8.0**, **logrus v1.10.2** (see `reference/versions.md`).
+**go-sdk v1.8.0**, **logrus v1.10.2** (pinned versions come from the external
+`mcp-server-spec` skill's `reference/versions.md` — not a repo file).
 **resty.dev/v3** is **not** a current dependency: the server performs no
 outbound HTTP (L02GO applies only when genuine remote HTTP is introduced), and
 resty would be added only for a future backend that requires it.

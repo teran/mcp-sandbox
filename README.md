@@ -113,6 +113,40 @@ Highlights:
   **explicit only** — see [Sandbox lifecycle](#sandbox-lifecycle). Automatic
   idle-reaping and orphan cleanup are **future work** (not implemented today).
 
+### Driver architecture (direction)
+
+> **Status: design direction — not yet implemented** (see `SPEC.md` §6.11,
+> §7.11, §7.13, §7.14). The current profile schema still uses the typed `docker:` /
+> `seatbelt:` blocks; the direction below is the agreed target. **Delivery
+> roadmap:** Phase 1 = in-process Go plugins; Phase 2 (later) = out-of-process
+> IPC (STDIO child + protobuf-like) opening other languages.
+
+A **driver** is a single-sandbox primitive — it implements working with **one**
+sandbox (`Create` / `Destroy` / `Exec` / `Info` / `Stats` / `Available`),
+mapping onto the existing role interfaces (`SPEC.md` §6.2). `List` is **not** a
+single-sandbox primitive — it is an optional reconciliation seam; `Delete` is
+renamed `Destroy`. All **orchestration** of many sandboxes (session manager,
+routing, lifecycle, HITL, streaming/redaction, `sandbox_list`) is the **server's**
+job.
+
+The direction is a **driver registry + opaque `options:`** so new drivers can be
+added **without a commit to mcp-sandbox** and without linking proprietary code
+into the binary. `driver` becomes the registry key (**required** in the target
+schema; `auto`/empty is removed); the typed `docker:` / `seatbelt:` blocks
+migrate into an opaque, driver-owned **`options:`** blob (**one-shot breaking**
+change — see the migration note below). Built-in names (`docker`, `seatbelt`)
+are reserved and cannot be shadowed; a driver spec that fails validation is
+**rejected**, not patched. The core keeps a **uniform data-plane security floor**:
+after a driver produces the spec it **re-asserts** the immutable `Isolation`
+hardening (`EnforceHardening`), gates every mount source by `ALLOW_DIRS`, and
+fails closed on an unknown driver. For **external non-auditable drivers** that
+floor is **data-plane only** — the mechanism-plane is self-attested and
+unaudited, so a driver must fill a **closed enum** of isolation guarantees with a
+**pessimistic default** (missing = "not guaranteed"), and a declared weakness
+yields an honest **REDUCED-POSTURE marker** (never silently ignored, never
+presented as full isolation). See `SPEC.md` §6.11 for the full security model,
+the IPC/loader requirements and the testability seams.
+
 ## Requirements
 
 - **Go 1.27.2+**
@@ -229,6 +263,54 @@ cwd:
 - `profile_list` returns only `name`/`description` — env, mounts, image, user
   and sudo are never exposed (S02).
 - Full schema and trust model: `SPEC.md` §7.11.
+
+> **Schema direction:** the typed `docker:` / `seatbelt:` blocks are the
+> current/migrating form. The agreed target is a `driver: <name>` (**required**;
+> `auto`/empty is removed) + opaque **`options:`** form (breaking schema change)
+> so new drivers can be added without a commit to mcp-sandbox — see
+> [Driver architecture (direction)](#driver-architecture-direction),
+> [Migration to `driver` + `options:`](#migration-to-driver--options) and
+> `SPEC.md` §7.11/§7.14.
+
+### Migration to `driver` + `options:`
+
+The move from the typed `docker:` / `seatbelt:` blocks to the target
+`driver:` + `options:` form is a **one-shot breaking schema change** (no compat
+shim): `driver` becomes **required** and `auto`/empty is **removed**, and every
+typed block key moves under `options:`. A migration **helper/guide** is provided
+in the repo to automate converting a profile. In short:
+
+1. Read the existing `docker:` block (or `seatbelt:` block) from your profile.
+2. Set `driver: docker` (or `driver: seatbelt`) at the top level — **required**;
+   there is no `auto`/empty form anymore.
+3. Move the block's keys (image, env, mounts, network, cgroups, user, sudo —
+   or env/sbpl/mach_lookups/sysctls) verbatim under a top-level `options:` blob.
+4. Keep `name`, `description`, `cwd`, `shell` as-is.
+
+Example target form:
+
+```yaml
+name: default
+description: the default profile
+driver: docker # REQUIRED; the registry key (auto/empty removed)
+options:        # opaque; interpreted ONLY by the docker driver
+  image: alpine@sha256:…
+  env: { FOO: bar }
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network: { mode: bridge }
+  cgroups: { cpu_cores: 1, memory_gb: 1, pids_limit: 256 }
+  user: { uid: 1000, gid: 1000 }
+  sudo: never
+cwd: { target: "", mode: ro }
+shell: bash
+```
+
+The built-in `driver` names `docker` and `seatbelt` are reserved and cannot be
+shadowed by an external driver; a driver spec that fails validation is rejected,
+not patched. Full schema and security model: `SPEC.md` §7.11/§6.11.
 
 ### Migration from the old `sandbox_create`
 
