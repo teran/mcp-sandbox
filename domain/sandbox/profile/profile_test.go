@@ -677,6 +677,18 @@ func TestBuildSpec_ImageAndEnvFromProfile(t *testing.T) {
 	}
 }
 
+func TestBuildSpec_SeatbeltEnvFromProfile(t *testing.T) {
+	p := validSeatbeltProfile()
+	p.Seatbelt.Env = map[string]string{"K": "V"}
+	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/c"})
+	if sp.Driver != spec.DriverSeatbelt {
+		t.Fatalf("Driver = %q, want seatbelt", sp.Driver)
+	}
+	if sp.Env["K"] != "V" {
+		t.Fatalf("Env = %+v, want profile env", sp.Env)
+	}
+}
+
 func TestBuildSpec_ResultValidates(t *testing.T) {
 	p := validProfile()
 	sp := p.BuildSpec(validIsolation(), Params{Cwd: "/home/user/proj"})

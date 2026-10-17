@@ -55,6 +55,14 @@ description: >-
   needs to load binaries; outbound network allowed.
 driver: seatbelt
 seatbelt:
+  # Optional operator-authored environment variables for the sandbox session,
+  # delivered via spec.Env -> cmd.Env (S02: do not put secrets here; use tmpfs
+  # 0600 secret files under /run/sandbox instead).
+  env:
+    GIT_AUTHOR_NAME: "Igor Shishkin"
+    GIT_AUTHOR_EMAIL: "me@teran.dev"
+    GIT_COMMITTER_NAME: "Igor Shishkin"
+    GIT_COMMITTER_EMAIL: "me@teran.dev"
   # Operator SBPL template, merged AFTER the server's deny-default hardening.
   # In Seatbelt the LAST matching rule wins, so these rules override the
   # baseline. FILE access is deny-all (only the listed paths re-open); the

@@ -1005,6 +1005,32 @@ func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
 	}
 }
 
+func TestBuildSpec_ProfileSeatbeltEnv(t *testing.T) {
+	svc := newFake()
+	p := defaultProfile()
+	p.Driver = spec.DriverSeatbelt
+	p.Docker = nil
+	p.Seatbelt = &domainprofile.SeatbeltProfile{
+		SBPL: "(import \"system.sb\")\n(allow process-fork)",
+		Env:  map[string]string{"A": "1"},
+	}
+	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
+
+	b := builder{svc: svc}
+	sp, err := buildSpec(b, createInput{
+		Profile: "default", Cwd: "/c", SessionID: "s",
+	})
+	if err != nil {
+		t.Fatalf("buildSpec: %v", err)
+	}
+	if sp.Driver != spec.DriverSeatbelt {
+		t.Fatalf("Driver = %q, want seatbelt", sp.Driver)
+	}
+	if sp.Env["A"] != "1" {
+		t.Fatalf("env = %+v, want profile env", sp.Env)
+	}
+}
+
 func TestBuildSpec_ProfileUser(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()

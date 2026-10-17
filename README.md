@@ -380,6 +380,13 @@ profile's `seatbelt.sbpl` block (see [Profiles](#profiles-operator-authored)). A
 working, verified example lives at **`examples/profiles/seatbelt.yml`** — a
 file-deny-all profile validated live against a real macOS host.
 
+The darwin profile's **`seatbelt:`** block also accepts an optional **`env:`**
+map of session environment variables, mirroring the Docker profile's `env:`
+(SPEC §7.12). As with Docker profile env, the values are collected into the
+redaction set and **masked from output and logs (S02)** — do **not** put
+secrets here; use tmpfs `0600` secret files instead (see
+`examples/profiles/seatbelt.yml`).
+
 **Generation order.** `sbpl.Generate` emits sections in a fixed order — imports
 → `(deny default)` → network → mach → sysctl → file → **your `seatbelt.sbpl`
 last, verbatim**. Because the last matching rule wins in Seatbelt, the operator
