@@ -7,13 +7,14 @@ package docker
 //	Manager.Create -> backend.Create (returns the container id)
 //	Manager.Destroy / backend.Exec / backend.Info / backend.Stats (session id)
 //
-// Because the session id IS the container id, every follow-up operation must use
-// the returned id DIRECTLY as the container id — the obsolete
-// dev.teran.sandbox.session label lookup must NOT be relied upon. These tests
-// are the regression guard for the "session id = backend id" refactor: before
-// the fix, the manager passes no session id into backend.Create, the container
-// carries no session label, and Destroy/Exec/Info/Stats resolve nothing and
-// return ErrNotFound.
+// Under the namespaced-sandbox-id design the session id is `slug:internalID`
+// (e.g. "docker:cid-1"): the manager stores it namespaced, but the docker
+// backend STRIPS the "docker:" slug before calling the Docker API, so every
+// ContainerRemove / exec / inspect / stats call receives the raw container id
+// ("cid-N"). These tests are the regression guard for the "session id =
+// namespaced backend id" refactor: before the fix the backend passed the whole
+// "docker:cid-1" string as the container id and the daemon lookups resolved
+// nothing.
 
 import (
 	"context"
@@ -22,15 +23,16 @@ import (
 
 	"github.com/teran/mcp-sandbox/application/session"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainsession "github.com/teran/mcp-sandbox/domain/session"
 )
 
 // TestManagerBackend_IntegratedDestroy pins that Destroy through the manager
-// actually removes the container owned by the created session. Before the fix
-// the label-based lookup matched nothing and Destroy was a silent no-op.
+// actually removes the container owned by the created session, passing the
+// STRIPPED raw container id (without the "docker:" slug) to the Docker API.
 func TestManagerBackend_IntegratedDestroy(t *testing.T) {
 	api := newFakeClient()
 	be := New(api, nil)
-	m := session.NewManager(be)
+	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
 	if err != nil {
@@ -45,10 +47,11 @@ func TestManagerBackend_IntegratedDestroy(t *testing.T) {
 		t.Fatalf("Destroy via manager must succeed for a created session: %v", err)
 	}
 
-	// The session id IS the container id: the backing container must actually
-	// have been removed (regression: the label lookup used to make this a no-op).
-	if len(api.removes) != 1 || api.removes[0] != id {
-		t.Fatalf("removes = %v, want exactly [%q] (container id == session id)", api.removes, id)
+	// The session id is namespaced ("docker:cid-1"); the backend must strip the
+	// slug and remove the raw container id.
+	raw := namespacedInternal(t, id)
+	if len(api.removes) != 1 || api.removes[0] != raw {
+		t.Fatalf("removes = %v, want exactly [%q] (slug stripped)", api.removes, raw)
 	}
 
 	if _, err := m.Get(id); !errors.Is(err, session.ErrSessionNotFound) {
@@ -57,13 +60,13 @@ func TestManagerBackend_IntegratedDestroy(t *testing.T) {
 }
 
 // TestManagerBackend_IntegratedExec pins that Exec with the manager-returned
-// session id does not error (regression: used to return ErrNotFound) and reaches
-// the container identified by that id.
+// namespaced session id does not error and reaches the container identified by
+// the STRIPPED raw id.
 func TestManagerBackend_IntegratedExec(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
 	be := New(api, nil)
-	m := session.NewManager(be)
+	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
 	if err != nil {
@@ -78,18 +81,18 @@ func TestManagerBackend_IntegratedExec(t *testing.T) {
 	if string(res.Stdout) != "hi" {
 		t.Fatalf("stdout = %q, want hi", res.Stdout)
 	}
-	if len(api.execContainerIDs) != 1 || api.execContainerIDs[0] != id {
-		t.Fatalf("exec container id = %v, want exactly [%q] (container id == session id)", api.execContainerIDs, id)
+	raw := namespacedInternal(t, id)
+	if len(api.execContainerIDs) != 1 || api.execContainerIDs[0] != raw {
+		t.Fatalf("exec container id = %v, want exactly [%q] (slug stripped)", api.execContainerIDs, raw)
 	}
 }
 
 // TestManagerBackend_IntegratedInfo pins that Info with the manager-returned
-// session id does not error (regression: used to return ErrNotFound) and inspects
-// the container identified by that id.
+// namespaced session id does not error and inspects the STRIPPED raw id.
 func TestManagerBackend_IntegratedInfo(t *testing.T) {
 	api := newFakeClient()
 	be := New(api, nil)
-	m := session.NewManager(be)
+	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
 	if err != nil {
@@ -104,18 +107,18 @@ func TestManagerBackend_IntegratedInfo(t *testing.T) {
 	if info == nil {
 		t.Fatal("nil info")
 	}
-	if len(api.inspects) != 1 || api.inspects[0] != id {
-		t.Fatalf("inspected container id = %v, want exactly [%q] (container id == session id)", api.inspects, id)
+	raw := namespacedInternal(t, id)
+	if len(api.inspects) != 1 || api.inspects[0] != raw {
+		t.Fatalf("inspected container id = %v, want exactly [%q] (slug stripped)", api.inspects, raw)
 	}
 }
 
 // TestManagerBackend_IntegratedStats pins that Stats with the manager-returned
-// session id does not error (regression: used to return ErrNotFound) and reads
-// the container identified by that id.
+// namespaced session id does not error and reads the STRIPPED raw id.
 func TestManagerBackend_IntegratedStats(t *testing.T) {
 	api := newFakeClient()
 	be := New(api, nil)
-	m := session.NewManager(be)
+	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
 	if err != nil {
@@ -130,7 +133,20 @@ func TestManagerBackend_IntegratedStats(t *testing.T) {
 	if st == nil {
 		t.Fatal("nil stats")
 	}
-	if len(api.statsCalls) != 1 || api.statsCalls[0] != id {
-		t.Fatalf("stats container id = %v, want exactly [%q] (container id == session id)", api.statsCalls, id)
+	raw := namespacedInternal(t, id)
+	if len(api.statsCalls) != 1 || api.statsCalls[0] != raw {
+		t.Fatalf("stats container id = %v, want exactly [%q] (slug stripped)", api.statsCalls, raw)
 	}
+}
+
+// namespacedInternal extracts the raw (slug-stripped) backend id from a
+// namespaced session id. It fails the test if the id is not namespaced.
+func namespacedInternal(t *testing.T, id string) string {
+	t.Helper()
+	n, err := domainsession.ParseNamespacedID(id)
+	if err != nil {
+		t.Fatalf("session id %q must be namespaced: %v", id, err)
+	}
+
+	return n.Internal
 }

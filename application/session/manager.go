@@ -51,7 +51,11 @@ func WithLogger(e *logrus.Entry) Option { return func(m *Manager) { m.log = e } 
 // registry map is guarded by a RWMutex and each session carries its own
 // per-session mutex (X05).
 type Manager struct {
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// slug is the namespacing prefix of every session id this manager owns
+	// (SPEC §7.8): a manager is scoped to ONE driver/backend, so every session
+	// is keyed `slug:<internalID>` and resolution is per-driver.
+	slug     string
 	sessions map[string]*domainsession.Session
 	life     role.Lifecycle
 	// log is the base logrus entry for trace diagnostics (L09).
@@ -61,9 +65,12 @@ type Manager struct {
 	newID func() (string, error)
 }
 
-// NewManager returns a session manager backed by the given lifecycle backend.
-func NewManager(life role.Lifecycle, opts ...Option) *Manager {
+// NewManager returns a session manager backed by the given lifecycle backend,
+// namespacing every session id it creates with the given slug (`slug:<internalID>`,
+// SPEC §7.8).
+func NewManager(slug string, life role.Lifecycle, opts ...Option) *Manager {
 	m := &Manager{
+		slug:     slug,
 		sessions: make(map[string]*domainsession.Session),
 		life:     life,
 		newID:    newID,
@@ -133,42 +140,58 @@ func (m *Manager) Create(ctx context.Context, s spec.SandboxSpec) (*domainsessio
 	}
 
 	// The backend creates the sandbox FIRST and returns its id; that id IS the
-	// session id (docker = container id, so a sandbox is directly traceable to
-	// its container; seatbelt = the backend's generated id). A backend that
-	// returns an empty id falls back to a generated opaque id (§7.8).
-	id, err := m.life.Create(ctx, s)
+	// session's internal id (docker = container id, so a sandbox is directly
+	// traceable to its container; seatbelt = the backend's generated id). A
+	// backend that returns an empty id falls back to a generated opaque id
+	// (§7.8). The full session id is then namespaced as `slug:<internalID>`.
+	internal, err := m.life.Create(ctx, s)
 	if err != nil {
 		return nil, fmt.Errorf("session: create sandbox: %w", err)
 	}
-	if id == "" {
-		id, err = m.newID()
+	if internal == "" {
+		internal, err = m.newID()
 		if err != nil {
 			return nil, err
 		}
 	}
-	m.entryFor(ctx, id).WithField("operation", "create").Trace("session: created")
+	full := m.slug + ":" + internal
+	m.entryFor(ctx, full).WithField("operation", "create").Trace("session: created")
 
 	// search-before-register (X02): a duplicate backend id is surfaced as an
 	// error rather than registering a second session.
 	m.mu.Lock()
-	if _, exists := m.sessions[id]; exists {
+	if _, exists := m.sessions[full]; exists {
 		m.mu.Unlock()
 
-		return nil, fmt.Errorf("session: duplicate id %q", id)
+		return nil, fmt.Errorf("session: duplicate id %q", full)
 	}
-	sess := domainsession.New(id, s)
+	sess := domainsession.New(full, s)
 	sess.MarkRunning()
-	m.sessions[id] = sess
+	m.sessions[full] = sess
 	m.mu.Unlock()
 
 	return sess, nil
 }
 
-// resolveID resolves a caller-supplied id to the full session id. It must be
-// called with m.mu held (RLock). An exact full id fast-paths O(1); otherwise
+// Resolve resolves a caller-supplied id (a full namespaced id or a unique
+// `slug:<prefix>` short/prefix id) to the FULL namespaced session id within
+// THIS manager's driver scope (SPEC §6.6). An exact full id fast-paths O(1);
+// otherwise every live id is scanned for a unique prefix match. Zero matches
+// returns ErrSessionNotFound, more than one returns ErrAmbiguousSessionID. It
+// is safe for concurrent use and is what the service layer calls to route a
+// session-id-addressed op to the backend.
+func (m *Manager) Resolve(prefix string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.resolveLocked(prefix)
+}
+
+// resolveLocked resolves a caller-supplied id to the full session id. It must
+// be called with m.mu held (RLock). An exact full id fast-paths O(1); otherwise
 // every live id is scanned for a unique prefix match (SPEC §6.6). Zero matches
 // returns ErrSessionNotFound, more than one match returns ErrAmbiguousSessionID.
-func (m *Manager) resolveID(prefix string) (string, error) {
+func (m *Manager) resolveLocked(prefix string) (string, error) {
 	// An empty prefix would match every id via HasPrefix, so it is never a
 	// valid resolution (a real session id is always non-empty, §7.8).
 	if prefix == "" {
@@ -199,12 +222,14 @@ func (m *Manager) resolveID(prefix string) (string, error) {
 // full id (SPEC §6.6).
 func (m *Manager) Get(id string) (*domainsession.Session, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	full, err := m.resolveID(id)
+	full, err := m.resolveLocked(id)
 	if err != nil {
+		m.mu.RUnlock()
+
 		return nil, err
 	}
 	s := m.sessions[full]
+	m.mu.RUnlock()
 	m.entryFor(context.Background(), full).WithField("operation", "get").Trace("session: got")
 
 	return s, nil
@@ -229,7 +254,7 @@ func (m *Manager) List(ctx context.Context) []*domainsession.Session {
 func (m *Manager) Destroy(ctx context.Context, id string) error {
 	defer m.traceOp(ctx, "destroy", id)()
 	m.mu.RLock()
-	full, err := m.resolveID(id)
+	full, err := m.resolveLocked(id)
 	var s *domainsession.Session
 	if err == nil {
 		s = m.sessions[full]

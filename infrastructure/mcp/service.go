@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -71,10 +70,6 @@ type Service struct {
 	// runtimes holds one backend + session manager per concrete driver, created
 	// lazily on first use (A02/N35). Multiple drivers coexist.
 	runtimes map[spec.Driver]*driverRuntime
-	// sessionDriver maps a live session id to the driver that owns it, so
-	// session-id-addressed ops (Exec/Info/Stats/Destroy/Get) route to the
-	// correct backend.
-	sessionDriver map[string]spec.Driver
 
 	// log is the base logrus entry for trace diagnostics (L09).
 	log *logrus.Entry
@@ -93,11 +88,10 @@ type driverRuntime struct {
 // NewService returns a sandbox Service backed by the given backend registry.
 func NewService(reg *backend.Registry, cfg backend.Config, opts ...Option) *Service {
 	s := &Service{
-		reg:           reg,
-		cfg:           cfg,
-		log:           serviceLog,
-		runtimes:      make(map[spec.Driver]*driverRuntime),
-		sessionDriver: make(map[string]spec.Driver),
+		reg:      reg,
+		cfg:      cfg,
+		log:      serviceLog,
+		runtimes: make(map[spec.Driver]*driverRuntime),
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -147,7 +141,18 @@ func (s *Service) ensure(ctx context.Context, want spec.Driver) (*driverRuntime,
 	if !ok {
 		return nil, role.ErrCapabilityNotSupported
 	}
-	rt := &driverRuntime{be: be, mgr: session.NewManager(life)}
+	// Fail-closed slug guard (SPEC §7.8): no two runtimes may share a slug —
+	// session-id-addressed ops route by slug, so a collision would make routing
+	// ambiguous. Built-ins ("docker", "seatbelt") are unique; an external
+	// backend that shadows one is rejected here rather than silently corrupting
+	// routing.
+	slug := be.Slug()
+	for _, existing := range s.runtimes {
+		if existing.be.Slug() == slug {
+			return nil, fmt.Errorf("backend: slug %q already in use", slug)
+		}
+	}
+	rt := &driverRuntime{be: be, mgr: session.NewManager(slug, life)}
 	s.runtimes[want] = rt
 
 	return rt, nil
@@ -169,47 +174,32 @@ func (s *Service) resolveDriver(ctx context.Context, want spec.Driver) (spec.Dri
 	return f.Driver, nil
 }
 
-// resolveID resolves a caller-supplied id to the owning runtime and the full
-// session id (SPEC §6.6). It must be called with s.mu held (Lock). An exact
-// full id fast-paths O(1) via sessionDriver; otherwise every live session id
-// (the sessionDriver keys) is scanned for a unique prefix match, mirroring
-// Manager.resolveID. Zero matches returns ErrSessionNotFound, more than one
-// match returns ErrAmbiguousSessionID, and an empty id is never a valid
-// resolution (a real session id is always non-empty, §7.8).
-func (s *Service) resolveID(prefix string) (*driverRuntime, string, error) {
-	if prefix == "" {
+// resolveSessionID resolves a caller-supplied session id to the owning runtime
+// and the FULL namespaced session id (SPEC §6.6/§7.8). It must be called with
+// s.mu held (Lock). The id is parsed as `slug:internal` (STRICT, single ':');
+// the slug selects the owning runtime (`runtimes[spec.Driver(slug)]`), and the
+// runtime's manager resolves a full or unique `slug:<prefix>` id to the full
+// namespaced id. An empty, malformed (non-namespaced) or unknown-slug id, and a
+// known-slug id with no live match, all resolve to ErrSessionNotFound; a prefix
+// matching multiple sessions returns ErrAmbiguousSessionID.
+func (s *Service) resolveSessionID(id string) (*driverRuntime, string, error) {
+	if id == "" {
 		return nil, "", session.ErrSessionNotFound
 	}
-	if d, ok := s.sessionDriver[prefix]; ok {
-		rt, ok := s.runtimes[d]
-		if !ok {
-			return nil, "", session.ErrSessionNotFound
-		}
-
-		return rt, prefix, nil
-	}
-
-	var matchDriver spec.Driver
-	var match string
-	for id, d := range s.sessionDriver {
-		if !strings.HasPrefix(id, prefix) {
-			continue
-		}
-		if match != "" {
-			return nil, "", session.ErrAmbiguousSessionID
-		}
-		match = id
-		matchDriver = d
-	}
-	if match == "" {
+	n, err := domainsession.ParseNamespacedID(id)
+	if err != nil {
 		return nil, "", session.ErrSessionNotFound
 	}
-	rt, ok := s.runtimes[matchDriver]
+	runtime, ok := s.runtimes[spec.Driver(n.Slug)]
 	if !ok {
 		return nil, "", session.ErrSessionNotFound
 	}
+	full, err := runtime.mgr.Resolve(id)
+	if err != nil {
+		return nil, "", err
+	}
 
-	return rt, match, nil
+	return runtime, full, nil
 }
 
 // Policy returns the server-enforced sandbox policy.
@@ -243,22 +233,15 @@ func (s *Service) Create(ctx context.Context, sp spec.SandboxSpec) (*domainsessi
 	if err != nil {
 		return nil, err
 	}
-	sess, err := rt.mgr.Create(ctx, sp)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.sessionDriver[sess.ID()] = d
-	s.mu.Unlock()
 
-	return sess, nil
+	return rt.mgr.Create(ctx, sp)
 }
 
 // Get returns the session with the given id, routing a unique short/prefix id
 // to the owning backend and the full id (SPEC §6.6).
 func (s *Service) Get(id string) (*domainsession.Session, error) {
 	s.mu.Lock()
-	runtime, full, err := s.resolveID(id)
+	runtime, full, err := s.resolveSessionID(id)
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -285,15 +268,23 @@ func (s *Service) List(ctx context.Context) []*domainsession.Session {
 }
 
 // Destroy tears down one session (idempotent, X02), routing a unique
-// short/prefix id to the owning backend and the full id. An unknown id is a
-// no-op; an ambiguous prefix is propagated as ErrAmbiguousSessionID.
+// short/prefix id to the owning backend and the full id. An unknown-slug or
+// malformed id is an ERROR (ErrSessionNotFound, user decision 1); a valid slug
+// whose internal id matches no live session is an idempotent per-driver no-op
+// (X02); a service that has never initialized a backend is a safe no-op.
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	s.mu.Lock()
-	runtime, full, err := s.resolveID(id)
+	runtime, full, err := s.resolveSessionID(id)
+	// noOp records the ErrSessionNotFound cases that must stay a no-op: a
+	// known-slug id with no live match (per-driver X02), or a service with no
+	// initialized runtime at all (nothing to route to).
+	noOp := false
+	if errors.Is(err, session.ErrSessionNotFound) {
+		noOp = len(s.runtimes) == 0 || s.slugKnownLocked(id)
+	}
 	s.mu.Unlock()
 	if err != nil {
-		if errors.Is(err, session.ErrSessionNotFound) {
-			// Idempotent no-op (X02): a zero-match id/prefix is not an error.
+		if noOp {
 			return nil
 		}
 
@@ -304,13 +295,19 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 		return err
 	}
 
-	// The session is gone; drop its id from the routing table so a subsequent
-	// short/prefix lookup no longer resolves to the destroyed backend session.
-	s.mu.Lock()
-	delete(s.sessionDriver, full)
-	s.mu.Unlock()
-
 	return nil
+}
+
+// slugKnownLocked reports whether id carries the slug of an initialized
+// runtime (SPEC §7.8). It must be called with s.mu held.
+func (s *Service) slugKnownLocked(id string) bool {
+	n, err := domainsession.ParseNamespacedID(id)
+	if err != nil {
+		return false
+	}
+	_, ok := s.runtimes[spec.Driver(n.Slug)]
+
+	return ok
 }
 
 // DestroyAll tears down every session across all backends (idempotent).
@@ -337,7 +334,7 @@ func (s *Service) DestroyAll(ctx context.Context) error {
 func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, error) {
 	s.entryFor(ctx, req.SandboxID).WithField("operation", "exec").Trace("sandbox: exec")
 	s.mu.Lock()
-	runtime, full, err := s.resolveID(req.SandboxID)
+	runtime, full, err := s.resolveSessionID(req.SandboxID)
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -356,7 +353,7 @@ func (s *Service) Exec(ctx context.Context, req exec.Request) (*exec.Result, err
 func (s *Service) Info(ctx context.Context, id string) (any, error) {
 	s.entryFor(ctx, id).WithField("operation", "info").Trace("sandbox: info")
 	s.mu.Lock()
-	runtime, full, err := s.resolveID(id)
+	runtime, full, err := s.resolveSessionID(id)
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -374,7 +371,7 @@ func (s *Service) Info(ctx context.Context, id string) (any, error) {
 func (s *Service) Stats(ctx context.Context, id string) (any, error) {
 	s.entryFor(ctx, id).WithField("operation", "stats").Trace("sandbox: stats")
 	s.mu.Lock()
-	runtime, full, err := s.resolveID(id)
+	runtime, full, err := s.resolveSessionID(id)
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err

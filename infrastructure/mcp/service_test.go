@@ -33,6 +33,7 @@ type fakeBackend struct {
 	stats         any
 	capNotSupport bool
 	driver        spec.Driver
+	slug          string
 
 	// createIDs, when non-nil, supplies deterministic session ids in order so
 	// prefix-resolution tests can force long ids that ShortID truncates and
@@ -55,6 +56,23 @@ func (f *fakeBackend) Name() string  { return "fake" }
 func (f *fakeBackend) Priority() int { return 0 }
 func (f *fakeBackend) Driver() spec.Driver {
 	return f.driver
+}
+
+// Slug returns the namespacing slug for this backend. When a test does not set
+// one explicitly it derives from the driver ("docker" / "seatbelt"), which are
+// the slug values the real backends expose. A fake with no driver set (the
+// pre-namespacing zero value) defaults to the docker slug so its sessions are
+// still addressable — mirroring the real docker backend, whose slug is always
+// "docker".
+func (f *fakeBackend) Slug() string {
+	if f.slug != "" {
+		return f.slug
+	}
+	if f.driver == "" {
+		return "docker"
+	}
+
+	return string(f.driver)
 }
 
 func (f *fakeBackend) Capabilities() role.CapabilitySet {
@@ -128,6 +146,9 @@ func testSpec() spec.SandboxSpec {
 
 func newTestService(t *testing.T, fb *fakeBackend) *Service {
 	t.Helper()
+	if fb.driver == "" {
+		fb.driver = spec.DriverDocker
+	}
 	reg := backend.NewRegistry()
 	if err := reg.Register(backend.Factory{
 		Name:         "fake",
@@ -312,6 +333,7 @@ func (roleOnlyBackend) Name() string                     { return "only" }
 func (roleOnlyBackend) Priority() int                    { return 0 }
 func (roleOnlyBackend) Capabilities() role.CapabilitySet { return needAll }
 func (roleOnlyBackend) Driver() spec.Driver              { return spec.DriverDocker }
+func (roleOnlyBackend) Slug() string                     { return "docker" }
 
 func TestService_Introspect(t *testing.T) {
 	fb := &fakeBackend{info: "info", stats: "stats"}
@@ -816,7 +838,7 @@ var longIDs = []string{
 // given deterministic long ids on successive Create calls.
 func newPrefixService(t *testing.T, ids []string) (*Service, *fakeBackend) {
 	t.Helper()
-	fb := &fakeBackend{createIDs: ids, info: "info", stats: "stats", execRes: &exec.Result{ExitCode: 0}}
+	fb := &fakeBackend{driver: spec.DriverDocker, createIDs: ids, info: "info", stats: "stats", execRes: &exec.Result{ExitCode: 0}}
 	reg := backend.NewRegistry()
 	if err := reg.Register(backend.Factory{
 		Name:         "fake",
@@ -841,10 +863,14 @@ func newPrefixService(t *testing.T, ids []string) (*Service, *fakeBackend) {
 // ErrSessionNotFound, so this test fails until the fix lands.
 func TestService_ShortID_RoutesAndPassesFullID(t *testing.T) {
 	svc, fb := newPrefixService(t, []string{longIDs[0]})
-	full := longIDs[0]
+	full := "docker:" + longIDs[0]
 	short := domainsession.ShortID(full)
 	if short == full {
 		t.Fatalf("test requires a real truncation: ShortID(%q) = %q", full, short)
+	}
+	// The slug is preserved and the internal id shortened to 12 (decision 2).
+	if short != "docker:deadbeef1234" {
+		t.Fatalf("ShortID(%q) = %q, want docker:deadbeef1234", full, short)
 	}
 
 	sp := testSpec()
@@ -903,7 +929,7 @@ func TestService_ShortID_RoutesAndPassesFullID(t *testing.T) {
 // to the backend — the prefix scan must not regress exact lookups.
 func TestService_ShortID_ExactFullIDFastPathStillWorks(t *testing.T) {
 	svc, fb := newPrefixService(t, []string{longIDs[0]})
-	full := longIDs[0]
+	full := "docker:" + longIDs[0]
 	sp := testSpec()
 	sp.Driver = spec.DriverDocker
 	if _, err := svc.Create(context.Background(), sp); err != nil {
@@ -928,7 +954,9 @@ func TestService_ShortID_ExactFullIDFastPathStillWorks(t *testing.T) {
 // the test fails until the fix routes through a prefix-resolving lookup.
 func TestService_PrefixAmbiguous(t *testing.T) {
 	svc, _ := newPrefixService(t, []string{longIDs[0], longIDs[1]})
-	ambiguous := longIDs[0][:12] // shared by both sessions
+	// Both sessions share the slug "docker" and the same first-12 internal hex
+	// prefix, so "docker:deadbeef1234" is ambiguous within the docker driver.
+	ambiguous := "docker:" + longIDs[0][:12]
 	sp := testSpec()
 	sp.Driver = spec.DriverDocker
 	if _, err := svc.Create(context.Background(), sp); err != nil {
@@ -956,9 +984,12 @@ func TestService_PrefixAmbiguous(t *testing.T) {
 	}
 }
 
-// TestService_EmptyAndUnknownID pins that an empty id and an unknown prefix are
-// both ErrSessionNotFound (never a wildcard match / never a panic), and that
-// Destroy is idempotent on unknown ids.
+// TestService_EmptyAndUnknownID pins that an empty id, a malformed bare id (no
+// slug), and an unknown slug are all ErrSessionNotFound (never a wildcard match
+// / never a panic). Under the namespaced design (decisions 1 & "malformed id ->
+// ErrSessionNotFound"), even Destroy of an empty/bare/unknown-slug id is an
+// ERROR, not the old no-op — only a VALID slug with an unknown internal id stays
+// an idempotent no-op on Destroy (per-driver X02).
 func TestService_EmptyAndUnknownID(t *testing.T) {
 	svc, _ := newPrefixService(t, []string{longIDs[0]})
 	sp := testSpec()
@@ -980,27 +1011,48 @@ func TestService_EmptyAndUnknownID(t *testing.T) {
 	if _, err := svc.Stats(context.Background(), ""); !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("Stats(\"\") err = %v, want ErrSessionNotFound", err)
 	}
+	// Empty id is malformed -> Destroy is now an error, not a no-op.
+	if err := svc.Destroy(context.Background(), ""); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Destroy(\"\") err = %v, want ErrSessionNotFound", err)
+	}
 
-	// Unknown non-empty prefix.
+	// Malformed bare id (no colon) is not namespaced -> ErrSessionNotFound on
+	// every op including Destroy.
 	if _, err := svc.Get("zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
-		t.Fatalf("Get(unknown) err = %v, want ErrSessionNotFound", err)
+		t.Fatalf("Get(zzzz) err = %v, want ErrSessionNotFound", err)
 	}
 	if _, err := svc.Exec(context.Background(), exec.Request{SandboxID: "zzzz"}); !errors.Is(err, session.ErrSessionNotFound) {
-		t.Fatalf("Exec(unknown) err = %v, want ErrSessionNotFound", err)
+		t.Fatalf("Exec(zzzz) err = %v, want ErrSessionNotFound", err)
 	}
 	if _, err := svc.Info(context.Background(), "zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
-		t.Fatalf("Info(unknown) err = %v, want ErrSessionNotFound", err)
+		t.Fatalf("Info(zzzz) err = %v, want ErrSessionNotFound", err)
 	}
 	if _, err := svc.Stats(context.Background(), "zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
-		t.Fatalf("Stats(unknown) err = %v, want ErrSessionNotFound", err)
+		t.Fatalf("Stats(zzzz) err = %v, want ErrSessionNotFound", err)
+	}
+	if err := svc.Destroy(context.Background(), "zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Destroy(zzzz) err = %v, want ErrSessionNotFound (malformed bare id)", err)
 	}
 
-	// Destroy is idempotent on unknown and empty ids (no-op, no error).
-	if err := svc.Destroy(context.Background(), "zzzz"); err != nil {
-		t.Fatalf("Destroy(unknown) err = %v, want nil", err)
+	// VALID slug but unknown internal id -> ErrSessionNotFound on the read ops.
+	if _, err := svc.Get("docker:zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Get(docker:zzzz) err = %v, want ErrSessionNotFound", err)
 	}
-	if err := svc.Destroy(context.Background(), ""); err != nil {
-		t.Fatalf("Destroy(\"\") err = %v, want nil", err)
+	if _, err := svc.Exec(
+		context.Background(),
+		exec.Request{SandboxID: "docker:zzzz"},
+	); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Exec(docker:zzzz) err = %v, want ErrSessionNotFound", err)
+	}
+	if _, err := svc.Info(context.Background(), "docker:zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Info(docker:zzzz) err = %v, want ErrSessionNotFound", err)
+	}
+	if _, err := svc.Stats(context.Background(), "docker:zzzz"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Stats(docker:zzzz) err = %v, want ErrSessionNotFound", err)
+	}
+	// Destroy of a valid-slug unknown id is an idempotent per-driver no-op (X02).
+	if err := svc.Destroy(context.Background(), "docker:zzzz"); err != nil {
+		t.Fatalf("Destroy(docker:zzzz) err = %v, want nil (per-driver no-op)", err)
 	}
 }
 
@@ -1009,7 +1061,7 @@ func TestService_EmptyAndUnknownID(t *testing.T) {
 // silent no-op (X02 idempotency) rather than an error.
 func TestService_ShortID_DestroyIsIdempotent(t *testing.T) {
 	svc, fb := newPrefixService(t, []string{longIDs[0]})
-	full := longIDs[0]
+	full := "docker:" + longIDs[0]
 	short := domainsession.ShortID(full)
 	sp := testSpec()
 	sp.Driver = spec.DriverDocker
@@ -1033,5 +1085,205 @@ func TestService_ShortID_DestroyIsIdempotent(t *testing.T) {
 	}
 	if fb.destroyed != 1 {
 		t.Fatalf("destroyed = %d, want still 1 after idempotent second destroy", fb.destroyed)
+	}
+}
+
+// newDualService builds a Service with both a docker and a seatbelt fake
+// backend, returning the service and the two backends for side-effect asserts.
+func newDualService(t *testing.T) (*Service, *fakeBackend, *fakeBackend) {
+	t.Helper()
+	reg := backend.NewRegistry()
+	dockerFB := &fakeBackend{
+		driver: spec.DriverDocker, slug: "docker",
+		info: "di", stats: "ds", execRes: &exec.Result{ExitCode: 0},
+	}
+	seatbeltFB := &fakeBackend{
+		driver: spec.DriverSeatbelt, slug: "seatbelt",
+		info: "si", stats: "ss", execRes: &exec.Result{ExitCode: 0},
+	}
+	if err := reg.Register(backend.Factory{
+		Name: "docker", Priority: 0, Driver: spec.DriverDocker,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return dockerFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(backend.Factory{
+		Name: "seatbelt", Priority: 1, Driver: spec.DriverSeatbelt,
+		Capabilities: needAll, Available: func() bool { return true },
+		New: func(backend.Config) (role.Backend, error) { return seatbeltFB, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	return NewService(reg, backend.Config{}), dockerFB, seatbeltFB
+}
+
+// TestService_SlugRoutesToDriver pins the namespaced routing (decision 2):
+// seatbelt sessions coexist with docker and Get/Exec/Info/Stats/Destroy route by
+// SLUG to the owning backend, passing the FULL namespaced id (`slug:internal`).
+func TestService_SlugRoutesToDriver(t *testing.T) {
+	svc, dockerFB, seatbeltFB := newDualService(t)
+
+	dockerID := createSessionID(t, svc, spec.DriverDocker)
+	seatbeltID := createSessionID(t, svc, spec.DriverSeatbelt)
+
+	// The returned session ids are namespaced (`slug:internal`).
+	if !strings.HasPrefix(dockerID, "docker:") {
+		t.Fatalf("docker session id = %q, want docker: prefix", dockerID)
+	}
+	if !strings.HasPrefix(seatbeltID, "seatbelt:") {
+		t.Fatalf("seatbelt session id = %q, want seatbelt: prefix", seatbeltID)
+	}
+
+	// Get routes each id to the owning driver.
+	if got, err := svc.Get(dockerID); err != nil || got.ID() != dockerID {
+		t.Fatalf("Get(docker) = %v, %v", got, err)
+	}
+	if got, err := svc.Get(seatbeltID); err != nil || got.ID() != seatbeltID {
+		t.Fatalf("Get(seatbelt) = %v, %v", got, err)
+	}
+
+	// Exec/Info/Stats on the seatbelt session reach the seatbelt backend only,
+	// with the FULL namespaced id.
+	if _, err := svc.Exec(context.Background(), exec.Request{SandboxID: seatbeltID}); err != nil {
+		t.Fatal(err)
+	}
+	if seatbeltFB.execReq.SandboxID != seatbeltID {
+		t.Fatalf("seatbelt exec got %q, want full %q", seatbeltFB.execReq.SandboxID, seatbeltID)
+	}
+	if dockerFB.execReq.SandboxID != "" {
+		t.Fatalf("docker backend must not receive the seatbelt exec, got %q", dockerFB.execReq.SandboxID)
+	}
+	if _, err := svc.Info(context.Background(), seatbeltID); err != nil {
+		t.Fatal(err)
+	}
+	if seatbeltFB.lastInfoID != seatbeltID || dockerFB.lastInfoID != "" {
+		t.Fatalf("info routing wrong: seatbelt=%q docker=%q", seatbeltFB.lastInfoID, dockerFB.lastInfoID)
+	}
+	if _, err := svc.Stats(context.Background(), seatbeltID); err != nil {
+		t.Fatal(err)
+	}
+	if seatbeltFB.lastStatsID != seatbeltID || dockerFB.lastStatsID != "" {
+		t.Fatalf("stats routing wrong: seatbelt=%q docker=%q", seatbeltFB.lastStatsID, dockerFB.lastStatsID)
+	}
+
+	// Destroy of the seatbelt session reaches the seatbelt backend only.
+	if err := svc.Destroy(context.Background(), seatbeltID); err != nil {
+		t.Fatalf("Destroy(seatbelt): %v", err)
+	}
+	if seatbeltFB.destroyed != 1 {
+		t.Fatalf("seatbelt destroyed = %d, want 1", seatbeltFB.destroyed)
+	}
+	if dockerFB.destroyed != 0 {
+		t.Fatalf("docker destroyed = %d, want 0 (routed by slug)", dockerFB.destroyed)
+	}
+	if seatbeltFB.lastDestroyID != seatbeltID {
+		t.Fatalf("seatbelt destroy got %q, want full %q", seatbeltFB.lastDestroyID, seatbeltID)
+	}
+}
+
+// TestService_SlugRoutesToDriver_Docker pins the docker half of slug routing:
+// Exec/Info/Stats on the docker session reach the docker backend only, leaving
+// the seatbelt backend untouched.
+func TestService_SlugRoutesToDriver_Docker(t *testing.T) {
+	svc, dockerFB, seatbeltFB := newDualService(t)
+
+	dockerID := createSessionID(t, svc, spec.DriverDocker)
+	seatbeltID := createSessionID(t, svc, spec.DriverSeatbelt)
+
+	// Establish the seatbelt baseline so we can prove the docker exec below
+	// does not leak onto the seatbelt backend.
+	if _, err := svc.Exec(context.Background(), exec.Request{SandboxID: seatbeltID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exec/Info on the docker session reach the docker backend only.
+	if _, err := svc.Exec(context.Background(), exec.Request{SandboxID: dockerID}); err != nil {
+		t.Fatal(err)
+	}
+	if dockerFB.execReq.SandboxID != dockerID {
+		t.Fatalf("docker exec got %q, want full %q", dockerFB.execReq.SandboxID, dockerID)
+	}
+	if seatbeltFB.execReq.SandboxID != seatbeltID {
+		t.Fatalf("seatbelt execReq.SandboxID = %q, must remain %q", seatbeltFB.execReq.SandboxID, seatbeltID)
+	}
+	if _, err := svc.Info(context.Background(), dockerID); err != nil {
+		t.Fatal(err)
+	}
+	if dockerFB.lastInfoID != dockerID {
+		t.Fatalf("docker info got %q, want %q", dockerFB.lastInfoID, dockerID)
+	}
+}
+
+// TestService_UnknownSlug_IsNotFound pins that a session id with an unknown slug
+// resolves to ErrSessionNotFound on every read op (never a no-op, never a panic).
+func TestService_UnknownSlug_IsNotFound(t *testing.T) {
+	svc, _, _ := newDualService(t)
+	dockerID := createSessionID(t, svc, spec.DriverDocker)
+
+	// The docker session exists, but a request for a different slug must not
+	// resolve to it.
+	for _, opr := range []struct {
+		name string
+		fn   func() error
+	}{
+		{"Get", func() error {
+			_, err := svc.Get("nosuch:abc")
+
+			return err
+		}},
+		{"Exec", func() error {
+			_, err := svc.Exec(context.Background(), exec.Request{SandboxID: "nosuch:abc"})
+
+			return err
+		}},
+		{"Info", func() error {
+			_, err := svc.Info(context.Background(), "nosuch:abc")
+
+			return err
+		}},
+		{"Stats", func() error {
+			_, err := svc.Stats(context.Background(), "nosuch:abc")
+
+			return err
+		}},
+	} {
+		if err := opr.fn(); !errors.Is(err, session.ErrSessionNotFound) {
+			t.Fatalf("%s(nosuch:abc) err = %v, want ErrSessionNotFound", opr.name, err)
+		}
+	}
+	// A syntactically-valid but unknown slug (docker2) also fails, and the real
+	// docker session must remain reachable by its own slug.
+	if _, err := svc.Get("docker2:" + strings.TrimPrefix(dockerID, "docker:")); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Get(docker2:...) err = %v, want ErrSessionNotFound", err)
+	}
+	if _, err := svc.Get(dockerID); err != nil {
+		t.Fatalf("Get(dockerID) after unknown-slug lookups err = %v, want nil", err)
+	}
+}
+
+// TestService_Destroy_UnknownSlug pins user decision 1: destroying a session by
+// an UNKNOWN slug is an ERROR (ErrSessionNotFound), NOT an idempotent no-op.
+func TestService_Destroy_UnknownSlug(t *testing.T) {
+	svc, _, seatbeltFB := newDualService(t)
+	dockerID := createSessionID(t, svc, spec.DriverDocker)
+
+	// Destroy by unknown slug must error rather than silently no-op.
+	if err := svc.Destroy(context.Background(), "nosuch:abc"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Destroy(nosuch:abc) err = %v, want ErrSessionNotFound (decision 1: error, not no-op)", err)
+	}
+	// No backend must have been touched by the unknown-slug destroy.
+	if seatbeltFB.destroyed != 0 {
+		t.Fatalf("seatbelt destroyed = %d, want 0", seatbeltFB.destroyed)
+	}
+	// The valid-slug session must be unaffected.
+	if _, err := svc.Get(dockerID); err != nil {
+		t.Fatalf("Get(dockerID) after unknown-slug destroy err = %v, want nil", err)
+	}
+
+	// Malformed id (no colon) also errors on Destroy (malformed id -> not found).
+	if err := svc.Destroy(context.Background(), "abc"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("Destroy(bare malformed) err = %v, want ErrSessionNotFound", err)
 	}
 }

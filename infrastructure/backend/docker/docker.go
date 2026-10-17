@@ -209,6 +209,10 @@ func (b *Backend) Capabilities() role.CapabilitySet {
 // Driver reports the backend driver.
 func (b *Backend) Driver() spec.Driver { return spec.DriverDocker }
 
+// Slug returns the namespacing slug of the backend's session ids (§7.8): for
+// the docker backend it is "docker", so a session id reads "docker:<container id>".
+func (b *Backend) Slug() string { return "docker" }
+
 // compile-time check that Backend satisfies the role interfaces.
 var (
 	_ role.Backend        = (*Backend)(nil)
@@ -309,7 +313,7 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 // container" error, which is treated as an idempotent no-op.
 func (b *Backend) Destroy(ctx context.Context, id string) error {
 	b.entryFor(ctx, id).Trace("docker: destroy")
-	err := b.api.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	err := b.api.ContainerRemove(ctx, stripSlug(id), container.RemoveOptions{Force: true, RemoveVolumes: true})
 	if isNoSuchContainer(err) {
 		// Idempotent no-op (X02): destroying a session with no backing
 		// container is not an error.
@@ -548,6 +552,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	entry := b.entryFor(execCtx, id)
 	entry.Trace("docker: exec create")
 
+	raw := stripSlug(id)
 	opts := container.ExecOptions{
 		Cmd:          req.Argv,
 		User:         req.User,
@@ -558,7 +563,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 		Tty:          false,
 		Privileged:   false, // never --privileged (N21)
 	}
-	execResp, err := b.api.ContainerExecCreate(execCtx, id, opts)
+	execResp, err := b.api.ContainerExecCreate(execCtx, raw, opts)
 	if err != nil {
 		return nil, fmt.Errorf("docker: exec create: %w", err)
 	}
@@ -674,7 +679,7 @@ func (s *execStream) flush(execCtx context.Context) {
 
 // Info returns detailed state of the sandbox.
 func (b *Backend) Info(ctx context.Context, id string) (any, error) {
-	inspect, err := b.api.ContainerInspect(ctx, id)
+	inspect, err := b.api.ContainerInspect(ctx, stripSlug(id))
 	if err != nil {
 		return nil, fmt.Errorf("docker: inspect: %w", err)
 	}
@@ -684,7 +689,7 @@ func (b *Backend) Info(ctx context.Context, id string) (any, error) {
 
 // Stats returns live resource usage of the sandbox.
 func (b *Backend) Stats(ctx context.Context, id string) (any, error) {
-	reader, err := b.api.ContainerStats(ctx, id, false)
+	reader, err := b.api.ContainerStats(ctx, stripSlug(id), false)
 	if err != nil {
 		return nil, fmt.Errorf("docker: stats: %w", err)
 	}
@@ -774,6 +779,20 @@ func (b *Backend) validateImageRef(ref string) error {
 // reference.
 func isNoSuchImage(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "No such image")
+}
+
+// stripSlug extracts the raw backend id from a session id. Under the
+// namespaced-sandbox-id design (§7.8) the session id is `slug:internalID`
+// (e.g. "docker:6b4464b592f9"); the docker backend must call the Docker API
+// with the raw container id only, so the "docker:" slug is stripped. A bare
+// (non-namespaced) id — the legacy form — is passed through unchanged, so
+// callers that already hold the raw container id keep working.
+func stripSlug(id string) string {
+	if n, err := domainsession.ParseNamespacedID(id); err == nil {
+		return n.Internal
+	}
+
+	return id
 }
 
 // isNoSuchContainer reports whether an error means the container does not exist

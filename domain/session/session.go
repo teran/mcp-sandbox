@@ -17,11 +17,16 @@ import (
 // internal storage key.
 const ShortIDLength = 12
 
-// ShortID returns the short display id for a full session id: the first
-// ShortIDLength hex characters (docker-style, SPEC §6.6). It never panics — an
-// empty or shorter id is returned as-is, and the result is always at most
-// ShortIDLength characters.
+// ShortID returns the short display id for a full session id. For a namespaced
+// id (`slug:internal`, SPEC §7.8) the slug is PRESERVED and only the internal
+// id is shortened to ShortIDLength characters (docker-style, SPEC §6.6); a bare
+// (legacy) id keeps the old bare truncation to the first ShortIDLength
+// characters. It never panics — an empty or shorter id is returned as-is, and a
+// namespaced result is always `slug:<at most ShortIDLength chars>`.
 func ShortID(full string) string {
+	if n, err := ParseNamespacedID(full); err == nil {
+		return n.Short()
+	}
 	if len(full) > ShortIDLength {
 		return full[:ShortIDLength]
 	}

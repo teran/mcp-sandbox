@@ -124,22 +124,22 @@ func validSpec() spec.SandboxSpec {
 // those ids.
 func TestCreate_SessionIDIsBackendID(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 
 	sess1, err := m.Create(context.Background(), validSpec())
 	if err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
-	if sess1.ID() != "ctr-a" {
-		t.Fatalf("first session id = %q, want backend-returned \"ctr-a\"", sess1.ID())
+	if sess1.ID() != "docker:ctr-a" {
+		t.Fatalf("first session id = %q, want namespaced \"docker:ctr-a\"", sess1.ID())
 	}
 
 	sess2, err := m.Create(context.Background(), validSpec())
 	if err != nil {
 		t.Fatalf("second Create: %v", err)
 	}
-	if sess2.ID() != "ctr-b" {
-		t.Fatalf("second session id = %q, want backend-returned \"ctr-b\"", sess2.ID())
+	if sess2.ID() != "docker:ctr-b" {
+		t.Fatalf("second session id = %q, want namespaced \"docker:ctr-b\"", sess2.ID())
 	}
 
 	if len(life.created) != 2 {
@@ -149,7 +149,7 @@ func TestCreate_SessionIDIsBackendID(t *testing.T) {
 
 func TestCreateAndGet(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	sess, err := m.Create(context.Background(), validSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -173,7 +173,7 @@ func TestCreateAndGet(t *testing.T) {
 }
 
 func TestGet_NotFound(t *testing.T) {
-	m := NewManager(newFakeLife())
+	m := NewManager("docker", newFakeLife())
 	if _, err := m.Get("ghost"); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("err = %v", err)
 	}
@@ -181,7 +181,7 @@ func TestGet_NotFound(t *testing.T) {
 
 func TestCreate_InvalidSpecRejected(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	s := validSpec()
 	s.Image = "" // required
 	s.Isolation.Memory = 0
@@ -196,7 +196,7 @@ func TestCreate_InvalidSpecRejected(t *testing.T) {
 func TestCreate_BackendError(t *testing.T) {
 	life := newFakeLife()
 	life.createErr = errors.New("daemon down")
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	if _, err := m.Create(context.Background(), validSpec()); err == nil {
 		t.Fatal("expected backend error")
 	}
@@ -209,7 +209,7 @@ func TestCreate_NetworkHostAllowed(t *testing.T) {
 	// Phase 7: the network-allowlist is removed from the manager; Validate no
 	// longer rejects host networking. Host is a valid mode.
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	s := validSpec()
 	s.Isolation.NetworkMode = spec.NetworkHost
 	if _, err := m.Create(context.Background(), s); err != nil {
@@ -221,7 +221,7 @@ func TestCreate_NetworkHostAllowed(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
-	m := NewManager(newFakeLife())
+	m := NewManager("docker", newFakeLife())
 	if _, err := m.Create(context.Background(), validSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestList(t *testing.T) {
 
 func TestDestroy(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	sess, err := m.Create(context.Background(), validSpec())
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestDestroy(t *testing.T) {
 
 func TestDestroy_UnknownIsNoOp(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	if err := m.Destroy(context.Background(), "nope"); err != nil {
 		t.Fatalf("destroy unknown should be no-op, got %v", err)
 	}
@@ -265,7 +265,7 @@ func TestDestroy_UnknownIsNoOp(t *testing.T) {
 func TestDestroy_BackendErrorKeepsSession(t *testing.T) {
 	life := newFakeLife()
 	life.destroyErr = errors.New("fail")
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	sess, err := m.Create(context.Background(), validSpec())
 	if err != nil {
 		t.Fatal(err)
@@ -280,7 +280,7 @@ func TestDestroy_BackendErrorKeepsSession(t *testing.T) {
 
 func TestDestroyAll(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	for range 3 {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatal(err)
@@ -299,7 +299,7 @@ func TestDestroyAll(t *testing.T) {
 
 func TestReap_IdleOnly(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	for range 2 {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatal(err)
@@ -406,7 +406,7 @@ func TestNewID_IsHex(t *testing.T) {
 
 func TestReap_DestroyError(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	if _, err := m.Create(context.Background(), validSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestReap_DestroyError(t *testing.T) {
 
 func TestDestroyAll_Error(t *testing.T) {
 	life := newFakeLife()
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	for range 2 {
 		if _, err := m.Create(context.Background(), validSpec()); err != nil {
 			t.Fatal(err)
@@ -439,7 +439,7 @@ func TestDestroyAll_Error(t *testing.T) {
 func TestCreate_NewIDError(t *testing.T) {
 	life := newFakeLife()
 	life.emptyID = true // backend supplies no id -> fall back to m.newID
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	m.newID = func() (string, error) { return "", errors.New("rand fail") }
 	if _, err := m.Create(context.Background(), validSpec()); err == nil {
 		t.Fatal("expected id generation error")
@@ -456,14 +456,14 @@ func TestCreate_NewIDError(t *testing.T) {
 // backend id).
 func TestCreate_BackendIDBypassesNewID(t *testing.T) {
 	life := newFakeLife() // returns "ctr-a"
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	m.newID = func() (string, error) { return "", errors.New("rand fail") }
 	sess, err := m.Create(context.Background(), validSpec())
 	if err != nil {
 		t.Fatalf("Create must succeed via the backend-returned id even when newID fails: %v", err)
 	}
-	if sess.ID() != "ctr-a" {
-		t.Fatalf("session id = %q, want backend-returned \"ctr-a\"", sess.ID())
+	if sess.ID() != "docker:ctr-a" {
+		t.Fatalf("session id = %q, want namespaced \"docker:ctr-a\"", sess.ID())
 	}
 }
 
@@ -474,7 +474,7 @@ func TestCreate_BackendIDBypassesNewID(t *testing.T) {
 func TestCreate_DuplicateIDSurfaced(t *testing.T) {
 	life := newFakeLife()
 	life.fixedID = "fixed" // backend returns the same container id every time
-	m := NewManager(life)
+	m := NewManager("docker", life)
 	if _, err := m.Create(context.Background(), validSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestManager_TraceLogsCarryRequestIDAndSession(t *testing.T) {
 	l.SetLevel(logrus.TraceLevel)
 	l.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true, DisableColors: true})
 
-	m := NewManager(newFakeLife(), WithLogger(logrus.NewEntry(l)))
+	m := NewManager("docker", newFakeLife(), WithLogger(logrus.NewEntry(l)))
 	ctx := requestid.WithID(context.Background(), "req-abc")
 	if _, err := m.Create(ctx, validSpec()); err != nil {
 		t.Fatal(err)

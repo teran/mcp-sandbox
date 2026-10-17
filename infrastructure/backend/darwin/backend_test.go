@@ -616,3 +616,58 @@ func TestSelect_DarwinExposesNoIntrospect(t *testing.T) {
 func contains(hay []string, needle string) bool {
 	return slices.Contains(hay, needle)
 }
+
+// TestSlug pins the backend's namespacing slug (seatbelt driver -> "seatbelt"),
+// which the service uses to compose `seatbelt:<internal>` session ids.
+func TestSlug(t *testing.T) {
+	b := newTestBackend(t, newFakeRunner(), nil)
+	if b.Slug() != "seatbelt" {
+		t.Fatalf("Slug() = %q, want seatbelt", b.Slug())
+	}
+}
+
+// TestDestroy_StripsNamespacedID pins that Destroy strips the "seatbelt:" slug
+// and kills the child owned by the raw darwin session id.
+func TestDestroy_StripsNamespacedID(t *testing.T) {
+	fake := newFakeRunner()
+	fake.results = []*Result{{ExitCode: 0}}
+	b := newTestBackend(t, fake, []string{"/work"})
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Destroy(context.Background(), "seatbelt:"+id); err != nil {
+		t.Fatalf("Destroy(namespaced): %v", err)
+	}
+	// The slug was stripped and the raw session's Create child was SIGKILLed.
+	p := fake.proc(1)
+	if !p.hasSignal(syscall.SIGKILL) {
+		t.Fatalf("Create child was not SIGKILLed; kills = %v", p.killSignals())
+	}
+}
+
+// TestExec_StripsNamespacedID pins that Exec strips the "seatbelt:" slug and
+// spawns a fresh child for the raw darwin session id.
+func TestExec_StripsNamespacedID(t *testing.T) {
+	fake := newFakeRunner()
+	// create child (proc1) has no Wait; one exec child (proc2) returns "hi".
+	fake.results = []*Result{nil, {ExitCode: 0, Stdout: []byte("hi")}}
+	b := newTestBackend(t, fake, []string{"/work"})
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	res, err := b.Exec(context.Background(), "seatbelt:"+id, exec.Request{Argv: []string{"bash", "-c", "echo hi"}})
+	if err != nil {
+		t.Fatalf("Exec(namespaced): %v", err)
+	}
+	if string(res.Stdout) != "hi" {
+		t.Fatalf("stdout = %q, want hi", res.Stdout)
+	}
+	// 1 create child + 1 exec child => the slug-stripped id resolved the session.
+	if fake.startCount() != 2 {
+		t.Fatalf("Start called %d times, want 2 (1 create + 1 exec)", fake.startCount())
+	}
+}

@@ -209,10 +209,14 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
   keeps a backend + session manager **per concrete driver**, created lazily
   (A02/N35), and routes each session to its owning backend — a single process
   can hold docker and seatbelt sandboxes simultaneously.
-- **Session id = backend id (SPEC §7.8):** the session manager calls the
-  backend first and uses its returned id — docker = **container id**, darwin =
-  `darwin-N`; an empty backend id falls back to an opaque 64-hex id. The docker
-  `dev.teran.sandbox.session` label is therefore **redundant** (the session id
+- **Session id = namespaced backend id (SPEC §7.8):** every session id is
+  `slug:internalID` — the manager calls the backend first and uses its returned
+  id as the **internal** part (docker = **container id**, darwin = **`darwin-N`**;
+  an empty backend id falls back to an opaque 64-hex id), namespaced by the
+  backend's slug (`docker:` / `seatbelt:`). Backends **strip the slug** before
+  their underlying API call, and the service routes by slug (`resolveSessionID`,
+  no `sessionDriver` map). The docker
+  `dev.teran.sandbox.session` label is therefore **redundant** (the internal id
   _is_ the container id); the `dev.teran.sandbox.owner` label remains.
 - **Session cleanup (explicit only; reaper/orphan-GC are future work):**
   sandboxes are removed **only** by explicit `sandbox_destroy` /
