@@ -977,49 +977,53 @@ mechanism and **no** profile tool that writes — profiles exist only as files.
 ```yaml
 name: default # required; store key; [a-zA-Z0-9._-], no path separators
 description: the default profile # required
-image: alpine@sha256:… # required; parse-only validation (any registry; digest recommended, §7.9)
-env: # optional
-  FOO: bar
-mounts: # optional; every source must be within ALLOW_DIRS (§7.2)
-  - source: /data
-    target: /data
-    read_only: true
+driver: docker # docker | seatbelt | auto (auto = resolve the single present block)
+docker: # Docker-backend block; mutually exclusive with seatbelt (§7.12)
+  image: alpine@sha256:… # required; parse-only validation (any registry; digest recommended, §7.9)
+  env: # optional
+    FOO: bar
+  mounts: # optional; every source must be within ALLOW_DIRS (§7.2)
+    - source: /data
+      target: /data
+      read_only: true
+  network:
+    mode: bridge # bridge (default) | none | host (host only if operator authors it)
+  cgroups: # limits; a missing value falls back to the server default (§7.1)
+    cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core); raw nano_cpus takes precedence if both set
+    memory_gb: 1 # human-readable: whole GiB; raw memory/memory_swap take precedence if set; swap disabled ⇒ memory_swap = memory
+    pids_limit: 256
+    ulimits:
+      - name: nofile
+        soft: 1024
+        hard: 1024
+  user: # non-root enforced; nil ⇒ server default non-root user
+    uid: 1000
+    gid: 1000
+  sudo: never # never (default) | require
 cwd: # optional; controls the auto session-cwd mount (§7.2)
   target: "" # empty ⇒ 1:1 at the same absolute path (default)
   mode: ro # ro (default) | rw
-network:
-  mode: bridge # bridge (default) | none | host (host only if operator authors it)
-cgroups: # limits; a missing value falls back to the server default (§7.1)
-  cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core); raw nano_cpus takes precedence if both set
-  memory_gb: 1 # human-readable: whole GiB; raw memory/memory_swap take precedence if set; swap disabled ⇒ memory_swap = memory
-  pids_limit: 256
-  ulimits:
-    - name: nofile
-      soft: 1024
-      hard: 1024
-user: # non-root enforced; nil ⇒ server default non-root user
-  uid: 1000
-  gid: 1000
-sudo: never # never (default) | require
 shell: bash # optional; default bash; whitespace-separated tokens (§7.5)
 ```
 
 Schema key reference (`domain/sandbox/profile.Profile`):
 
-| Key           | Type                                                | Meaning / validation                                                                                                                                                                                                                                                      |
-| ------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`        | string                                              | Required. Store key. Regex `[a-zA-Z0-9._-]+`; must not be a path separator / `..` (path-traversal rejected, §7.11 loader).                                                                                                                                                |
-| `description` | string                                              | Required. Human-readable summary shown by `profile_list`.                                                                                                                                                                                                                 |
-| `image`       | string                                              | Required. Parse-only reference validation (§7.9); digest-pinning recommended.                                                                                                                                                                                             |
-| `env`         | map[string]string                                   | Optional. Container environment.                                                                                                                                                                                                                                          |
-| `mounts[]`    | `{source,target,read_only}`                         | Optional. `source` must be absolute **and within `ALLOW_DIRS`** (§7.2).                                                                                                                                                                                                   |
-| `cwd`         | `{target,mode}`                                     | Optional. `target` empty ⇒ mounted 1:1 at the client path; `mode` `ro`(default)/`rw`.                                                                                                                                                                                     |
-| `network`     | `{mode}`                                            | Optional. `bridge`(default)/`none`/`host` — `host` only when operator-authored.                                                                                                                                                                                           |
-| `cgroups`     | `{nano_cpus,memory,memory_swap,pids_limit,ulimits}` | Optional. Bounded resource limits; profile overrides the server baseline; missing ⇒ server default (§7.1). `memory_swap` ≥ `memory`; values must be bounded (> 0).                                                                                                        |
-| `user`        | `{uid,gid}`                                         | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user.                                                                                                                                                                                          |
-| `sudo`        | string                                              | Optional. `never`(default)/`require`.                                                                                                                                                                                                                                     |
-| `shell`       | string                                              | Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image. |
-| `seatbelt`    | `{env,sbpl,mach_lookups,sysctls}`                   | Optional. **darwin/Seatbelt only (§7.12)** — carries the session environment (`env`, redacted per S02 like Docker profile `env`), the operator SBPL template (merged after server-hardening ops), extra `mach-lookup` services and `sysctl` keys. Ignored by the Docker backend. Validation rejects only NUL in `sbpl`.                             |
+| Key                 | Type                                                   | Meaning / validation                                                                                                                                                                                                                                                                              |
+| ------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`              | string                                                 | Required. Store key. Regex `[a-zA-Z0-9._-]+`; must not be a path separator / `..` (path-traversal rejected, §7.11 loader).                                                                                                                                                                       |
+| `description`       | string                                                 | Required. Human-readable summary shown by `profile_list`.                                                                                                                                                                                                                                         |
+| `driver`            | string                                                 | Optional. `auto`(default; resolves to the single present block)/`docker`/`seatbelt`. An explicit driver must match its block and forbid the other (§7.12).                                                                                                                                       |
+| `docker`            | block                                                  | Docker-backend block (below); mutually exclusive with `seatbelt`. `driver: docker` requires it.                                                                                                                                                                                                   |
+| `seatbelt`          | `{env,sbpl,mach_lookups,sysctls}`                      | Optional. **darwin/Seatbelt only (§7.12)** — session env (redacted per S02 like Docker profile `env`), operator SBPL template (merged after server-hardening ops), extra `mach-lookup` services and `sysctl` keys. Ignored by the Docker backend. Validation rejects only NUL in `sbpl`.          |
+| `cwd`               | `{target,mode}`                                        | Optional. `target` empty ⇒ mounted 1:1 at the client path; `mode` `ro`(default)/`rw`.                                                                                                                                                                                                             |
+| `shell`             | string                                                 | Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image.                        |
+| `docker.image`      | string                                                 | Required (docker block). Parse-only reference validation (§7.9); digest-pinning recommended.                                                                                                                                                                                                      |
+| `docker.env`        | map[string]string                                      | Optional. Container environment.                                                                                                                                                                                                                                                                  |
+| `docker.mounts[]`   | `{source,target,read_only}`                            | Optional. `source` must be absolute **and within `ALLOW_DIRS`** (§7.2).                                                                                                                                                                                                                           |
+| `docker.network`    | `{mode}`                                               | Optional. `bridge`(default)/`none`/`host` — `host` only when operator-authored.                                                                                                                                                                                                                   |
+| `docker.cgroups`    | `{nano_cpus,memory,memory_swap,pids_limit,ulimits}`    | Optional. Bounded resource limits; profile overrides the server baseline; missing ⇒ server default (§7.1). `memory_swap` ≥ `memory`; values must be bounded (> 0).                                                                                                                                |
+| `docker.user`       | `{uid,gid}`                                            | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user.                                                                                                                                                                                                                  |
+| `docker.sudo`       | string                                                 | Optional. `never`(default)/`require`.                                                                                                                                                                                                                                                             |
 
 #### Loader & store (read-only)
 

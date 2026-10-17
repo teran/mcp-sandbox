@@ -189,30 +189,32 @@ Example `~/.config/sandbox/profiles/default.yml`:
 ```yaml
 name: default
 description: the default profile
-image: alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # digest-pinning recommended — replace with the real <repo>@sha256:<64 hex>
-env:
-  FOO: bar
-mounts:
-  - source: /data
-    target: /data
-    read_only: true
+driver: docker # docker (default) | seatbelt | auto
+docker:
+  image: alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # digest-pinning recommended — replace with the real <repo>@sha256:<64 hex>
+  env:
+    FOO: bar
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network:
+    mode: bridge # bridge (default) | none | host
+  cgroups:
+    cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core)
+    memory_gb: 1 # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory)
+    pids_limit: 256
+    ulimits:
+      - name: nofile
+        soft: 1024
+        hard: 1024
+  user:
+    uid: 1000
+    gid: 1000
+  sudo: never
 cwd:
   target: "" # empty ⇒ mounted 1:1 at the same absolute path (default)
   mode: ro # ro (default) | rw
-network:
-  mode: bridge # bridge (default) | none | host
-cgroups:
-  cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core)
-  memory_gb: 1 # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory)
-  pids_limit: 256
-  ulimits:
-    - name: nofile
-      soft: 1024
-      hard: 1024
-user:
-  uid: 1000
-  gid: 1000
-sudo: never
 ```
 
 > The example above is a minimal schema illustration. For a complete,
