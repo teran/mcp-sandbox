@@ -511,12 +511,21 @@ server:
 - opencode passes its session id as a **required** `session_id` parameter to
   `sandbox_create`; the server records it as an `opencode_session` container
   label so each sandbox is traceable to the OpenCode session that created it.
-  The sandbox's own `id` returned by `sandbox_create` is the **container id**
-  for the Docker backend (so a sandbox is directly traceable via `docker ps`)
-  and a `darwin-N` id for the darwin backend (`SPEC.md` §7.8). `sandbox_create`
+  The sandbox's own `id` returned by `sandbox_create` is a **namespaced session
+  id `slug:internalID`** (`SPEC.md` §7.8): `docker:<container id>` for the Docker
+  backend (so a sandbox is directly traceable via `docker ps`) and
+  `seatbelt:darwin-N` for the darwin backend. `sandbox_create`
   also takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
   **required** `cwd`. The session `cwd` is mounted 1:1 read-only by default (see
   `SPEC.md` §7.2, §7.11).
+- **Breaking id schema (v0.9+):** sandbox session ids changed from a **bare
+  backend id** to a **namespaced `slug:internalID`** pair. The `id` every tool
+  returns/accepts now carries a `docker:` / `seatbelt:` prefix; a bare
+  (non-namespaced) or unknown-slug id is rejected (`ErrSessionNotFound`) on all
+  ops, and `sandbox_destroy` by an unknown slug is an **error, not a no-op**.
+  Clients that persisted or echoed old bare ids must re-resolve them from a
+  fresh `sandbox_create`/`sandbox_list`. The short display id keeps the slug
+  (`docker:deadbeef1234`).
 - Use `opencode mcp list` / `/mcps` to check the server is connected.
 
 > **HITL note:** because mcp-sandbox is Local/stdio (no HTTP UI), destructive

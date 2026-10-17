@@ -27,6 +27,8 @@ func (f *fakeBackend) Driver() spec.Driver {
 	return f.driver
 }
 
+func (f *fakeBackend) Slug() string { return string(f.driver) }
+
 func TestBackendInterface(t *testing.T) {
 	var b Backend = &fakeBackend{name: "docker", priority: 0, driver: spec.DriverDocker, caps: CapabilitySet{
 		Lifecycle: true, Executable: true, Introspectable: true,

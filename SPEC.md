@@ -453,9 +453,11 @@ type Factory struct {
 - **Multi-backend `Service` (one runtime per driver).** The MCP `Service`
   (`infrastructure/mcp`) does **not** cache a single backend. It keeps **one
   runtime (backend + session manager) per concrete driver**, created lazily on
-  first use (A02/N35), and maps each live **session id → owning driver** so
-  `Exec`/`Info`/`Stats`/`Destroy`/`Get` route to the correct backend while
-  `List`/`DestroyAll` aggregate across all of them. A single `mcp-sandbox`
+  first use (A02/N35), and routes `Exec`/`Info`/`Stats`/`Destroy`/`Get` to the
+  owning backend **by the session id's slug** (`resolveSessionID` → the
+  manager scoped to that driver; there is **no `sessionDriver` map** and no
+  global cross-driver prefix scan), while `List`/`DestroyAll` aggregate across
+  all runtimes. A single `mcp-sandbox`
   process therefore holds **docker and seatbelt sandboxes simultaneously** —
   there is no longer a one-backend-per-process coupling. `Create` resolves an
   auto/empty driver to a concrete one before routing to the owning runtime.
@@ -543,13 +545,15 @@ create → use (exec/read/write/copy/install) → destroy
 
 - **Mounts are immutable** — changing a mount requires `destroy` + `create`
   (recreate). This is enforced by the session manager (X01 state model).
-- **Session id = backend id (not a server-generated opaque id).** The session
-  manager calls the backend **first** and uses the returned id as the session
-  id: for docker that is the **container id** (a sandbox is directly traceable
-  to its container via `docker ps`), for darwin it is the backend-generated
-  `darwin-N` id. A backend that returns an **empty** id falls back to a
-  generated opaque 64-hex (`crypto/rand`) id. The post-create duplicate check
-  enforces uniqueness on that id (X02; see §7.8).
+- **Session id = namespaced backend id (`slug:internalID`, not a server-generated
+  opaque id).** The session manager calls the backend **first** and uses the
+  returned id as the **internal** part of the session id, namespacing it with the
+  backend's slug (`role.Backend.Slug()`): for docker that is the **container id**
+  (a sandbox is directly traceable to its container via `docker ps`), for darwin
+  it is the backend-generated **`darwin-N`** id. A backend that returns an
+  **empty** id falls back to a generated opaque 64-hex (`crypto/rand`) id. The
+  post-create duplicate check enforces uniqueness on the full namespaced id
+  (X02; see §7.8).
 - **Cleanup is explicit only — idle reaper & orphan-GC are future work.**
   Sandboxes are removed **only** by explicit `sandbox_destroy` /
   `sandbox_destroy_all`; there is **no automatic GC** today. An in-process idle
@@ -563,10 +567,11 @@ create → use (exec/read/write/copy/install) → destroy
   destroy leaves orphaned containers (to be reclaimed by the future orphan-GC).
 - **darwin/`sandbox-exec` driver (§7.12):** `sandbox-exec` applies a
   sandbox scheme and **execs** the command into the **same process** — there is
-  **no supervisor wrapper and no `AutoRemove` equivalent**. The **leader process
-  pid** is the sandbox handle (analogous to label-based ownership, §7.8);
-  `Create` returns the leader pid and `Destroy` kills the **whole process group**
-  (`kill(-pgid, SIGKILL)`), **idempotently** (`ESRCH` → no-op). A server exit
+  **no supervisor wrapper and no `AutoRemove` equivalent**. The session id is
+  the backend-generated **`darwin-N`** id (never the pid); the backend keeps an
+  in-memory record mapping that id to its Create child, whose **process-group
+  pid** is the handle `Destroy` kills (`kill(-pgid, SIGKILL)`),
+  **idempotently** (`ESRCH` → no-op). A server exit
   without explicit destroy leaves the sandboxed process tree as an **orphan**.
   `req.Timeout` (§6.10) becomes a process-group `SIGKILL` cancellation.
 - **State model (X01):** **stateful, per-session, in-memory.** State lives in
@@ -841,14 +846,41 @@ itself can **never** be weakened (by profile or caller).
 
 ### 7.8 Session identifiers & ownership
 
-- **Session id = backend id.** The session manager calls the backend **first**
-  and uses the **backend's returned id** as the session id (§6.6). For the
-  **docker** backend that is the **container id**, so a sandbox is directly
-  traceable to its container via `docker ps`; for the **darwin** backend it is
-  the backend-generated `darwin-N` id. A backend returning an **empty** id
-  falls back to a generated opaque 64-hex `crypto/rand` id (the previous
-  default, now only a fallback). The id is returned by `sandbox_create` as
-  `id` and is the handle used by every other tool.
+- **Namespaced session id (`slug:internalID`).** Every session id is a
+  `slug:internalID` pair (e.g. `docker:6b4464b592f9`, `seatbelt:darwin-3`). The
+  **slug** is the backend's namespacing prefix (`role.Backend.Slug()`; docker →
+  `docker`, seatbelt → `seatbelt`) and selects the owning backend for routing;
+  the **internal** part is the backend's own sandbox handle. The parser
+  (`domain/session`) is **STRICT** — a single `:` (internal must not contain
+  `:`), both parts non-empty, and the slug must match `^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`.
+  An empty, malformed (non-namespaced) or unknown-slug id resolves to
+  `ErrSessionNotFound` on every op; destroying by an unknown slug is an **error,
+  not a no-op** (user decision 1), while a valid slug whose internal id matches
+  no live session stays an idempotent per-driver no-op (X02).
+- **Session id = backend id, namespaced by the manager.** The session manager
+  calls the backend **first** and uses the backend's returned id as the
+  **internal** part: for the **docker** backend that is the **container id**, so
+  a sandbox is directly traceable to its container via `docker ps`; for the
+  **darwin** backend it is the backend-generated **`darwin-N`** id (never the
+  pid). A backend that returns an **empty** id falls back to a generated opaque
+  64-hex `crypto/rand` id. The manager composes the full id as
+  `slug:<internalID>` and keys the session by it; a manager is scoped to ONE
+  backend/slug, so resolution is per-driver (`Manager.Resolve`).
+- **Backends strip the slug.** Because the session id is `slug:internalID`, the
+  docker and darwin backends **strip the slug** (`ParseNamespacedID` → use
+  `.Internal`) before calling their underlying API — the Docker API receives the
+  raw container id, and the darwin session map is keyed by the raw `darwin-N`.
+  `Create` still returns the raw internal id to the manager.
+- **Service routing (`resolveSessionID`).** The MCP `Service` routes
+  `Get`/`Exec`/`Info`/`Stats`/`Destroy` by **slug**: it parses the id, looks up
+  the owning runtime (`runtimes[spec.Driver(slug)]`) and calls that manager's
+  `Resolve` to expand a full or unique `slug:<prefix>` id to the full namespaced
+  id before the backend call. There is **no `sessionDriver` map** and no global
+  cross-driver prefix scan — routing is entirely slug-scoped per driver.
+- **Short id keeps the slug.** `ShortID` on a namespaced id **preserves the slug**
+  and shortens only the internal id to 12 chars (docker-style): `docker:<64hex>`
+  → `docker:<12hex>`, `seatbelt:darwin-3` unchanged. A legacy bare id keeps the
+  old bare 12-char truncation.
 - **Owner label is retained; the session label is redundant.** The docker
   backend always applies the owner label (`dev.teran.sandbox.owner =
 mcp-sandbox`) so the server can identify, reap and destroy exactly its own

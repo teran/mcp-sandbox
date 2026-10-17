@@ -18,12 +18,18 @@ var ErrCapabilityNotSupported = errors.New("capability not supported")
 // the backend (e.g. "docker"), Priority orders backend selection,
 // Capabilities advertises which role interfaces the backend implements, and
 // Driver reports the backend driver (SPEC §7.12) so the service can enforce
-// one-backend-per-process driver coherence.
+// one-backend-per-process driver coherence. Slug is the namespacing prefix of
+// the backend's session ids (SPEC §7.8): the service composes every session id
+// as `slug:internalID` and routes session-id-addressed ops by it. For the
+// built-ins the slug equals the driver string (docker -> "docker",
+// seatbelt -> "seatbelt"), but it is a distinct, backend-authored value so a
+// driver could in principle expose a different slug.
 type Backend interface {
 	Name() string
 	Priority() int
 	Capabilities() CapabilitySet
 	Driver() spec.Driver
+	Slug() string
 }
 
 // Lifecycle creates and destroys sandboxes.

@@ -32,6 +32,7 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/sbpl"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
+	domainsession "github.com/teran/mcp-sandbox/domain/session"
 	"github.com/teran/mcp-sandbox/infrastructure/backend"
 )
 
@@ -204,6 +205,11 @@ func (b *Backend) Capabilities() role.CapabilitySet {
 // Driver reports the backend driver.
 func (b *Backend) Driver() spec.Driver { return spec.DriverSeatbelt }
 
+// Slug returns the namespacing slug of the backend's session ids (§7.8): for
+// the darwin/seatbelt backend it is "seatbelt", so a session id reads
+// "seatbelt:darwin-N".
+func (b *Backend) Slug() string { return "seatbelt" }
+
 // Available reports whether the darwin backend is usable right now: GOOS must
 // be darwin, /usr/bin/sandbox-exec must exist, and the process must not run as
 // root (self-sandbox refuses uid 0, SPEC §7.12). It is evaluated lazily during
@@ -291,7 +297,7 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 // no-op. The session record is retained so repeated destroys stay no-ops.
 func (b *Backend) Destroy(ctx context.Context, id string) error {
 	b.mu.Lock()
-	s, ok := b.sessions[id]
+	s, ok := b.sessions[stripSlug(id)]
 	b.mu.Unlock()
 	if !ok {
 		return nil
@@ -325,7 +331,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	}
 
 	b.mu.Lock()
-	s, ok := b.sessions[id]
+	s, ok := b.sessions[stripSlug(id)]
 	b.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("darwin: unknown session %q", id)
@@ -412,6 +418,19 @@ func toEnvSlice(env map[string]string) []string {
 	}
 
 	return out
+}
+
+// stripSlug extracts the raw backend id from a session id. Under the
+// namespaced-sandbox-id design (§7.8) the session id is `slug:internalID`
+// (e.g. "seatbelt:darwin-3"); the darwin backend keys its in-memory sessions
+// by the raw id ("darwin-N"), so the "seatbelt:" slug is stripped before the
+// lookup. A bare (non-namespaced) id is passed through unchanged.
+func stripSlug(id string) string {
+	if n, err := domainsession.ParseNamespacedID(id); err == nil {
+		return n.Internal
+	}
+
+	return id
 }
 
 // rlimitNames maps the setrlimit-mappable ulimit names to their RLIMIT_*

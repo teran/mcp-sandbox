@@ -1000,3 +1000,85 @@ func TestCreate_CreateError(t *testing.T) {
 		t.Fatalf("no image pull should happen for a generic create error: %v", pulls)
 	}
 }
+
+// TestSlug pins the backend's namespacing slug (docker -> "docker"), which the
+// service uses to compose `slug:internalID` session ids.
+func TestSlug(t *testing.T) {
+	b := newBackendForDirs(newFakeClient())
+	if b.Slug() != "docker" {
+		t.Fatalf("Slug() = %q, want docker", b.Slug())
+	}
+}
+
+// TestDestroy_StripsNamespacedID pins that Destroy strips the "docker:" slug
+// and calls the Docker remove API with the raw container id (SPEC §7.8).
+func TestDestroy_StripsNamespacedID(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Destroy(context.Background(), "docker:"+id); err != nil {
+		t.Fatalf("Destroy(namespaced): %v", err)
+	}
+	if len(api.removes) != 1 || api.removes[0] != id {
+		t.Fatalf("removes = %v, want exactly [%q] (slug stripped)", api.removes, id)
+	}
+}
+
+// TestExec_StripsNamespacedID pins that Exec strips the slug and runs against
+// the raw container id.
+func TestExec_StripsNamespacedID(t *testing.T) {
+	api := newFakeClient()
+	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
+	b := newBackendForDirs(api)
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	res, err := b.Exec(context.Background(), "docker:"+id, exec.Request{Argv: []string{"echo", "hi"}})
+	if err != nil {
+		t.Fatalf("Exec(namespaced): %v", err)
+	}
+	if string(res.Stdout) != "hi" {
+		t.Fatalf("stdout = %q, want hi", res.Stdout)
+	}
+	if len(api.execContainerIDs) != 1 || api.execContainerIDs[0] != id {
+		t.Fatalf("exec container id = %v, want exactly [%q] (slug stripped)", api.execContainerIDs, id)
+	}
+}
+
+// TestInfo_StripsNamespacedID pins that Info strips the slug and inspects the
+// raw container id.
+func TestInfo_StripsNamespacedID(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := b.Info(context.Background(), "docker:"+id); err != nil {
+		t.Fatalf("Info(namespaced): %v", err)
+	}
+	if len(api.inspects) != 1 || api.inspects[0] != id {
+		t.Fatalf("inspected container id = %v, want exactly [%q] (slug stripped)", api.inspects, id)
+	}
+}
+
+// TestStats_StripsNamespacedID pins that Stats strips the slug and reads the
+// raw container id.
+func TestStats_StripsNamespacedID(t *testing.T) {
+	api := newFakeClient()
+	b := newBackendForDirs(api)
+	id, err := b.Create(context.Background(), baseSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := b.Stats(context.Background(), "docker:"+id); err != nil {
+		t.Fatalf("Stats(namespaced): %v", err)
+	}
+	if len(api.statsCalls) != 1 || api.statsCalls[0] != id {
+		t.Fatalf("stats container id = %v, want exactly [%q] (slug stripped)", api.statsCalls, id)
+	}
+}

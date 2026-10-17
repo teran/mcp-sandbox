@@ -112,6 +112,30 @@ func TestShortID(t *testing.T) {
 	}
 }
 
+// TestShortID_Namespaced pins the namespaced-aware short display id (user
+// decision 2): the slug is PRESERVED and only the internal id is shortened to
+// 12 chars. A namespaced id whose internal part is already <= 12 chars is
+// unchanged. A legacy bare id (no slug) keeps the old bare truncation.
+func TestShortID_Namespaced(t *testing.T) {
+	// docker:<64hex> -> docker:<12> (slug kept, internal shortened).
+	hex64 := strings.Repeat("b", 64)
+	if got := ShortID("docker:" + hex64); got != "docker:"+strings.Repeat("b", 12) {
+		t.Fatalf("ShortID(docker:<64hex>) = %q, want docker:<12>", got)
+	}
+	// seatbelt:darwin-3 internal len 8 (<= 12) -> unchanged, slug kept.
+	if got := ShortID("seatbelt:darwin-3"); got != "seatbelt:darwin-3" {
+		t.Fatalf("ShortID(seatbelt:darwin-3) = %q, want unchanged", got)
+	}
+	// Legacy bare id fallback is unchanged (still the first 12 chars).
+	if got := ShortID(hex64); got != strings.Repeat("b", 12) {
+		t.Fatalf("ShortID(bare 64hex) = %q, want 12 'b'", got)
+	}
+	// Must never panic across namespaced inputs.
+	for _, s := range []string{"docker:", "docker:a:b", ":x", "docker:" + hex64} {
+		_ = ShortID(s)
+	}
+}
+
 func TestSessionContextID(t *testing.T) {
 	ctx := WithSessionID(context.Background(), "sid")
 	id, ok := IDFromContext(ctx)
