@@ -119,6 +119,17 @@ Highlights:
   backend** without Docker — see
   [macOS driver](#macos-driver-sandbox-exec-backend) (`SPEC.md` §7.12).
 
+## Supported platforms
+
+Releases are published for **Linux** and **macOS** — the two platforms we
+verify against our existing drivers: the **Docker backend** on Linux and the
+**`sandbox-exec` (Seatbelt) backend** on macOS (see the
+[macOS driver](#macos-driver-sandbox-exec-backend)).
+
+**Windows** is untested — we do not use Windows directly and so cannot vouch
+for it. That said, there are currently **no known limitations** that would
+prevent mcp-sandbox from working under **WSL2**.
+
 ## Installation
 
 ```bash
