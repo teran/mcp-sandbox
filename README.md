@@ -13,6 +13,8 @@
 ![govulncheck](https://img.shields.io/badge/govulncheck-passing-brightgreen)
 ![gremlins](https://img.shields.io/badge/mutation-%E2%89%A580%25-brightgreen)
 
+> **Platforms:** **Linux** (Docker) · **macOS** (Docker, or Seatbelt `sandbox-exec` without a daemon)
+
 A **Local (stdio-only) MCP server** that gives a model-host client (such as
 **opencode**) a safe, isolated environment to run arbitrary commands — a
 **drop-in replacement for the host shell**.
