@@ -48,7 +48,7 @@ func TestExec_ProgressStreamingOrderedStartChunkDone(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hello\nworld\n", stderr: "boom\n", exitCode: 3}}
 	api.execExitCode = 3 // ContainerExecAttach consumes the execResult; inspect uses this
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -113,7 +113,7 @@ func TestExec_ProgressStreamingOrderedStartChunkDone(t *testing.T) {
 func TestExec_ProgressStartShowsCommand(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "ok\n", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -139,7 +139,7 @@ func TestExec_ProgressStartShowsCommand(t *testing.T) {
 func TestExec_ProgressStartFallsBackToArgv(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "ok\n", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -164,7 +164,7 @@ func TestExec_ProgressStartFallsBackToArgv(t *testing.T) {
 func TestExec_ProgressCancelEmitsTerminalCancelled(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "partial", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -192,7 +192,7 @@ func TestExec_ProgressCancelEmitsTerminalCancelled(t *testing.T) {
 func TestExec_NoSink_ResultUnchanged(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hello\nworld\n", stderr: "err\n", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -219,7 +219,7 @@ func TestExec_NoSink_ResultUnchanged(t *testing.T) {
 func TestExec_NilSinkIsNilSafe(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "out\n", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)

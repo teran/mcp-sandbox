@@ -1,8 +1,16 @@
-// Package profile_test covers the application-layer profile store (Phase 7,
+// Package profile covers the application-layer profile store (Phase 7,
 // read-on-demand): it reads + parses fresh from the operator-authored READ-ONLY
 // profiles directory on EVERY Get/List call (no startup preload, no in-memory
-// map). It is read-only by construction and fail-closed (S04). There are no
-// create/update/delete operations.
+// map). It is read-only by construction and fail-closed (S04).
+//
+// After the driver-registry migration (Slices 2+3) a profile document is
+// DRIVER-AGNOSTIC: a required `driver` plus an opaque `options:` yaml.Node. The
+// store parses `options:` into Profile.Options without interpreting it — the
+// concrete driver builders decode it. The store rejects only an empty/auto/
+// malformed `driver` at scan; an unknown but well-formed driver token passes
+// and fails later at USE time (registry Get -> ErrUnknownDriver). The friendly
+// cgroup unit translation and driver-branch validation moved into the built-in
+// builders, so they are no longer asserted here.
 package profile
 
 import (
@@ -12,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -28,13 +38,13 @@ func writeProfile(t *testing.T, dir, filename, content string) string {
 	return p
 }
 
-// validYAML is a complete, valid profile document matching the struct field
-// names (lowercased, snake_case for nested keys) under the hybrid driver-aware
-// schema: a `driver` plus a single `docker`/`seatbelt` block.
+// validYAML is a complete, valid profile document matching the new driver-aware
+// schema: a required `driver` plus an opaque `options:` block (the store never
+// interprets it — the docker builder does).
 const validYAML = `name: default
 description: the default profile
 driver: docker
-docker:
+options:
   image: docker.io/library/alpine:3.20
   env:
     A: "1"
@@ -61,6 +71,31 @@ cwd:
   target: /work
   mode: ro
 `
+
+// dockerOptionKeys is the local mirror of the docker builder's option keys,
+// used to decode the opaque node and assert the store carried it verbatim.
+type dockerOptionKeys struct {
+	Image  string            `yaml:"image"`
+	Env    map[string]string `yaml:"env"`
+	Mounts []struct {
+		Source string `yaml:"source"`
+	} `yaml:"mounts"`
+	User *struct {
+		UID uint32 `yaml:"uid"`
+	} `yaml:"user"`
+}
+
+// decodeDockerOptions decodes a profile's opaque Options node into the local
+// docker option mirror.
+func decodeDockerOptions(t *testing.T, p *domainprofile.Profile) dockerOptionKeys {
+	t.Helper()
+	var out dockerOptionKeys
+	if err := p.Options.Node().Decode(&out); err != nil {
+		t.Fatalf("decode options: %v", err)
+	}
+
+	return out
+}
 
 // --- Get ---
 
@@ -96,20 +131,19 @@ func TestGet_ReturnsProfile(t *testing.T) {
 	if p.Driver != spec.DriverDocker {
 		t.Fatalf("Driver = %q, want docker", p.Driver)
 	}
-	if p.Docker == nil {
-		t.Fatal("Docker block must be populated")
+	// The opaque options carry the docker options verbatim.
+	opts := decodeDockerOptions(t, p)
+	if opts.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q", opts.Image)
 	}
-	if p.Docker.Image != "docker.io/library/alpine:3.20" {
-		t.Fatalf("Image = %q", p.Docker.Image)
+	if len(opts.Mounts) != 1 || opts.Mounts[0].Source != "/data" {
+		t.Fatalf("Mounts = %+v", opts.Mounts)
 	}
-	if len(p.Docker.Mounts) != 1 || p.Docker.Mounts[0].Source != "/data" {
-		t.Fatalf("Mounts = %+v", p.Docker.Mounts)
+	if opts.User == nil || opts.User.UID != 1000 {
+		t.Fatalf("User = %+v, want uid 1000", opts.User)
 	}
-	if p.Docker.User == nil || p.Docker.User.UID != 1000 {
-		t.Fatalf("User = %+v, want 1000", p.Docker.User)
-	}
-	if p.Seatbelt != nil {
-		t.Fatal("Seatbelt block must be nil for a docker profile")
+	if opts.Env["A"] != "1" {
+		t.Fatalf("Env = %+v", opts.Env)
 	}
 }
 
@@ -152,8 +186,8 @@ func TestGet_ReadsOnDemand_ReflectsEdits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after overwrite: %v", err)
 	}
-	if p.Docker.Image != "ghcr.io/org/other:v2" {
-		t.Fatalf("Image = %q, want ghcr.io/org/other:v2 (overwrite must be visible on-demand)", p.Docker.Image)
+	if got := decodeDockerOptions(t, p).Image; got != "ghcr.io/org/other:v2" {
+		t.Fatalf("Image = %q, want ghcr.io/org/other:v2 (overwrite must be visible on-demand)", got)
 	}
 
 	// Add → appears.
@@ -192,8 +226,11 @@ func TestList_ScansAndParsesYAML_Sorted(t *testing.T) {
 	if list[0].Name != "default" || list[1].Name != "extra" {
 		t.Fatalf("List order = %v, want [default extra]", []string{list[0].Name, list[1].Name})
 	}
-	if list[0].Docker.Image != "docker.io/library/alpine:3.20" {
-		t.Fatalf("Image = %q", list[0].Docker.Image)
+	if list[0].Driver != spec.DriverDocker {
+		t.Fatalf("Driver = %q, want docker", list[0].Driver)
+	}
+	if got := decodeDockerOptions(t, list[0]).Image; got != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q", got)
 	}
 }
 
@@ -216,6 +253,134 @@ func TestList_MissingDir_Empty(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("List() = %v, want empty", list)
+	}
+}
+
+// --- Driver schema (empty/auto/malformed rejected at scan) ---
+
+// TestGet_DriverRequired_Error pins that a profile omitting `driver` is
+// rejected at scan (the driver is REQUIRED; there is no auto resolution).
+func TestGet_DriverRequired_Error(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "no.yml", `name: nodrv
+description: missing driver
+options:
+  image: alpine
+`)
+	st := New(dir)
+	if _, err := st.Get("nodrv"); err == nil {
+		t.Fatal("expected error for profile with no driver")
+	} else if !strings.Contains(err.Error(), "driver") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGet_DriverAuto_Error pins that `driver: auto` is rejected at scan (the
+// profile is now explicit; auto was the pre-migration resolver).
+func TestGet_DriverAuto_Error(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "auto.yml", `name: autop
+description: auto driver
+driver: auto
+options:
+  image: alpine
+`)
+	st := New(dir)
+	if _, err := st.Get("autop"); err == nil {
+		t.Fatal("expected error for driver: auto")
+	} else if !strings.Contains(err.Error(), "driver") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGet_DriverMalformed_Error pins that a malformed driver token is rejected
+// at scan.
+func TestGet_DriverMalformed_Error(t *testing.T) {
+	for _, d := range []string{"Bad/Driver", "has space", "UPPER"} {
+		dir := t.TempDir()
+		writeProfile(t, dir, "bad.yml", "name: badp\ndescription: bad driver\ndriver: "+d+"\noptions:\n  image: alpine\n")
+		st := New(dir)
+		if _, err := st.Get("badp"); err == nil {
+			t.Errorf("driver %q: expected scan error", d)
+		}
+	}
+}
+
+// TestGet_UnknownWellFormedDriver_Accepted pins the fail-at-USE-time contract:
+// a well-formed but unknown driver token passes the store scan (the store
+// rejects only empty/auto/malformed); it fails later at the registry Get.
+func TestGet_UnknownWellFormedDriver_Accepted(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "bwrap.yml", `name: bwrapp
+description: a bwrap profile
+driver: bwrap
+options:
+  anything: here
+`)
+	st := New(dir)
+	p, err := st.Get("bwrapp")
+	if err != nil {
+		t.Fatalf("Get(bwrapp): %v", err)
+	}
+	if p.Driver != spec.Driver("bwrap") {
+		t.Fatalf("Driver = %q, want bwrap preserved", p.Driver)
+	}
+	if p.Options.Node() == nil {
+		t.Fatal("Options node must be carried for a well-formed unknown driver")
+	}
+}
+
+// TestGet_SeatbeltOptionsParsed pins that a `driver: seatbelt` profile with
+// `options:` (sbpl/mach_lookups/sysctls/env) parses into Profile.Options as an
+// opaque node, with Driver seatbelt.
+func TestGet_SeatbeltOptionsParsed(t *testing.T) {
+	const yaml = `name: mac
+description: a seatbelt profile
+driver: seatbelt
+options:
+  sbpl: |
+    (import "system.sb")
+    (allow process-fork)
+  mach_lookups:
+    - com.apple.system.logger
+  sysctls:
+    - kern.osversion
+  env:
+    MY_VAR: hello-from-profile
+cwd:
+  mode: ro
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "mac.yml", yaml)
+	st := New(dir)
+
+	p, err := st.Get("mac")
+	if err != nil {
+		t.Fatalf("Get(mac): %v", err)
+	}
+	if p.Driver != spec.DriverSeatbelt {
+		t.Fatalf("Driver = %q, want seatbelt", p.Driver)
+	}
+	var opts struct {
+		SBPL        string            `yaml:"sbpl"`
+		MachLookups []string          `yaml:"mach_lookups"`
+		Sysctls     []string          `yaml:"sysctls"`
+		Env         map[string]string `yaml:"env"`
+	}
+	if err := p.Options.Node().Decode(&opts); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(opts.SBPL, "(allow process-fork)") {
+		t.Fatalf("SBPL = %q, want operator SBPL", opts.SBPL)
+	}
+	if len(opts.MachLookups) != 1 || opts.MachLookups[0] != "com.apple.system.logger" {
+		t.Fatalf("MachLookups = %+v", opts.MachLookups)
+	}
+	if len(opts.Sysctls) != 1 || opts.Sysctls[0] != "kern.osversion" {
+		t.Fatalf("Sysctls = %+v", opts.Sysctls)
+	}
+	if opts.Env["MY_VAR"] != "hello-from-profile" {
+		t.Fatalf("Env = %+v, want profile env", opts.Env)
 	}
 }
 
@@ -249,7 +414,8 @@ func TestList_DuplicateName_Error(t *testing.T) {
 
 func TestGet_InvalidFile_Error(t *testing.T) {
 	dir := t.TempDir()
-	writeProfile(t, dir, "bad.yml", "name: broken\nimage: ::::::\n")
+	// No `driver` — the required-driver Validate check rejects it.
+	writeProfile(t, dir, "bad.yml", "name: broken\n")
 	st := New(dir)
 	if _, err := st.Get("default"); err == nil {
 		t.Fatal("expected error for invalid profile file")
@@ -329,224 +495,20 @@ func TestConcurrent_GetList_RaceSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// --- Friendly cgroups unit translation (SPEC §7.11) ---
-
-func TestGet_FriendlyCgroupsUnits(t *testing.T) {
-	const yaml = `name: friendly
-description: friendly units profile
-driver: docker
-docker:
-  image: docker.io/library/alpine:3.20
-  network:
-    mode: bridge
-  cgroups:
-    cpu_cores: 4
-    memory_gb: 8
-    pids_limit: 256
-  sudo: never
-`
+// TestStore_OptionsNodeIsOpaqueYamlNode pins that Profile.Options wraps a real
+// *yaml.Node parsed from the `options:` key, so a builder can decode it.
+func TestStore_OptionsNodeIsOpaqueYamlNode(t *testing.T) {
 	dir := t.TempDir()
-	writeProfile(t, dir, "friendly.yml", yaml)
-
+	writeProfile(t, dir, "default.yml", validYAML)
 	st := New(dir)
-	p, err := st.Get("friendly")
+	p, err := st.Get("default")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got := p.Docker.Cgroups.NanoCPUs; got != int64(4*1_000_000_000) {
-		t.Fatalf("NanoCPUs = %d, want %d", got, int64(4*1_000_000_000))
+	if p.Options.Node() == nil {
+		t.Fatal("Options.Node() must be non-nil after parsing options:")
 	}
-	if got := p.Docker.Cgroups.Memory; got != int64(8*1024*1024*1024) {
-		t.Fatalf("Memory = %d, want %d", got, int64(8*1024*1024*1024))
-	}
-	if got := p.Docker.Cgroups.MemorySwap; got != p.Docker.Cgroups.Memory {
-		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Docker.Cgroups.Memory)
-	}
-	if got := p.Docker.Cgroups.PidsLimit; got != 256 {
-		t.Fatalf("PidsLimit = %d, want 256", got)
-	}
-}
-
-func TestGet_FriendlyUnits_RawTakePrecedence(t *testing.T) {
-	const yaml = `name: raw-wins
-description: raw precedence profile
-driver: docker
-docker:
-  image: docker.io/library/alpine:3.20
-  network:
-    mode: bridge
-  cgroups:
-    cpu_cores: 4
-    memory_gb: 8
-    nano_cpus: 2000000000
-    memory: 1073741824
-    pids_limit: 256
-  sudo: never
-`
-	dir := t.TempDir()
-	writeProfile(t, dir, "raw.yml", yaml)
-
-	st := New(dir)
-	p, err := st.Get("raw-wins")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got := p.Docker.Cgroups.NanoCPUs; got != int64(2_000_000_000) {
-		t.Fatalf("NanoCPUs = %d, want %d (raw precedence)", got, int64(2_000_000_000))
-	}
-	if got := p.Docker.Cgroups.Memory; got != int64(1_073_741_824) {
-		t.Fatalf("Memory = %d, want %d (raw precedence)", got, int64(1_073_741_824))
-	}
-	if got := p.Docker.Cgroups.MemorySwap; got != p.Docker.Cgroups.Memory {
-		t.Fatalf("MemorySwap = %d, want %d (defaulted to Memory)", got, p.Docker.Cgroups.Memory)
-	}
-}
-
-// TestGet_SeatbeltSandboxBlockParsed pins that the hybrid schema parses a
-// seatbelt profile with a `seatbelt:` block (SBPL + mach_lookups + sysctls +
-// env) into the domain SeatbeltProfile, with the docker block nil (SPEC §7.12).
-func TestGet_SeatbeltSandboxBlockParsed(t *testing.T) {
-	const yaml = `name: mac
-description: a seatbelt profile
-driver: seatbelt
-seatbelt:
-  sbpl: |
-    (import "system.sb")
-    (allow process-fork)
-  mach_lookups:
-    - com.apple.system.logger
-  sysctls:
-    - kern.osversion
-  env:
-    MY_VAR: hello-from-profile
-cwd:
-  mode: ro
-`
-	dir := t.TempDir()
-	writeProfile(t, dir, "mac.yml", yaml)
-	st := New(dir)
-
-	p, err := st.Get("mac")
-	if err != nil {
-		t.Fatalf("Get(mac): %v", err)
-	}
-	if p.Driver != spec.DriverSeatbelt {
-		t.Fatalf("Driver = %q, want seatbelt", p.Driver)
-	}
-	if p.Docker != nil {
-		t.Fatal("Docker block must be nil for a seatbelt profile")
-	}
-	if p.Seatbelt == nil {
-		t.Fatal("Seatbelt block must be populated")
-	}
-	if !strings.Contains(p.Seatbelt.SBPL, "(allow process-fork)") {
-		t.Fatalf("SBPL = %q, want operator SBPL", p.Seatbelt.SBPL)
-	}
-	if len(p.Seatbelt.MachLookups) != 1 || p.Seatbelt.MachLookups[0] != "com.apple.system.logger" {
-		t.Fatalf("MachLookups = %+v", p.Seatbelt.MachLookups)
-	}
-	if len(p.Seatbelt.Sysctls) != 1 || p.Seatbelt.Sysctls[0] != "kern.osversion" {
-		t.Fatalf("Sysctls = %+v", p.Seatbelt.Sysctls)
-	}
-	if p.Seatbelt.Env["MY_VAR"] != "hello-from-profile" {
-		t.Fatalf("Env = %+v, want profile env", p.Seatbelt.Env)
-	}
-}
-
-// TestGet_AutoDriverAccepted pins that a profile omitting `driver` (or declaring
-// `auto`) still parses and defaults the driver to auto, resolved at BuildSpec.
-func TestGet_AutoDriverAccepted(t *testing.T) {
-	for _, driver := range []string{"", "auto"} {
-		yaml := `name: autop
-description: auto driver profile
-docker:
-  image: docker.io/library/alpine:3.20
-  network:
-    mode: bridge
-  cgroups:
-    nano_cpus: 1000000000
-    memory: 536870912
-    pids_limit: 256
-  sudo: never
-`
-		if driver != "" {
-			yaml = "driver: " + driver + "\n" + yaml
-		}
-		dir := t.TempDir()
-		writeProfile(t, dir, "autop.yml", yaml)
-		st := New(dir)
-		p, err := st.Get("autop")
-		if err != nil {
-			t.Fatalf("Get(autop) with driver %q: %v", driver, err)
-		}
-		if p.Driver != spec.DriverAuto {
-			t.Fatalf("Driver = %q, want auto for driver %q", p.Driver, driver)
-		}
-		if p.Docker == nil {
-			t.Fatal("Docker block must be populated for an auto docker profile")
-		}
-	}
-}
-
-func TestCgroupsToDomain_MemorySwapPreserved(t *testing.T) {
-	cg := (yamlCgroups{
-		NanoCPUs:   0,
-		Memory:     0,
-		MemorySwap: 0,
-		CPUCores:   2,
-		MemoryGB:   4,
-	}).toDomain()
-	// Swap defaulted to Memory because no raw memory_swap was provided.
-	if cg.MemorySwap != cg.Memory {
-		t.Fatalf("MemorySwap = %d, want defaulted to Memory %d", cg.MemorySwap, cg.Memory)
-	}
-
-	cg2 := (yamlCgroups{
-		NanoCPUs:   0,
-		Memory:     0,
-		MemorySwap: 8 * 1024 * 1024 * 1024, // operator set a swap larger than memory
-		CPUCores:   2,
-		MemoryGB:   4,
-	}).toDomain()
-	// Explicit memory_swap must survive the defaulting.
-	if cg2.MemorySwap == cg2.Memory {
-		t.Fatalf("explicit MemorySwap = %d was overwritten to equal Memory %d", cg2.MemorySwap, cg2.Memory)
-	}
-	if want := int64(8 * 1024 * 1024 * 1024); cg2.MemorySwap != want {
-		t.Fatalf("MemorySwap = %d, want preserved %d", cg2.MemorySwap, want)
-	}
-	if cg2.Memory != int64(4*1024*1024*1024) {
-		t.Fatalf("Memory = %d, want 4 GiB", cg2.Memory)
-	}
-}
-
-func TestCgroupsToDomain_OnlyCPUCores(t *testing.T) {
-	cg := (yamlCgroups{CPUCores: 3}).toDomain()
-	if got := cg.NanoCPUs; got != int64(3*1_000_000_000) {
-		t.Fatalf("NanoCPUs = %d, want %d", got, int64(3*1_000_000_000))
-	}
-	if cg.Memory != 0 {
-		t.Fatalf("Memory = %d, want 0 when memory_gb unset", cg.Memory)
-	}
-	if cg.MemorySwap != 0 {
-		t.Fatalf("MemorySwap = %d, want 0 when Memory is 0", cg.MemorySwap)
-	}
-}
-
-func TestCgroupsToDomain_RawAndFriendlyMixed(t *testing.T) {
-	cg := (yamlCgroups{
-		NanoCPUs: 0,
-		Memory:   2 * 1024 * 1024 * 1024,
-		CPUCores: 2,
-		MemoryGB: 8, // ignored: raw Memory is already set
-	}).toDomain()
-	if cg.NanoCPUs != int64(2*1_000_000_000) {
-		t.Fatalf("NanoCPUs = %d, want filled from cpu_cores", cg.NanoCPUs)
-	}
-	if cg.Memory != int64(2*1024*1024*1024) {
-		t.Fatalf("Memory = %d, want raw memory", cg.Memory)
-	}
-	if cg.MemorySwap != cg.Memory {
-		t.Fatalf("MemorySwap = %d, want defaulted to raw Memory %d", cg.MemorySwap, cg.Memory)
+	if p.Options.Node().Kind != yaml.MappingNode {
+		t.Fatalf("Options.Node().Kind = %d, want MappingNode", p.Options.Node().Kind)
 	}
 }

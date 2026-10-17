@@ -5,8 +5,9 @@
 # demand and are operator-authored; the model references one by name.
 #
 # Hybrid driver-aware schema (SPEC §7.11/§7.12): `driver` selects the backend
-# and the matching `docker:` block carries the Docker-specific fields; `cwd`
-# and `shell` sit at the top level.
+# and the opaque `options:` block carries the driver-specific fields (here the
+# `docker` options that buildDocker decodes); `cwd` and `shell` sit at the top
+# level.
 #
 # NOTE: `sandbox_exec` commands run through the profile-configured shell
 # (default `bash`). The env block below defaults the Go build caches to the
@@ -21,7 +22,7 @@ description: >-
   opencode data directory, and GOCACHE/GOTMPDIR defaulted to the executable
   /tmp tmpfs; bridge network, 4 CPU / 8 GiB / 2048 pids, non-root, no sudo.
 driver: docker
-docker:
+options:
   image: golang:1.27.2
   env:
     GOMODCACHE: /go/pkg/mod      # shared writable mount (below)

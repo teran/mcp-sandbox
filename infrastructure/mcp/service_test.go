@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/session"
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
@@ -1285,5 +1287,237 @@ func TestService_Destroy_UnknownSlug(t *testing.T) {
 	// Malformed id (no colon) also errors on Destroy (malformed id -> not found).
 	if err := svc.Destroy(context.Background(), "abc"); !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("Destroy(bare malformed) err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Slice 4: Service.BuildSpec + Create/EnforceHardening (driver registry work).
+// ---------------------------------------------------------------------------
+
+// testDriverService builds a Service whose `drivers` registry is a fresh,
+// test-controlled driver.Registry (so BuildSpec can be exercised without
+// touching the process-wide driver.Default). The backend registry still owns
+// Create routing.
+func testDriverService(t *testing.T, reg *driver.Registry) *Service {
+	t.Helper()
+	svc := NewService(backend.NewRegistry(), backend.Config{})
+	svc.drivers = reg
+
+	return svc
+}
+
+// TestService_BuildSpec_KnownDriver pins the Slice 4 BuildSpec contract: for a
+// profile with a known driver it looks up the driver registry, forwards the
+// profile fields + params + the immutable policy to the builder, and returns the
+// built spec. Unknown drivers fail closed (ErrUnknownDriver, no fallback).
+func TestService_BuildSpec_KnownDriver(t *testing.T) {
+	reg := driver.New()
+	var captured driver.Context
+	if err := reg.Register(spec.DriverDocker, driver.BuildFunc(func(ctx driver.Context) (spec.SandboxSpec, error) {
+		captured = ctx
+
+		return spec.SandboxSpec{Driver: spec.DriverDocker, Image: "built:" + ctx.Name, Isolation: ctx.Policy}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := testDriverService(t, reg)
+	p := &domainprofile.Profile{
+		Name:        "default",
+		Description: "the default profile",
+		Driver:      spec.DriverDocker,
+		Cwd:         domainprofile.CwdConfig{Target: "/work", Mode: "ro"},
+		Shell:       "bash",
+		Options:     driver.NewOptions(nil),
+	}
+	params := domainprofile.Params{
+		Cwd:             "/home/user/proj",
+		Secrets:         []spec.SecretRef{{Name: "token", Value: "v"}},
+		ClientSessionID: "opencode-9",
+	}
+
+	sp, err := svc.BuildSpec(p, params)
+	if err != nil {
+		t.Fatalf("BuildSpec: %v", err)
+	}
+
+	// The returned spec is the builder's result.
+	if sp.Driver != spec.DriverDocker || sp.Image != "built:default" {
+		t.Fatalf("spec = %+v, want the builder's docker result", sp)
+	}
+
+	// BuildSpec forwards every profile field and the params to the builder.
+	if captured.Name != "default" || captured.Description != "the default profile" {
+		t.Fatalf("captured Name/Description = %q/%q", captured.Name, captured.Description)
+	}
+	if captured.Cwd != p.Cwd || captured.Shell != "bash" {
+		t.Fatalf("captured Cwd/Shell = %+v/%q", captured.Cwd, captured.Shell)
+	}
+	if !reflect.DeepEqual(captured.Params, params) {
+		t.Fatalf("captured Params = %+v, want %+v", captured.Params, params)
+	}
+
+	// The immutable policy (defaultIsolation) is what the builder receives, so a
+	// profile can never weaken hardening.
+	want := svc.defaultIsolation()
+	if captured.Policy.ReadOnlyRootfs != want.ReadOnlyRootfs ||
+		captured.Policy.NoNewPrivileges != want.NoNewPrivileges ||
+		captured.Policy.AutoRemove != want.AutoRemove ||
+		captured.Policy.User != want.User ||
+		!hasCapDropAllSvc(captured.Policy.CapDrop) {
+		t.Fatalf("captured Policy = %+v, want immutable defaultIsolation %+v", captured.Policy, want)
+	}
+	if sp.Isolation.ReadOnlyRootfs != want.ReadOnlyRootfs {
+		t.Fatalf("built spec Isolation.ReadOnlyRootfs = %v, want policy %v", sp.Isolation.ReadOnlyRootfs, want.ReadOnlyRootfs)
+	}
+}
+
+// TestService_BuildSpec_Seatbelt pins BuildSpec dispatches to the seatbelt
+// builder when the profile requests seatbelt (multi-driver coexistence through
+// the registry).
+func TestService_BuildSpec_Seatbelt(t *testing.T) {
+	reg := driver.New()
+	var captured driver.Context
+	if err := reg.Register(spec.DriverSeatbelt, driver.BuildFunc(func(ctx driver.Context) (spec.SandboxSpec, error) {
+		captured = ctx
+
+		return spec.SandboxSpec{Driver: spec.DriverSeatbelt, Sandbox: spec.Sandbox{SBPL: "(version 1)"}}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	svc := testDriverService(t, reg)
+
+	p := &domainprofile.Profile{
+		Name:        "sb",
+		Description: "seatbelt profile",
+		Driver:      spec.DriverSeatbelt,
+		Options:     driver.NewOptions(nil),
+	}
+	sp, err := svc.BuildSpec(p, domainprofile.Params{})
+	if err != nil {
+		t.Fatalf("BuildSpec: %v", err)
+	}
+	if sp.Driver != spec.DriverSeatbelt || sp.Sandbox.SBPL != "(version 1)" {
+		t.Fatalf("spec = %+v, want the seatbelt builder's result", sp)
+	}
+	if captured.Name != "sb" {
+		t.Fatalf("captured Name = %q, want sb", captured.Name)
+	}
+}
+
+// TestService_BuildSpec_UnknownDriver pins fail-at-USE-time: a well-formed but
+// unregistered driver is rejected with ErrUnknownDriver, never silently falling
+// back to another builder.
+func TestService_BuildSpec_UnknownDriver(t *testing.T) {
+	reg := driver.New()
+	if err := reg.Register(spec.DriverDocker, driver.BuildFunc(func(_ driver.Context) (spec.SandboxSpec, error) {
+		return spec.SandboxSpec{}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	svc := testDriverService(t, reg)
+
+	p := &domainprofile.Profile{Name: "x", Description: "x", Driver: spec.Driver("nonexistent"), Options: driver.NewOptions(nil)}
+	if _, err := svc.BuildSpec(p, domainprofile.Params{}); !errors.Is(err, driver.ErrUnknownDriver) {
+		t.Fatalf("BuildSpec(unknown) err = %v, want ErrUnknownDriver", err)
+	}
+}
+
+// hasCapDropAllSvc reports whether the isolation drops ALL capabilities.
+func hasCapDropAllSvc(caps []string) bool {
+	for _, c := range caps {
+		if strings.EqualFold(c, "ALL") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// newTestServiceCfg is newTestService with an explicit backend.Config so tests
+// can set cfg.AllowDirs (the EnforceHardening mount gate).
+func newTestServiceCfg(t *testing.T, fb *fakeBackend, cfg backend.Config) *Service {
+	t.Helper()
+	reg := backend.NewRegistry()
+	if err := reg.Register(backend.Factory{
+		Name:         "fake",
+		Priority:     0,
+		Driver:       spec.DriverDocker,
+		Capabilities: role.CapabilitySet{Lifecycle: true, Executable: true, Introspectable: true},
+		Available:    func() bool { return true },
+		New:          func(backend.Config) (role.Backend, error) { return fb, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	return NewService(reg, cfg)
+}
+
+// TestService_Create_RejectsMountOutsideAllowDirs pins that Create runs
+// EnforceHardening BEFORE the backend Create is invoked: a spec whose mount
+// source falls outside s.cfg.AllowDirs is rejected fail-closed and the backend
+// Create is never called.
+func TestService_Create_RejectsMountOutsideAllowDirs(t *testing.T) {
+	allowDir := t.TempDir()
+	outside := t.TempDir() // exists, but not under allowDir
+
+	fb := &fakeBackend{}
+	svc := newTestServiceCfg(t, fb, backend.Config{AllowDirs: []string{allowDir}})
+
+	sp := testSpec()
+	sp.Driver = spec.DriverDocker
+	sp.Mounts = []spec.Mount{{Source: outside, Target: "/mnt", ReadOnly: true}}
+
+	if _, err := svc.Create(context.Background(), sp); err == nil {
+		t.Fatal("mount source outside cfg.AllowDirs must be rejected by EnforceHardening")
+	}
+	if fb.created {
+		t.Fatal("backend Create must NOT be invoked when EnforceHardening rejects the spec")
+	}
+}
+
+// TestService_Create_AcceptMountWithinAllowDirs pins the positive path: a mount
+// source within cfg.AllowDirs passes EnforceHardening and reaches the backend.
+func TestService_Create_AcceptMountWithinAllowDirs(t *testing.T) {
+	allowDir := t.TempDir()
+	src := allowDir // within AllowDirs
+
+	fb := &fakeBackend{}
+	svc := newTestServiceCfg(t, fb, backend.Config{AllowDirs: []string{allowDir}})
+
+	sp := testSpec()
+	sp.Driver = spec.DriverDocker
+	sp.Mounts = []spec.Mount{{Source: src, Target: "/mnt", ReadOnly: true}}
+
+	if _, err := svc.Create(context.Background(), sp); err != nil {
+		t.Fatalf("Create with in-AllowDirs mount must succeed: %v", err)
+	}
+	if !fb.created {
+		t.Fatal("backend Create should be invoked for an in-AllowDirs mount")
+	}
+}
+
+// TestService_Create_ReHardensWeakenedSpec pins that Create re-asserts the
+// immutable hardening from the server policy: a spec whose ReadOnlyRootfs was
+// weakened to false is re-hardened to true before it reaches the backend.
+func TestService_Create_ReHardensWeakenedSpec(t *testing.T) {
+	fb := &fakeBackend{}
+	svc := newTestService(t, fb)
+
+	sp := testSpec()
+	sp.Driver = spec.DriverDocker
+	sp.Isolation.ReadOnlyRootfs = false // a caller tried to weaken it
+
+	if _, err := svc.Create(context.Background(), sp); err != nil {
+		t.Fatalf("Create must re-harden a weakened spec, not fail: %v", err)
+	}
+	if !fb.created {
+		t.Fatal("backend Create not called")
+	}
+	if !fb.createdSpec.Isolation.ReadOnlyRootfs {
+		t.Fatal("the spec passed to the backend must be re-hardened: ReadOnlyRootfs == true")
+	}
+	if err := fb.createdSpec.Validate(); err != nil {
+		t.Fatalf("re-hardened spec must validate: %v", err)
 	}
 }

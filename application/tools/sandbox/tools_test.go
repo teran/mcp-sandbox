@@ -982,8 +982,10 @@ func TestBuildSpec_ProfileCwdAndClientSessionID(t *testing.T) {
 func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
-	p.Docker.Env = map[string]string{"A": "1"}
-	p.Docker.Mounts = []domainprofile.Mount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
+	opts := dockerOptsFixture()
+	opts.Env = map[string]string{"A": "1"}
+	opts.Mounts = []fakeDockerMount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
+	setOptions(t, p, opts)
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
@@ -1009,11 +1011,10 @@ func TestBuildSpec_ProfileSeatbeltEnv(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
 	p.Driver = spec.DriverSeatbelt
-	p.Docker = nil
-	p.Seatbelt = &domainprofile.SeatbeltProfile{
+	setOptions(t, p, fakeSeatbeltOpts{
 		SBPL: "(import \"system.sb\")\n(allow process-fork)",
 		Env:  map[string]string{"A": "1"},
-	}
+	})
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
@@ -1034,7 +1035,9 @@ func TestBuildSpec_ProfileSeatbeltEnv(t *testing.T) {
 func TestBuildSpec_ProfileUser(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
-	p.Docker.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	opts := dockerOptsFixture()
+	opts.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	setOptions(t, p, opts)
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}

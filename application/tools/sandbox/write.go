@@ -13,6 +13,7 @@ import (
 	"github.com/teran/mcp-sandbox/application/tools/guidance"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/domain/progress"
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -107,10 +108,11 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 }
 
 // buildSpec assembles a typed SandboxSpec from the create input by resolving
-// the selected operator profile and merging it with the server-enforced
-// immutable Isolation (§7.1/§7.11). The image, env, mounts, network, resources,
-// user and sudo all come from the profile; a caller cannot weaken any hardening
-// value.
+// the selected operator profile and dispatching to the driver registry's
+// builder for the profile's concrete driver (SPEC §6.11/§7.11). The image, env,
+// mounts, network, resources, user and sudo all come from the profile's opaque
+// options (decoded by the builder); a caller cannot weaken any hardening value
+// because the builder takes the immutable Isolation policy from the Service.
 func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 	pol := b.svc.Policy()
 
@@ -131,11 +133,26 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 		secrets = append(secrets, spec.SecretRef{Name: sec.Name, Value: sec.Value})
 	}
 
-	return p.BuildSpec(pol.Isolation, domainprofile.Params{
-		Cwd:             in.Cwd,
-		Secrets:         secrets,
-		ClientSessionID: in.SessionID,
-	}), nil
+	// Dispatch to the profile's driver builder (fail-closed: an unknown driver
+	// fails here with ErrUnknownDriver, at USE time, not at scan time).
+	bld, err := driver.Default.Get(p.Driver)
+	if err != nil {
+		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: %w", err)
+	}
+
+	return bld.Build(driver.Context{
+		Name:        p.Name,
+		Description: p.Description,
+		Cwd:         p.Cwd,
+		Shell:       p.Shell,
+		Options:     p.Options,
+		Policy:      pol.Isolation,
+		Params: spec.Params{
+			Cwd:             in.Cwd,
+			Secrets:         secrets,
+			ClientSessionID: in.SessionID,
+		},
+	})
 }
 
 // execInput is the typed sandbox_exec arguments. The command is a single string

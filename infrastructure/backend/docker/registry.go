@@ -59,5 +59,5 @@ func newFromConfig(cfg backend.Config) (role.Backend, error) {
 		return nil, err
 	}
 
-	return New(cli, cfg.AllowDirs, WithAllowSymlinks(cfg.AllowSymlinks)), nil
+	return New(cli, WithAllowSymlinks(cfg.AllowSymlinks)), nil
 }

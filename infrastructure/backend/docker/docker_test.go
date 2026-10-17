@@ -38,15 +38,15 @@ func baseSpec() spec.SandboxSpec {
 	}
 }
 
-// newBackendForDirs builds a backend with New(api, dirs): the second argument
-// is the ALLOW_DIRS host-path gate (Phase 7), which resolveMounts enforces for
-// the cwd mount and every mount source. Pass the allowed roots a scenario needs.
-func newBackendForDirs(api dockerAPI, dirs ...string) *Backend {
-	return New(api, dirs)
-}
+// newBackend builds a docker backend over the in-memory fake client. The
+// ALLOW_DIRS host-path gate no longer lives in the backend (Slice 4, SPEC
+// §6.11 G): EnforceHardening at the Service level owns mount-source containment,
+// so the backend constructor takes no allow-dirs argument. TOCTOU integrity
+// (EvalSymlinks + open-then-verify) is retained inside verifyHostPath.
+func newBackend(api dockerAPI) *Backend { return New(api) }
 
 func TestNamePriorityCapabilities(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	if b.Name() != "docker" {
 		t.Fatalf("Name = %q", b.Name())
 	}
@@ -65,7 +65,7 @@ func TestNamePriorityCapabilities(t *testing.T) {
 // here).
 func TestCreate_AllowsHostNetwork(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Isolation.NetworkMode = spec.NetworkHost
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -79,7 +79,7 @@ func TestCreate_AllowsHostNetwork(t *testing.T) {
 
 func TestCreate_AppliesIsolation(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -145,7 +145,7 @@ func TestCreate_AppliesIsolation(t *testing.T) {
 //     compile and run Go binaries against a read-only rootfs; nosuid,nodev kept.
 func TestCreate_TmpfsLayout(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if _, err := b.Create(context.Background(), baseSpec()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestCreate_TmpfsLayout(t *testing.T) {
 
 func TestCreate_LabelsAndSessionID(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	ctx := domainsession.WithSessionID(context.Background(), "sess-123")
 	if _, err := b.Create(ctx, baseSpec()); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -208,7 +208,7 @@ func TestCreate_LabelsAndSessionID(t *testing.T) {
 
 func TestCreate_OpenCodeSessionLabel(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.ClientSessionID = "opencode-sess-1"
 	ctx := domainsession.WithSessionID(context.Background(), "sess-123")
@@ -230,7 +230,7 @@ func TestCreate_OpenCodeSessionLabel(t *testing.T) {
 
 func TestCreate_NoOpenCodeSessionLabelWhenEmpty(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if _, err := b.Create(context.Background(), baseSpec()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestCreate_NoOpenCodeSessionLabelWhenEmpty(t *testing.T) {
 
 func TestCreate_InvalidSpec(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "" // invalid: Image required
 	s.Isolation.Memory = 0
@@ -254,10 +254,11 @@ func TestCreate_InvalidSpec(t *testing.T) {
 	}
 }
 
-// TestCreate_MountsWithinAllowDirsPassThrough pins Phase 7: resolveMounts keeps
-// the ALLOW_DIRS host-path gate. The cwd and every mount source within an
-// allowed root pass through 1:1 with their ReadOnly flag honoured.
-func TestCreate_MountsWithinAllowDirsPassThrough(t *testing.T) {
+// TestCreate_MountsPassThrough pins Slice 4: resolveMounts passes the cwd and
+// every mount source through 1:1 with their ReadOnly flag honoured. ALLOW_DIRS
+// containment no longer lives in the backend — EnforceHardening at the Service
+// level owns it (SPEC §6.11 G) — so the backend accepts any existing host path.
+func TestCreate_MountsPassThrough(t *testing.T) {
 	api := newFakeClient()
 	allowDir := t.TempDir()
 	proj := filepath.Join(allowDir, "proj")
@@ -267,7 +268,7 @@ func TestCreate_MountsWithinAllowDirsPassThrough(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	b := newBackendForDirs(api, allowDir)
+	b := newBackend(api)
 	s := baseSpec()
 	s.WorkingDir = proj
 	s.Mounts = []spec.Mount{
@@ -292,37 +293,22 @@ func TestCreate_MountsWithinAllowDirsPassThrough(t *testing.T) {
 	}
 }
 
-// TestCreate_CwdOutsideAllowDirsRejected verifies a cwd whose host path is not
-// within ANY allowed root is rejected before a container is created.
-func TestCreate_CwdOutsideAllowDirsRejected(t *testing.T) {
+// TestCreate_MountSourceOutsideFormerAllowDirsAccepted pins the ALLOW_DIRS lift
+// (Slice 4): the docker backend no longer rejects a mount source that is not
+// under any allowed root on its own. The containment decision moved up to
+// EnforceHardening at the Service level; the backend consumes an already-gated
+// spec and only verifies the path resolves and its identity is stable (TOCTOU).
+func TestCreate_MountSourceOutsideFormerAllowDirsAccepted(t *testing.T) {
 	api := newFakeClient()
-	allowDir := t.TempDir()
-	outside := t.TempDir() // exists, but is not under allowDir
-	b := newBackendForDirs(api, allowDir)
-	s := baseSpec()
-	s.WorkingDir = outside
-	if _, err := b.Create(context.Background(), s); err == nil {
-		t.Fatal("expected cwd outside ALLOW_DIRS to be rejected")
-	}
-	if len(api.createdConfigs) != 0 {
-		t.Fatal("no container create should have happened")
-	}
-}
-
-// TestCreate_MountOutsideAllowDirsRejected verifies a profile mount source
-// outside ALLOW_DIRS is rejected (the same gate guards the cwd and every mount).
-func TestCreate_MountOutsideAllowDirsRejected(t *testing.T) {
-	api := newFakeClient()
-	allowDir := t.TempDir()
-	outside := t.TempDir() // exists, but is not under allowDir
-	b := newBackendForDirs(api, allowDir)
+	b := newBackend(api)
+	outside := t.TempDir() // exists, but the backend no longer enforces a root set
 	s := baseSpec()
 	s.Mounts = []spec.Mount{{Source: outside, Target: "/mnt", ReadOnly: true}}
-	if _, err := b.Create(context.Background(), s); err == nil {
-		t.Fatal("expected mount source outside ALLOW_DIRS to be rejected")
+	if _, err := b.Create(context.Background(), s); err != nil {
+		t.Fatalf("backend must accept a mount outside any allow-dirs set: %v", err)
 	}
-	if len(api.createdConfigs) != 0 {
-		t.Fatal("no container create should have happened")
+	if hc := api.lastHostConfig(); len(hc.Mounts) != 1 || hc.Mounts[0].Source != outside {
+		t.Fatalf("mount not passed through: %+v", hc.Mounts)
 	}
 }
 
@@ -333,7 +319,7 @@ func TestCreate_AdditionalMountReadOnlyFlag(t *testing.T) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b := newBackendForDirs(api, allowDir)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Mounts = []spec.Mount{{Source: src, Target: "/mnt", ReadOnly: true}}
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -346,7 +332,7 @@ func TestCreate_AdditionalMountReadOnlyFlag(t *testing.T) {
 
 func TestCreate_SecretsDeliveredViaExecOnTmpfs(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "supersecret"}}
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -385,7 +371,7 @@ func TestCreate_SecretsDeliveredViaExecOnTmpfs(t *testing.T) {
 func TestCreate_StartError(t *testing.T) {
 	api := newFakeClient()
 	api.startErr = errors.New("start failed")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if _, err := b.Create(context.Background(), baseSpec()); err == nil {
 		t.Fatal("expected start error")
 	}
@@ -396,7 +382,7 @@ func TestCreate_StartError(t *testing.T) {
 // label lookup). The returned id from Create is what a caller passes back.
 func TestDestroy_RemovesContainerByID(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -424,7 +410,7 @@ func TestDestroy_RemovesContainerByID(t *testing.T) {
 // "no such container" error as an idempotent no-op.
 func TestDestroy_IdempotentWhenMissing(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if err := b.Destroy(context.Background(), "nope"); err != nil {
 		t.Fatalf("Destroy of missing should be no-op, got %v", err)
 	}
@@ -433,7 +419,7 @@ func TestDestroy_IdempotentWhenMissing(t *testing.T) {
 func TestExec_ArgumentArrayAndResult(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -467,7 +453,7 @@ func TestExec_ArgumentArrayAndResult(t *testing.T) {
 func TestExec_TimeoutIsAppliedAsContextCancellation(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -500,7 +486,7 @@ func TestExec_TimeoutIsAppliedAsContextCancellation(t *testing.T) {
 func TestExec_TimeoutZeroNoDeadline(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -517,7 +503,7 @@ func TestExec_TimeoutZeroNoDeadline(t *testing.T) {
 func TestExec_SudoUser(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -534,7 +520,7 @@ func TestExec_UnknownSession(t *testing.T) {
 	// Because the session id IS the container id, Exec of an unknown id reaches
 	// the Docker API directly and fails naturally ("no such container") rather
 	// than through a session-existence pre-check.
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	if _, err := b.Exec(context.Background(), "ghost", exec.Request{Argv: []string{"x"}}); err == nil {
 		t.Fatal("expected an error for an unknown container id")
 	}
@@ -545,7 +531,7 @@ func TestExec_UnknownSession(t *testing.T) {
 func TestExec_EnvSetSorted(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -566,7 +552,7 @@ func TestExec_EnvSetSorted(t *testing.T) {
 func TestExec_EnvNilWhenEmpty(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -584,7 +570,7 @@ func TestExec_EnvNilWhenEmpty(t *testing.T) {
 func TestExec_CmdWrapperPassThrough(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -601,7 +587,7 @@ func TestExec_CmdWrapperPassThrough(t *testing.T) {
 
 func TestInfo(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -621,7 +607,7 @@ func TestInfo(t *testing.T) {
 
 func TestStats(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -642,7 +628,7 @@ func TestStats(t *testing.T) {
 func TestStatsError(t *testing.T) {
 	api := newFakeClient()
 	api.statsErr = errors.New("stats fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -655,7 +641,7 @@ func TestStatsError(t *testing.T) {
 func TestCreate_StartErrorNoPartialState(t *testing.T) {
 	api := newFakeClient()
 	api.startErr = errors.New("boom")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if _, err := b.Create(context.Background(), baseSpec()); err == nil {
 		t.Fatal("expected error")
 	}
@@ -664,7 +650,7 @@ func TestCreate_StartErrorNoPartialState(t *testing.T) {
 func TestExec_ErrFromCreate(t *testing.T) {
 	api := newFakeClient()
 	api.execErr = errors.New("exec create fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -677,7 +663,7 @@ func TestExec_ErrFromCreate(t *testing.T) {
 func TestExec_AttachError(t *testing.T) {
 	api := newFakeClient()
 	api.execAttachErr = errors.New("attach fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -691,14 +677,14 @@ func TestInfo_UnknownSession(t *testing.T) {
 	// The session id IS the container id: Info of an unknown id reaches the
 	// Docker inspect API and fails naturally rather than via a session-existence
 	// pre-check.
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	if _, err := b.Info(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected an error for an unknown container id")
 	}
 }
 
 func TestStats_UnknownSession(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	if _, err := b.Stats(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected an error for an unknown container id")
 	}
@@ -707,7 +693,7 @@ func TestStats_UnknownSession(t *testing.T) {
 func TestDestroy_RemoveError(t *testing.T) {
 	api := newFakeClient()
 	api.removeErr = errors.New("remove fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -720,7 +706,7 @@ func TestDestroy_RemoveError(t *testing.T) {
 func TestInfo_InspectError(t *testing.T) {
 	api := newFakeClient()
 	api.inspectErr = errors.New("inspect fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -741,7 +727,7 @@ func TestNewFromConfig_Error(t *testing.T) {
 func TestCreate_SecretsExecCreateError(t *testing.T) {
 	api := newFakeClient()
 	api.execErr = errors.New("exec create fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -752,7 +738,7 @@ func TestCreate_SecretsExecCreateError(t *testing.T) {
 func TestCreate_SecretsExecNonZeroExit(t *testing.T) {
 	api := newFakeClient()
 	api.execExitCode = 1
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -763,7 +749,7 @@ func TestCreate_SecretsExecNonZeroExit(t *testing.T) {
 func TestCreate_SecretsExecAttachError(t *testing.T) {
 	api := newFakeClient()
 	api.execAttachErr = errors.New("attach fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -774,7 +760,7 @@ func TestCreate_SecretsExecAttachError(t *testing.T) {
 func TestCreate_SecretsExecInspectError(t *testing.T) {
 	api := newFakeClient()
 	api.execInspectErr = errors.New("inspect fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Secrets = []spec.SecretRef{{Name: "token", Value: "v"}}
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -785,7 +771,7 @@ func TestCreate_SecretsExecInspectError(t *testing.T) {
 func TestStats_DecodeError(t *testing.T) {
 	api := newFakeClient()
 	api.statsBody = "not-json{"
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -799,7 +785,7 @@ func TestExec_InspectError(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{exitCode: 0}}
 	api.execInspectErr = errors.New("inspect fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -815,7 +801,7 @@ func TestExec_InspectError(t *testing.T) {
 // comes from the operator-authored profile. Only empty or unparsable references
 // are rejected.
 func TestValidateImageRef_ParseOnly(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	accepted := []string{
 		"alpine:3.20", // unqualified → docker.io/library/alpine
 		"img:latest",
@@ -835,7 +821,7 @@ func TestValidateImageRef_ParseOnly(t *testing.T) {
 // TestValidateImageRef_RejectsEmptyOrInvalid pins the parse-only rejection side:
 // empty or malformed references are rejected, regardless of registry.
 func TestValidateImageRef_RejectsEmptyOrInvalid(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	rejected := []string{
 		"",
 		"   ",
@@ -854,7 +840,7 @@ func TestValidateImageRef_RejectsEmptyOrInvalid(t *testing.T) {
 // allowlist at create time).
 func TestCreate_AcceptsImageFromAnyRegistry(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "evil.com/foo/bar:latest"
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -869,7 +855,7 @@ func TestCreate_AcceptsImageFromAnyRegistry(t *testing.T) {
 // before any Docker side-effect (parse-only validation).
 func TestCreate_RejectsInvalidImage(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "::::invalid"
 	if _, err := b.Create(context.Background(), s); err == nil {
@@ -885,7 +871,7 @@ func TestCreate_RejectsInvalidImage(t *testing.T) {
 
 func TestCreate_AcceptsValidImage(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "alpine:3.20"
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -903,7 +889,7 @@ func TestCreate_AcceptsValidImage(t *testing.T) {
 func TestCreate_ImageAlreadyPresent_NoPull(t *testing.T) {
 	api := newFakeClient()
 	api.requirePull = false // image is already local
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "alpine:3.20"
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -924,7 +910,7 @@ func TestCreate_ImageAlreadyPresent_NoPull(t *testing.T) {
 func TestCreate_MissingImage_PullsThenCreates(t *testing.T) {
 	api := newFakeClient()
 	api.requirePull = true // image is not in the local cache
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "alpine:3.20"
 	if _, err := b.Create(context.Background(), s); err != nil {
@@ -944,7 +930,7 @@ func TestCreate_PullError(t *testing.T) {
 	api := newFakeClient()
 	api.requirePull = true
 	api.pullErr = errors.New("pull exploded")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "alpine:3.20"
 	_, err := b.Create(context.Background(), s)
@@ -966,7 +952,7 @@ func TestCreate_PullReadError(t *testing.T) {
 	api := newFakeClient()
 	api.requirePull = true
 	api.pullBodyErr = errors.New("stream broken")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "alpine:3.20"
 	_, err := b.Create(context.Background(), s)
@@ -986,7 +972,7 @@ func TestCreate_PullReadError(t *testing.T) {
 func TestCreate_CreateError(t *testing.T) {
 	api := newFakeClient()
 	api.createErr = errors.New("daemon exploded")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	s := baseSpec()
 	s.Image = "alpine:3.20"
 	_, err := b.Create(context.Background(), s)
@@ -1004,7 +990,7 @@ func TestCreate_CreateError(t *testing.T) {
 // TestSlug pins the backend's namespacing slug (docker -> "docker"), which the
 // service uses to compose `slug:internalID` session ids.
 func TestSlug(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	if b.Slug() != "docker" {
 		t.Fatalf("Slug() = %q, want docker", b.Slug())
 	}
@@ -1014,7 +1000,7 @@ func TestSlug(t *testing.T) {
 // and calls the Docker remove API with the raw container id (SPEC §7.8).
 func TestDestroy_StripsNamespacedID(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1032,7 +1018,7 @@ func TestDestroy_StripsNamespacedID(t *testing.T) {
 func TestExec_StripsNamespacedID(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1053,7 +1039,7 @@ func TestExec_StripsNamespacedID(t *testing.T) {
 // raw container id.
 func TestInfo_StripsNamespacedID(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1070,7 +1056,7 @@ func TestInfo_StripsNamespacedID(t *testing.T) {
 // raw container id.
 func TestStats_StripsNamespacedID(t *testing.T) {
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)

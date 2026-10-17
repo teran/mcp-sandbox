@@ -20,7 +20,9 @@ import (
 	"github.com/teran/mcp-sandbox/application/profile"
 	"github.com/teran/mcp-sandbox/application/session"
 	sandboxtool "github.com/teran/mcp-sandbox/application/tools/sandbox"
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
+	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/role"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 	domainsession "github.com/teran/mcp-sandbox/domain/session"
@@ -77,6 +79,12 @@ type Service struct {
 	// profiles is the read-only operator profile store (Phase 7). It serves as
 	// both the sandbox-create ProfileResolver and the profile_list Lister.
 	profiles *profile.Store
+
+	// drivers maps a profile's concrete driver token to its builder (SPEC
+	// §6.11/§7.11). BuildSpec dispatches through it, fail-closed on an unknown
+	// driver. It defaults to the process-wide driver.Default (seeded by the
+	// built-in docker/seatbelt builders) and can be overridden in tests.
+	drivers *driver.Registry
 }
 
 // driverRuntime couples a constructed backend with its session manager.
@@ -92,6 +100,7 @@ func NewService(reg *backend.Registry, cfg backend.Config, opts ...Option) *Serv
 		cfg:      cfg,
 		log:      serviceLog,
 		runtimes: make(map[spec.Driver]*driverRuntime),
+		drivers:  driver.Default,
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -221,10 +230,39 @@ func (s *Service) Policy() sandboxtool.Policy {
 // single docker backend, so this is the policy backend name.
 func (s *Service) BackendName() string { return s.Policy().Backend }
 
+// BuildSpec assembles a typed SandboxSpec from an operator-authored profile and
+// per-request params by dispatching to the profile's concrete driver builder via
+// the driver registry (SPEC §6.11/§7.11). It fails closed: an unknown driver is
+// rejected with driver.ErrUnknownDriver, never silently falling back. The
+// builder receives the immutable defaultIsolation() as Policy, so a profile can
+// never weaken hardening.
+func (s *Service) BuildSpec(p *domainprofile.Profile, params domainprofile.Params) (spec.SandboxSpec, error) {
+	builder, err := s.drivers.Get(p.Driver)
+	if err != nil {
+		return spec.SandboxSpec{}, err
+	}
+
+	return builder.Build(driver.Context{
+		Name:        p.Name,
+		Description: p.Description,
+		Cwd:         p.Cwd,
+		Shell:       p.Shell,
+		Options:     p.Options,
+		Policy:      s.defaultIsolation(),
+		Params:      params,
+	})
+}
+
 // Create builds a sandbox from a typed spec (search-before-create, X02). The
 // spec's driver drives backend selection (SPEC §7.12); each driver has its own
-// runtime, so docker and seatbelt sandboxes coexist.
+// runtime, so docker and seatbelt sandboxes coexist. EnforceHardening runs FIRST
+// (before backend selection/creation): it re-asserts the immutable Isolation
+// policy on the spec and gates every mount source by cfg.AllowDirs (S04),
+// fail-closed, so a weakened or out-of-scope spec never reaches a backend.
 func (s *Service) Create(ctx context.Context, sp spec.SandboxSpec) (*domainsession.Session, error) {
+	if err := spec.EnforceHardening(s.defaultIsolation(), &sp, s.cfg.AllowDirs); err != nil {
+		return nil, err
+	}
 	d, err := s.resolveDriver(ctx, sp.Driver)
 	if err != nil {
 		return nil, err

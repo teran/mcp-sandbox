@@ -113,13 +113,17 @@ Highlights:
   **explicit only** — see [Sandbox lifecycle](#sandbox-lifecycle). Automatic
   idle-reaping and orphan cleanup are **future work** (not implemented today).
 
-### Driver architecture (direction)
+### Driver architecture
 
-> **Status: design direction — not yet implemented** (see `SPEC.md` §6.11,
-> §7.11, §7.13, §7.14). The current profile schema still uses the typed `docker:` /
-> `seatbelt:` blocks; the direction below is the agreed target. **Delivery
-> roadmap:** Phase 1 = in-process Go plugins; Phase 2 (later) = out-of-process
-> IPC (STDIO child + protobuf-like) opening other languages.
+> **Status: implemented (in-process driver registry + opaque `options:`).** The
+> profile schema is now `driver:` (required) + opaque **`options:`** and the
+> `docker` / `seatbelt` builders are registered in-process in a driver registry
+> (`domain/sandbox/driver`), with the immutable hardening re-asserted by
+> `EnforceHardening` at the Service level (`SPEC.md` §6.11, §7.11). **Delivery
+> roadmap:** Phase 1 = in-process Go plugins (the implemented part); Phase 2
+> (later, **future work**) = out-of-process IPC (STDIO child + protobuf-like)
+> plus the `SANDBOX_DRIVERS_DIR` loader — opening other languages (not
+> implemented).
 
 A **driver** is a single-sandbox primitive — it implements working with **one**
 sandbox (`Create` / `Destroy` / `Exec` / `Info` / `Stats` / `Available`),
@@ -129,23 +133,25 @@ renamed `Destroy`. All **orchestration** of many sandboxes (session manager,
 routing, lifecycle, HITL, streaming/redaction, `sandbox_list`) is the **server's**
 job.
 
-The direction is a **driver registry + opaque `options:`** so new drivers can be
-added **without a commit to mcp-sandbox** and without linking proprietary code
-into the binary. `driver` becomes the registry key (**required** in the target
-schema; `auto`/empty is removed); the typed `docker:` / `seatbelt:` blocks
-migrate into an opaque, driver-owned **`options:`** blob (**one-shot breaking**
-change — see the migration note below). Built-in names (`docker`, `seatbelt`)
-are reserved and cannot be shadowed; a driver spec that fails validation is
-**rejected**, not patched. The core keeps a **uniform data-plane security floor**:
-after a driver produces the spec it **re-asserts** the immutable `Isolation`
-hardening (`EnforceHardening`), gates every mount source by `ALLOW_DIRS`, and
-fails closed on an unknown driver. For **external non-auditable drivers** that
-floor is **data-plane only** — the mechanism-plane is self-attested and
-unaudited, so a driver must fill a **closed enum** of isolation guarantees with a
-**pessimistic default** (missing = "not guaranteed"), and a declared weakness
-yields an honest **REDUCED-POSTURE marker** (never silently ignored, never
-presented as full isolation). See `SPEC.md` §6.11 for the full security model,
-the IPC/loader requirements and the testability seams.
+The implemented design is a **driver registry + opaque `options:`** so new
+drivers can be added **without a commit to mcp-sandbox** and without linking
+proprietary code into the binary. `driver` is the registry key (**required**;
+`auto`/empty is removed); the typed `docker:` / `seatbelt:` blocks have migrated
+into an opaque, driver-owned **`options:`** blob (**one-shot breaking** change —
+see the [migration guide](#migration-to-driver--options)). Built-in names
+(`docker`, `seatbelt`) are reserved and cannot be shadowed (duplicate
+registration fails closed); a driver spec that fails validation is **rejected**,
+not patched; an unknown driver fails closed at **use** time with
+`ErrUnknownDriver`. The core keeps a **uniform data-plane security floor**: after
+a builder produces the spec the Service **re-asserts** the immutable `Isolation`
+hardening (`EnforceHardening`) and gates every mount source by `ALLOW_DIRS`
+(S04). For **external non-auditable drivers** (Phase 2, future) that floor is
+**data-plane only** — the mechanism-plane is self-attested and unaudited, so a
+driver must fill a **closed enum** of isolation guarantees with a **pessimistic
+default** (missing = "not guaranteed"), and a declared weakness yields an honest
+**REDUCED-POSTURE marker** (never silently ignored, never presented as full
+isolation). See `SPEC.md` §6.11 for the full security model, the IPC/loader
+requirements and the testability seams.
 
 ## Requirements
 
@@ -223,8 +229,8 @@ Example `~/.config/sandbox/profiles/default.yml`:
 ```yaml
 name: default
 description: the default profile
-driver: docker # docker (default) | seatbelt | auto
-docker:
+driver: docker # REQUIRED; the registry key (docker | seatbelt) — auto/empty removed
+options:        # opaque; interpreted ONLY by the selected driver's builder
   image: alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # digest-pinning recommended — replace with the real <repo>@sha256:<64 hex>
   env:
     FOO: bar
@@ -235,8 +241,8 @@ docker:
   network:
     mode: bridge # bridge (default) | none | host
   cgroups:
-    cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core)
-    memory_gb: 1 # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory)
+    cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core); raw nano_cpus takes precedence
+    memory_gb: 1 # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory); raw memory takes precedence
     pids_limit: 256
     ulimits:
       - name: nofile
@@ -264,28 +270,70 @@ cwd:
   and sudo are never exposed (S02).
 - Full schema and trust model: `SPEC.md` §7.11.
 
-> **Schema direction:** the typed `docker:` / `seatbelt:` blocks are the
-> current/migrating form. The agreed target is a `driver: <name>` (**required**;
-> `auto`/empty is removed) + opaque **`options:`** form (breaking schema change)
-> so new drivers can be added without a commit to mcp-sandbox — see
-> [Driver architecture (direction)](#driver-architecture-direction),
-> [Migration to `driver` + `options:`](#migration-to-driver--options) and
-> `SPEC.md` §7.11/§7.14.
+> **Schema (implemented):** a profile is a required **`driver: <name>`** token
+> (`docker` | `seatbelt`; `auto`/empty is removed) plus an opaque **`options:`**
+> blob whose keys are **driver-owned** and interpreted only by the selected
+> driver's builder. `cwd` and `shell` sit at the top level. See
+> [Migration to `driver` + `options:`](#migration-to-driver--options),
+> [Driver architecture](#driver-architecture) and `SPEC.md` §7.11.
 
 ### Migration to `driver` + `options:`
 
-The move from the typed `docker:` / `seatbelt:` blocks to the target
-`driver:` + `options:` form is a **one-shot breaking schema change** (no compat
-shim): `driver` becomes **required** and `auto`/empty is **removed**, and every
-typed block key moves under `options:`. A migration **helper/guide** is provided
-in the repo to automate converting a profile. In short:
+The move from the typed `docker:` / `seatbelt:` blocks to the **final
+implemented** `driver:` + `options:` form is a **one-shot breaking schema change**
+(no compat shim): `driver` is **required** and `auto`/empty is **removed**, and
+every typed block key moves under `options:`. The migration is **done** — the
+old `docker:` / `seatbelt:` blocks are **no longer read** by the server, so any
+still-typed profile must be converted to the new form. A canonical converted
+docker example is bundled at **`examples/profiles/golang.yml`** (uses `driver:`
++ `options:`); the working darwin profile **`examples/profiles/seatbelt.yml`**
+still carries its keys in the legacy `seatbelt:` block and follows the same
+conversion below.
+
+**Key mapping — `docker:` block → `options:`:**
+
+| Old `docker:` key        | New `options:` key                  | Notes                                                                     |
+| ------------------------ | ----------------------------------- | ------------------------------------------------------------------------- |
+| `docker.image`           | `options.image`                     | Required; parse-only reference validation; digest-pinning recommended.    |
+| `docker.env`             | `options.env`                       | `map[string]string`, redacted (S02).                                      |
+| `docker.mounts[]`        | `options.mounts[]`                  | `{source,target,read_only}`; every `source` gated by `ALLOW_DIRS`.        |
+| `docker.network.mode`    | `options.network.mode`              | `bridge`(default)/`none`/`host` (host only when operator-authored).       |
+| `docker.cgroups.nano_cpus` | `options.cgroups.nano_cpus`       | Raw value; takes precedence over `cpu_cores`.                             |
+| `docker.cgroups.memory`  | `options.cgroups.memory`            | Raw value; takes precedence over `memory_gb`.                             |
+| `docker.cgroups.memory_swap` | `options.cgroups.memory_swap`   | Defaults to `memory` when unset (swap disabled).                          |
+| `docker.cgroups.pids_limit` | `options.cgroups.pids_limit`     |                                                                           |
+| `docker.cgroups.cpu_cores` | `options.cgroups.cpu_cores`       | Friendly unit: whole/virtual cores.                                       |
+| `docker.cgroups.memory_gb` | `options.cgroups.memory_gb`       | Friendly unit: whole GiB.                                                 |
+| `docker.cgroups.ulimits` | `options.cgroups.ulimits`           | `{name,soft,hard}` list.                                                  |
+| `docker.user`            | `options.user`                      | `{uid,gid}`, non-root.                                                    |
+| `docker.sudo`            | `options.sudo`                      | `never`(default)/`require`.                                               |
+
+**Key mapping — `seatbelt:` block → `options:`:**
+
+| Old `seatbelt:` key | New `options:` key | Notes                                                       |
+| ------------------- | ------------------ | ----------------------------------------------------------- |
+| `seatbelt.env`      | `options.env`      | Session environment, redacted (S02).                        |
+| `seatbelt.sbpl`     | `options.sbpl`     | Operator SBPL template, appended verbatim (last-match-wins).|
+| `seatbelt.mach_lookups` | `options.mach_lookups` | Extra `(allow mach-lookup …)` services.                |
+| `seatbelt.sysctls`  | `options.sysctls`  | Extra `(allow sysctl-read …)` keys.                         |
+
+> **Unknown `options:` keys fail closed at build time.** Each built-in builder
+> rejects an unknown top-level `options:` key rather than silently ignoring it —
+> the docker builder accepts only `image`, `env`, `mounts`, `network`, `cgroups`,
+> `user`, `sudo`; the seatbelt builder only `sbpl`, `mach_lookups`, `sysctls`,
+> `env`.
+
+**Convert checklist:**
 
 1. Read the existing `docker:` block (or `seatbelt:` block) from your profile.
 2. Set `driver: docker` (or `driver: seatbelt`) at the top level — **required**;
    there is no `auto`/empty form anymore.
-3. Move the block's keys (image, env, mounts, network, cgroups, user, sudo —
-   or env/sbpl/mach_lookups/sysctls) verbatim under a top-level `options:` blob.
-4. Keep `name`, `description`, `cwd`, `shell` as-is.
+3. Move the block's keys under a top-level **`options:`** blob using the mapping
+   tables above.
+4. Keep `name`, `description`, `cwd`, `shell` **top-level** — they are not part
+   of `options:`.
+5. Restart/refresh — profiles are read on demand, so the converted file takes
+   effect immediately on the next lookup.
 
 Example target form:
 
@@ -309,8 +357,9 @@ shell: bash
 ```
 
 The built-in `driver` names `docker` and `seatbelt` are reserved and cannot be
-shadowed by an external driver; a driver spec that fails validation is rejected,
-not patched. Full schema and security model: `SPEC.md` §7.11/§6.11.
+shadowed by an external driver (duplicate registration fails closed); a driver
+spec that fails validation is rejected, not patched; an unknown driver fails
+closed at **use** time. Full schema and security model: `SPEC.md` §7.11/§6.11.
 
 ### Migration from the old `sandbox_create`
 
@@ -363,8 +412,9 @@ process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
 > default. The darwin backend is implemented in
 > `infrastructure/backend/darwin` (portable core + build-tag `os/exec` runner +
 > policy-denial detection + the macOS-specific unified-log `log stream` tailer
-> wrapper behind the `darwin` build tag) and wired via the `seatbelt` profile
-> block, `spec.DriverSeatbelt` and the SBPL generator
+> wrapper behind the `darwin` build tag) and wired via the `seatbelt` driver
+> (registered in the driver registry), `spec.DriverSeatbelt` and the SBPL
+> generator
 > (`domain/sandbox/sbpl`); its logic is covered by unit tests (mock
 > runner/tailer, coverage ≥ 95%) on any GOOS. **Real-macOS verification** — a
 > live `/usr/bin/sandbox-exec` spawn and its exit-code / `IsPolicyDenial`
@@ -473,12 +523,13 @@ backend (or an error) is used instead.
 The darwin backend runs commands under Apple's **Seatbelt** sandbox, whose rules
 are expressed in **SBPL**. The server renders the profile automatically from
 the typed `SandboxSpec`; the operator supplies the permissive tail via the
-profile's `seatbelt.sbpl` block (see [Profiles](#profiles-operator-authored)). A
-working, verified example lives at **`examples/profiles/seatbelt.yml`** — a
-file-deny-all profile validated live against a real macOS host.
+profile's `options.sbpl` (under `driver: seatbelt`, see
+[Profiles](#profiles-operator-authored)). A working, verified example lives at
+**`examples/profiles/seatbelt.yml`** — a file-deny-all profile validated live
+against a real macOS host.
 
-The darwin profile's **`seatbelt:`** block also accepts an optional **`env:`**
-map of session environment variables, mirroring the Docker profile's `env:`
+The darwin profile's `options:` blob also accepts an optional **`env:`** map of
+session environment variables, mirroring the Docker profile's `options.env:`
 (SPEC §7.12). As with Docker profile env, the values are collected into the
 redaction set and **masked from output and logs (S02)** — do **not** put
 secrets here; use tmpfs `0600` secret files instead (see

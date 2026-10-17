@@ -95,7 +95,7 @@ func TestClampUint64(t *testing.T) {
 
 func TestSingleFileTar_InvalidNames(t *testing.T) {
 	// writeSecrets rejects dangerous names before building tar.
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	for _, name := range []string{"", ".", ".."} {
 		if err := b.writeSecrets(context.Background(), "cid", []spec.SecretRef{{Name: name, Value: "x"}}); err == nil {
 			t.Fatalf("writeSecrets(%q) should error", name)

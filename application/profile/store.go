@@ -13,46 +13,23 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
-// yamlProfile mirrors the operator-authored YAML document under the hybrid
-// driver-aware schema (SPEC §7.11/§7.12): a `driver` plus a single
-// `docker`/`seatbelt` block, with `cwd`/`shell` on the top level.
+// yamlProfile mirrors the operator-authored YAML document under the
+// driver-registry schema (SPEC §7.11): a REQUIRED concrete `driver` plus an
+// opaque `options:` blob, with `cwd`/`shell` on the top level. The store parses
+// `options:` into an opaque yaml.Node without interpreting it — the concrete
+// driver builder decodes it.
 type yamlProfile struct {
-	Name        string        `yaml:"name"`
-	Description string        `yaml:"description"`
-	Driver      string        `yaml:"driver"`
-	Docker      *yamlDocker   `yaml:"docker"`
-	Seatbelt    *yamlSeatbelt `yaml:"seatbelt"`
-	Cwd         yamlCwd       `yaml:"cwd"`
-	Shell       string        `yaml:"shell"`
-}
-
-// yamlDocker is the Docker-backend block of a profile (SPEC §7.11).
-type yamlDocker struct {
-	Image   string            `yaml:"image"`
-	Env     map[string]string `yaml:"env"`
-	Mounts  []yamlMount       `yaml:"mounts"`
-	Network yamlNetwork       `yaml:"network"`
-	Cgroups yamlCgroups       `yaml:"cgroups"`
-	User    *yamlUser         `yaml:"user"`
-	Sudo    string            `yaml:"sudo"`
-}
-
-// yamlSeatbelt is the darwin/Seatbelt block of a profile (SPEC §7.12).
-type yamlSeatbelt struct {
-	SBPL        string            `yaml:"sbpl"`
-	MachLookups []string          `yaml:"mach_lookups"`
-	Sysctls     []string          `yaml:"sysctls"`
-	Env         map[string]string `yaml:"env"`
-}
-
-type yamlMount struct {
-	Source   string `yaml:"source"`
-	Target   string `yaml:"target"`
-	ReadOnly bool   `yaml:"read_only"`
+	Name        string    `yaml:"name"`
+	Description string    `yaml:"description"`
+	Driver      string    `yaml:"driver"`
+	Options     yaml.Node `yaml:"options"`
+	Cwd         yamlCwd   `yaml:"cwd"`
+	Shell       string    `yaml:"shell"`
 }
 
 type yamlCwd struct {
@@ -60,118 +37,29 @@ type yamlCwd struct {
 	Mode   string `yaml:"mode"`
 }
 
-type yamlNetwork struct {
-	Mode string `yaml:"mode"`
-}
-
-type yamlUlimit struct {
-	Name string `yaml:"name"`
-	Soft uint64 `yaml:"soft"`
-	Hard uint64 `yaml:"hard"`
-}
-
-// yamlCgroups is the cgroups block of an operator-authored profile. Either the
-// raw values (nano_cpus / memory / memory_swap) or the friendly units
-// (cpu_cores / memory_gb) may be used; the raw values take precedence when both
-// are present. cpu_cores is expressed in whole/virtual cores (1.0 = one core),
-// memory_gb in whole gibibytes.
-type yamlCgroups struct {
-	NanoCPUs   int64        `yaml:"nano_cpus"`
-	Memory     int64        `yaml:"memory"`
-	MemorySwap int64        `yaml:"memory_swap"`
-	PidsLimit  int64        `yaml:"pids_limit"`
-	CPUCores   float64      `yaml:"cpu_cores"`
-	MemoryGB   int64        `yaml:"memory_gb"`
-	Ulimits    []yamlUlimit `yaml:"ulimits"`
-}
-
-type yamlUser struct {
-	UID uint32 `yaml:"uid"`
-	GID uint32 `yaml:"gid"`
-}
-
-// toDomain converts the parsed cgroups block into the domain Cgroups, applying
-// friendly-unit translation (SPEC §7.11). Rules:
-//
-//   - raw values take precedence; friendly units are only consulted when the
-//     corresponding raw value is unset (0);
-//   - cpu_cores -> NanoCPUs (cores * 1e9 nanos);
-//   - memory_gb -> Memory (GiB);
-//   - when only Memory is set, MemorySwap defaults to Memory so the
-//     "memory_swap >= memory" Validate invariant holds with swap disabled.
-// yamlCgroups fields mirror the YAML cgroups block; the _toDomain converter
-// below turns them into domain Cgroups with the server-enforced defaults.
-
-// Conversion constants: CPU cores → nanoseconds and GiB → bytes.
-const (
-	nanoCPUsPerCore = 1_000_000_000
-	bytesPerGiB     = 1024 * 1024 * 1024
-)
-
-func (yc yamlCgroups) toDomain() domainprofile.Cgroups {
-	cg := domainprofile.Cgroups{
-		NanoCPUs:   yc.NanoCPUs,
-		Memory:     yc.Memory,
-		MemorySwap: yc.MemorySwap,
-		PidsLimit:  yc.PidsLimit,
-	}
-	if cg.NanoCPUs == 0 && yc.CPUCores > 0 {
-		cg.NanoCPUs = int64(yc.CPUCores * nanoCPUsPerCore)
-	}
-	if cg.Memory == 0 && yc.MemoryGB > 0 {
-		cg.Memory = yc.MemoryGB * bytesPerGiB
-	}
-	if cg.Memory > 0 && cg.MemorySwap == 0 {
-		cg.MemorySwap = cg.Memory
-	}
-
-	return cg
-}
-
-// toDomain converts the parsed YAML into a domain Profile.
+// toDomain converts the parsed YAML into a domain Profile. The driver is kept
+// as-authored (empty stays empty so Validate rejects it; there is no auto
+// resolution at the profile layer). `options:` is wrapped as an opaque
+// driver.Options; an absent `options:` key yields a nil node.
 func (yp *yamlProfile) toDomain() *domainprofile.Profile {
-	driver := spec.Driver(yp.Driver)
-	if driver == "" {
-		driver = spec.DriverAuto
+	var opts driver.Options
+	if yp.Options.Kind != 0 {
+		opts = driver.NewOptions(&yp.Options)
+	} else {
+		opts = driver.NewOptions(nil)
 	}
 
 	p := &domainprofile.Profile{
 		Name:        yp.Name,
 		Description: yp.Description,
-		Driver:      driver,
+		Driver:      spec.Driver(yp.Driver),
 		Cwd: domainprofile.CwdConfig{
 			Target: yp.Cwd.Target,
 			Mode:   yp.Cwd.Mode,
 		},
+		Shell:   yp.Shell,
+		Options: opts,
 	}
-	if yp.Docker != nil {
-		d := &domainprofile.DockerProfile{
-			Image:   yp.Docker.Image,
-			Env:     yp.Docker.Env,
-			Network: domainprofile.Network{Mode: spec.NetworkMode(yp.Docker.Network.Mode)},
-			Cgroups: yp.Docker.Cgroups.toDomain(),
-			Sudo:    spec.SudoPolicy(yp.Docker.Sudo),
-		}
-		for _, m := range yp.Docker.Mounts {
-			d.Mounts = append(d.Mounts, domainprofile.Mount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
-		}
-		for _, u := range yp.Docker.Cgroups.Ulimits {
-			d.Cgroups.Ulimits = append(d.Cgroups.Ulimits, spec.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
-		}
-		if yp.Docker.User != nil {
-			d.User = &spec.UIDGID{UID: yp.Docker.User.UID, GID: yp.Docker.User.GID}
-		}
-		p.Docker = d
-	}
-	if yp.Seatbelt != nil {
-		p.Seatbelt = &domainprofile.SeatbeltProfile{
-			SBPL:        yp.Seatbelt.SBPL,
-			MachLookups: yp.Seatbelt.MachLookups,
-			Sysctls:     yp.Seatbelt.Sysctls,
-			Env:         yp.Seatbelt.Env,
-		}
-	}
-	p.Shell = yp.Shell
 	if strings.TrimSpace(p.Shell) == "" {
 		p.Shell = "bash"
 	}

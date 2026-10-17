@@ -9,8 +9,11 @@ import (
 	"errors"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/application/tools/registry"
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
@@ -31,29 +34,55 @@ func (f fakeLister) List() ([]*domainprofile.Profile, error) {
 	return f.profiles, nil
 }
 
+// profileListDockerOpts mirrors a docker options blob using only locally-tagged
+// structs (so yaml.Marshal's musttag check is satisfied — the domain spec.UIDGID
+// has no yaml tags and cannot be marshaled directly).
+type profileListDockerOpts struct {
+	Image  string                   `yaml:"image"`
+	Env    map[string]string        `yaml:"env"`
+	Mounts []profileListDockerMount `yaml:"mounts"`
+	User   *profileListDockerUser   `yaml:"user"`
+}
+
+type profileListDockerMount struct {
+	Source   string `yaml:"source"`
+	Target   string `yaml:"target"`
+	ReadOnly bool   `yaml:"read_only"`
+}
+
+type profileListDockerUser struct {
+	UID uint32 `yaml:"uid"`
+	GID uint32 `yaml:"gid"`
+}
+
+// dockerProfile builds a driver+options profile whose opaque Options carry the
+// same sensitive values the pre-migration Docker block did (image, a SECRET env
+// value, a host mount source, a non-root user). The no-leakage test asserts the
+// tool never emits any of them.
+func dockerProfile(name, desc, image, secretVal, mountSrc string) *domainprofile.Profile {
+	opts := profileListDockerOpts{
+		Image:  image,
+		Env:    map[string]string{"SECRET": secretVal},
+		Mounts: []profileListDockerMount{{Source: mountSrc, Target: "/mnt", ReadOnly: true}},
+		User:   &profileListDockerUser{UID: 1000, GID: 1000},
+	}
+	b, _ := yaml.Marshal(opts)
+	var n yaml.Node
+	_ = yaml.Unmarshal(b, &n)
+
+	return &domainprofile.Profile{
+		Name:        name,
+		Description: desc,
+		Driver:      spec.DriverDocker,
+		Options:     driver.NewOptions(&n),
+	}
+}
+
 func testProfiles() []*domainprofile.Profile {
 	return []*domainprofile.Profile{
-		{
-			Name:        "default",
-			Description: "the default profile",
-			Driver:      spec.DriverDocker,
-			Docker: &domainprofile.DockerProfile{
-				Image: "docker.io/library/alpine:3.20",
-				Env:   map[string]string{"SECRET": "envvalue"},
-				Mounts: []domainprofile.Mount{
-					{Source: "/host/secret-dir", Target: "/mnt", ReadOnly: true},
-				},
-				User: &spec.UIDGID{UID: 1000, GID: 1000},
-			},
-		},
-		{
-			Name:        "gpu",
-			Description: "gpu profile",
-			Driver:      spec.DriverDocker,
-			Docker: &domainprofile.DockerProfile{
-				Image: "ghcr.io/org/gpu:v1",
-			},
-		},
+		dockerProfile("default", "the default profile",
+			"docker.io/library/alpine:3.20", "envvalue", "/host/secret-dir"),
+		dockerProfile("gpu", "gpu profile", "ghcr.io/org/gpu:v1", "envvalue2", "/host/gpu"),
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // (host included). It still applies the immutable Isolation hardening and
 // bounded-resource fields.
 func TestBuildHostConfig_NetworkMode(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 
 	// bridge (the default) passes through.
 	s := baseSpec()
@@ -53,7 +53,7 @@ func TestBuildHostConfig_NetworkMode(t *testing.T) {
 // network coercion did not weaken the immutable Isolation hardening applied by
 // buildHostConfig.
 func TestBuildHostConfig_AppliesImmutableHardening(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	hc := b.buildHostConfig(baseSpec(), nil, nil)
 	if !hc.ReadonlyRootfs {
 		t.Error("ReadonlyRootfs must be true")
@@ -87,10 +87,12 @@ func TestBuildHostConfig_AppliesImmutableHardening(t *testing.T) {
 	}
 }
 
-// TestResolveMounts pins Phase 7: resolveMounts RETAINS the ALLOW_DIRS gate for
-// both the cwd mount and every mount source (S04). Sources within an allowed
-// root pass through 1:1 with their ReadOnly flag honoured; sources outside any
-// allowed root are rejected.
+// TestResolveMounts pins Slice 4: resolveMounts passes every existing host path
+// through 1:1 with its ReadOnly flag honoured, and no longer enforces an
+// ALLOW_DIRS containment set of its own — that decision moved to
+// EnforceHardening at the Service level (SPEC §6.11 G). The backend retains
+// TOCTOU integrity: it still EvalSymlinks the path and rejects one that does not
+// resolve (open-then-verify is pinned in docker_verify_test.go).
 func TestResolveMounts(t *testing.T) {
 	allowDir := t.TempDir()
 	proj := filepath.Join(allowDir, "proj")
@@ -100,9 +102,9 @@ func TestResolveMounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	b := newBackendForDirs(newFakeClient(), allowDir)
+	b := newBackend(newFakeClient())
 
-	// A read-only cwd entry within ALLOW_DIRS passes through 1:1.
+	// A read-only cwd entry passes through 1:1.
 	s := baseSpec()
 	s.WorkingDir = proj
 	mounts, err := b.resolveMounts(s)
@@ -124,18 +126,21 @@ func TestResolveMounts(t *testing.T) {
 		t.Fatal("writable mount must not be forced read-only")
 	}
 
-	// A cwd outside ALLOW_DIRS is rejected.
+	// Containment is lifted: an existing source outside any allowed root is now
+	// ACCEPTED (the backend no longer rejects on its own; EnforceHardening owns
+	// the gate at the Service level).
 	s3 := baseSpec()
-	s3.WorkingDir = t.TempDir() // exists, but not under allowDir
-	if _, err := b.resolveMounts(s3); err == nil {
-		t.Fatal("cwd outside ALLOW_DIRS must be rejected")
+	s3.WorkingDir = t.TempDir() // exists, outside any (now-absent) allow set
+	if _, err := b.resolveMounts(s3); err != nil {
+		t.Fatalf("cwd outside a former allow set must be accepted by the backend: %v", err)
 	}
 
-	// A mount source outside ALLOW_DIRS is rejected.
+	// TOCTOU integrity retained: a source that does not exist fails EvalSymlinks
+	// and is rejected before any mount is produced.
 	s4 := baseSpec()
-	s4.Mounts = []spec.Mount{{Source: t.TempDir(), Target: "/mnt", ReadOnly: true}}
+	s4.Mounts = []spec.Mount{{Source: filepath.Join(allowDir, "does-not-exist"), Target: "/mnt", ReadOnly: true}}
 	if _, err := b.resolveMounts(s4); err == nil {
-		t.Fatal("mount source outside ALLOW_DIRS must be rejected")
+		t.Fatal("non-existent mount source must be rejected (EvalSymlinks)")
 	}
 }
 
@@ -149,7 +154,7 @@ func TestResolveMounts_CwdWritableHonorsProfileMode(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b := newBackendForDirs(newFakeClient(), allowDir)
+	b := newBackend(newFakeClient())
 
 	s := baseSpec()
 	s.WorkingDir = proj
@@ -186,7 +191,7 @@ func TestResolveMounts_CwdReadOnlyByDefault(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b := newBackendForDirs(newFakeClient(), allowDir)
+	b := newBackend(newFakeClient())
 
 	// No cwd entry in Mounts → default read-only.
 	s := baseSpec()
@@ -216,7 +221,7 @@ func TestResolveMounts_CwdReadOnlyByDefault(t *testing.T) {
 }
 
 func TestBuildConfig_WorkingDirDefaults(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	s := baseSpec()
 	cfg := b.buildConfig(s, "img", nil)
 	if cfg.WorkingDir != defaultWorkdir {
@@ -238,7 +243,7 @@ func TestBuildConfig_WorkingDirDefaults(t *testing.T) {
 }
 
 func TestWriteSecrets_InvalidName(t *testing.T) {
-	b := newBackendForDirs(newFakeClient())
+	b := newBackend(newFakeClient())
 	for _, n := range []string{"", ".", ".."} {
 		if err := b.writeSecrets(context.Background(), "cid", []spec.SecretRef{{Name: n, Value: "v"}}); err == nil {
 			t.Fatalf("writeSecrets(%q) should error", n)
