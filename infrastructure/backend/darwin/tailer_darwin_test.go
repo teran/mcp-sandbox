@@ -88,20 +88,13 @@ func TestUnifiedLogTailer_LinesCancelCloses(t *testing.T) {
 		if line != "first line" {
 			t.Fatalf("first line = %q, want %q", line, "first line")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(tailerCancelDeadline):
 		t.Fatal("timed out waiting for the first line")
 	}
 
 	cancel()
 
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("channel still open after cancel, want closed")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("channel did not close after cancel")
-	}
+	waitTailerClosed(t, ch, tailerCancelDeadline)
 }
 
 // TestUnifiedLogTailer_CancelWhileBlocked pins the ctx.Done branch of the send
@@ -126,14 +119,7 @@ func TestUnifiedLogTailer_CancelWhileBlocked(t *testing.T) {
 	// the ctx.Done branch and close the channel.
 	cancel()
 
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("channel still open after cancel, want closed")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("channel did not close after cancel")
-	}
+	waitTailerClosed(t, ch, tailerCancelDeadline)
 }
 
 // TestUnifiedLogTailer_StdoutPipeError pins the StdoutPipe failure branch: a
@@ -192,4 +178,38 @@ func drainTailerLines(t *testing.T, ch <-chan string) []string {
 	}
 
 	return got
+}
+
+// tailerCancelDeadline bounds how long a cancellation may take to close the
+// channel. Cancellation→close is an inherently asynchronous chain: SIGKILL the
+// child's process group → its write-end closes → EOF wakes the scanner → the
+// child is reaped → the channel closes. CI runs `go test -race` on shared,
+// loaded macOS runners, which inflates each hop's latency by a large,
+// machine-dependent factor, so a small fixed timeout (e.g. 2s) flakes. The
+// deadline is generous to absorb scheduling noise — it does NOT weaken the
+// assertion: a broken cancel path that never closes the channel still fails
+// within it, while a correct tailer completes in milliseconds.
+const tailerCancelDeadline = 10 * time.Second
+
+// waitTailerClosed blocks until ch is closed, or fails the test after
+// deadline. It returns the moment the channel closes, so a correct tailer
+// finishes promptly; the generous deadline only tolerates -race/CI scheduling
+// noise on the process-kill→EOF→close chain.
+func waitTailerClosed(t *testing.T, ch <-chan string, deadline time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+
+	for {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatal("channel still open, want closed")
+			}
+
+			return
+		case <-timer.C:
+			t.Fatal("channel did not close within deadline")
+		}
+	}
 }

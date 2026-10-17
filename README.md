@@ -23,7 +23,7 @@ container** with the required directories mounted in, executes arbitrary
 commands **inside** that container, and destroys it via explicit
 `sandbox_destroy` / `sandbox_destroy_all` (per-session and ephemeral, but
 **cleanup is explicit** — there is no automatic GC). **Security is the top
-priority** — the sandbox is *more* restrictive than the host, never less.
+priority** — the sandbox is _more_ restrictive than the host, never less.
 
 - **MVP scope:** the **Docker** backend, plus an **experimental macOS
   `sandbox-exec` (Seatbelt) backend** (implemented — portable core wired +
@@ -134,16 +134,16 @@ Binary releases are published on GitHub tags (goreleaser).
 The server is configured via **environment variables** (Local / stdio server —
 auth via environment, no HTTP headers).
 
-| Env | Default | Description |
-|-----|---------|-------------|
-| `ALLOW_DIRS` | `[]` (none) | Permitted host directories for mounts — gates the session `cwd` **and** every profile mount `source`. Empty ⇒ deny all. **Still required** (Phase 7). |
-| `ALLOW_SYMLINKS` | `false` | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off). |
-| `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker daemon socket (unix). |
-| `LOG_LEVEL` | *(unset ⇒ logging disabled)* | Enable + level. stdio logging is **on only when set**. |
-| `LOG_FILENAME` | — | stdio log file path, `chmod 600`. |
-| `LOG_FORMAT` | `text` | `text` or `json`. |
-| `SANDBOX_IDLE_TIMEOUT` | `15m` | Accepted but **not yet effective** — the idle reaper is not wired into the running server, so this has no effect today (future work). |
-| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles` | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). Read **on demand** on each profile lookup — edits take effect without restarting the server. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
+| Env                    | Default                       | Description                                                                                                                                                                                                                                                                             |
+| ---------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ALLOW_DIRS`           | `[]` (none)                   | Permitted host directories for mounts — gates the session `cwd` **and** every profile mount `source`. Empty ⇒ deny all. **Still required** (Phase 7).                                                                                                                                   |
+| `ALLOW_SYMLINKS`       | `false`                       | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off).                                                                                                                                                                                                                    |
+| `DOCKER_HOST`          | `unix:///var/run/docker.sock` | Docker daemon socket (unix).                                                                                                                                                                                                                                                            |
+| `LOG_LEVEL`            | _(unset ⇒ logging disabled)_  | Enable + level. stdio logging is **on only when set**.                                                                                                                                                                                                                                  |
+| `LOG_FILENAME`         | —                             | stdio log file path, `chmod 600`.                                                                                                                                                                                                                                                       |
+| `LOG_FORMAT`           | `text`                        | `text` or `json`.                                                                                                                                                                                                                                                                       |
+| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Accepted but **not yet effective** — the idle reaper is not wired into the running server, so this has no effect today (future work).                                                                                                                                                   |
+| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles`  | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). Read **on demand** on each profile lookup — edits take effect without restarting the server. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
 
 > **Removed in Phase 7:** `SANDBOX_CWD_MODE` (→ profile `cwd.mode`),
 > `SANDBOX_CGROUP_CPU_LIMIT_CORES` / `SANDBOX_CGROUP_MEMORY_LIMIT_GB`
@@ -184,13 +184,13 @@ mounts:
     target: /data
     read_only: true
 cwd:
-  target: ""   # empty ⇒ mounted 1:1 at the same absolute path (default)
-  mode: ro     # ro (default) | rw
+  target: "" # empty ⇒ mounted 1:1 at the same absolute path (default)
+  mode: ro # ro (default) | rw
 network:
   mode: bridge # bridge (default) | none | host
 cgroups:
-  cpu_cores: 1        # human-readable: whole/virtual cores (1.0 = one core)
-  memory_gb: 1        # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory)
+  cpu_cores: 1 # human-readable: whole/virtual cores (1.0 = one core)
+  memory_gb: 1 # human-readable: whole GiB (swap disabled ⇒ memory_swap = memory)
   pids_limit: 256
   ulimits:
     - name: nofile
@@ -225,7 +225,7 @@ both **required** (with `session_id`). To migrate:
 1. Author a profile capturing the desired image/env/mounts/limits/user/sudo in
    `SANDBOX_PROFILES_DIR` (see above).
 2. Call `sandbox_create` with `{ "profile": "default", "session_id": "...",
-   "cwd": "...", "secrets": [...] }` — no other runtime knobs.
+"cwd": "...", "secrets": [...] }` — no other runtime knobs.
 3. Any un-migrated caller that passes the old parameters is rejected with
    `InvalidParams`.
 
@@ -269,27 +269,31 @@ process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
 > wrapper behind the `darwin` build tag) and wired via the `seatbelt` profile
 > block, `spec.DriverSeatbelt` and the SBPL generator
 > (`domain/sandbox/sbpl`); its logic is covered by unit tests (mock
-> runner/tailer, coverage ≥ 95%) on any GOOS. **Real-macOS verification** (a
-> live `/usr/bin/sandbox-exec` spawn and a live unified-log `log stream` tail —
-> which cannot run inside a Docker/CI sandbox) is exercised by the **darwin e2e
-> smoke tests** (`//go:build e2e && darwin`) under `make e2e` on a dedicated
-> macOS CI `e2e` job (see Development). The darwin backend is **macOS-only** and
+> runner/tailer, coverage ≥ 95%) on any GOOS. **Real-macOS verification** — a
+> live `/usr/bin/sandbox-exec` spawn and its exit-code / `IsPolicyDenial`
+> signals (which cannot run inside a Docker/CI sandbox) — is exercised by the
+> **darwin e2e smoke tests** (`//go:build e2e && darwin`) under `make e2e` on a
+> dedicated macOS CI `e2e` job (see Development). The unified-log `log stream`
+> **tailer is not** exercised by the e2e — it is covered by `darwin`-tagged unit
+> tests only, not a live log stream (see `SPEC.md` §7.12). The darwin backend is
+> **macOS-only** and
 > provides **policy-based containment, not kernel/container isolation** — it is
 > strictly weaker than the Docker backend.
 
-> **Current limitation (darwin exec):** the **server-rendered SBPL baseline is
-> deny-default and does NOT grant `process-exec*`** — `sbpl.Generate` emits
-> `(deny default)` + network + mach + sysctl + file + the operator
-> `seatbelt.sbpl`, but no `process-exec*`. Without it, `sandbox-exec` fails at
-> `execvp()` of the shell. To actually run a command, the **operator-authored
-> `seatbelt.sbpl` in the darwin profile MUST include `(allow process-exec*)`**
-> (plus the file-read/mach/sysctl allowances the shell and its runtime need —
-> `/bin`, `/usr/bin`, `/usr/lib`, dyld). The bundled `seatbelt` examples only
-> grant `network-outbound`/`process-fork`, so they are **illustrative for
-> create/list but not yet sufficient to exec commands** on a live host. This gap
-> is open (see `SPEC.md` §7.12). The darwin e2e drives `sandbox-exec` with an
-> `(allow default)` SBPL directly, so it does **not** validate exec under the
-> server-generated baseline.
+> **Darwin exec — the operator tail must grant exec.** The **server-rendered SBPL
+> baseline is deny-default and does NOT emit `process-exec*`** — `sbpl.Generate`
+> emits imports → `(deny default)` → network → mach → sysctl → file → the
+> operator `seatbelt.sbpl` (last, verbatim), but no `process-exec*`. Without it,
+> `sandbox-exec` fails at `execvp()` of the shell. To actually run a command,
+> the **operator-authored `seatbelt.sbpl` in the darwin profile must grant exec
+> — either with `(allow process-exec*)` (plus the file-read/mach/sysctl
+> allowances the shell and its runtime need — `/bin`, `/usr/bin`, `/usr/lib`,
+> dyld), or with `(allow default)`** for non-file operations plus a narrowed
+> file scope. Both forms work. **A working, verified file-deny-all profile is
+> bundled at `examples/profiles/seatbelt.yml`** (validated live against a real
+> macOS host) — see the SBPL guide below. The darwin e2e drives `sandbox-exec`
+> with an `(allow default)` SBPL directly, so it does **not** validate exec
+> under the server-generated baseline (see `SPEC.md` §7.12).
 
 **What it is**
 
@@ -302,9 +306,9 @@ and no image**:
 - **Every `sandbox_exec` spawns a fresh `sandbox-exec` child process**
   (`os/exec`, `CGO_ENABLED=0`) running `<shell> -c <command>` under the profile
   rules. There is no persistent container to enter.
-- `sandbox_destroy` / `sandbox_destroy_all` signal live child processes
-  (`SIGTERM`, then `SIGKILL` after a grace period) and drop the in-memory
-  session.
+- `sandbox_destroy` / `sandbox_destroy_all` `SIGKILL` the whole process group
+  of live child processes (there is **no SIGTERM / grace period** — see
+  `SPEC.md` §7.12) and drop the in-memory session.
 
 **When to use it**
 
@@ -323,17 +327,17 @@ and no image**:
 
 **Differences from the Docker backend**
 
-| Aspect | Docker backend | `sandbox-exec` backend |
-|--------|----------------|------------------------|
-| Isolation | container (namespaces, cgroups, read-only rootfs, seccomp) | seatbelt/MAC profile on a plain process (policy-based) |
-| Runtime | image + mounts + tmpfs `/run`,`/tmp` | SBPL profile rules; `cwd`/`ALLOW_DIRS` as `(allow\|deny file-*)` rules |
-| Session | provisioned container | in-memory record (SBPL + env + cwd) |
-| Exec | exec into existing container | new `sandbox-exec` child per call |
-| Cleanup | explicit destroy; `AutoRemove` | explicit destroy; kill children on destroy/timeout |
-| `sandbox_stats` | cgroup resource usage | **not supported** (no cgroups) → `ErrCapabilityNotSupported` |
-| Resource limits | cgroup quotas | soft `setrlimit` only (`Memory`/`NanoCPUs`/`PidsLimit` not mappable) |
-| Root inside | scoped `exec -u 0` | subject to seatbelt policy / current user |
-| Portability | Linux/macOS (with daemon) | **macOS only** |
+| Aspect          | Docker backend                                             | `sandbox-exec` backend                                                 |
+| --------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Isolation       | container (namespaces, cgroups, read-only rootfs, seccomp) | seatbelt/MAC profile on a plain process (policy-based)                 |
+| Runtime         | image + mounts + tmpfs `/run`,`/tmp`                       | SBPL profile rules; `cwd`/`ALLOW_DIRS` as `(allow\|deny file-*)` rules |
+| Session         | provisioned container                                      | in-memory record (SBPL + env + cwd)                                    |
+| Exec            | exec into existing container                               | new `sandbox-exec` child per call                                      |
+| Cleanup         | explicit destroy; `AutoRemove`                             | explicit destroy; kill children on destroy/timeout                     |
+| `sandbox_stats` | cgroup resource usage                                      | **not supported** (no cgroups) → `ErrCapabilityNotSupported`           |
+| Resource limits | cgroup quotas                                              | soft `setrlimit` only (`Memory`/`NanoCPUs`/`PidsLimit` not mappable)   |
+| Root inside     | scoped `exec -u 0`                                         | subject to seatbelt policy / current user                              |
+| Portability     | Linux/macOS (with daemon)                                  | **macOS only**                                                         |
 
 **Example configuration**
 
@@ -367,6 +371,75 @@ backend (or an error) is used instead.
 > running. A `destroy` while an `exec` is active must signal the child before
 > dropping the session.
 
+### Writing a Seatbelt (SBPL) profile
+
+The darwin backend runs commands under Apple's **Seatbelt** sandbox, whose rules
+are expressed in **SBPL**. The server renders the profile automatically from
+the typed `SandboxSpec`; the operator supplies the permissive tail via the
+profile's `seatbelt.sbpl` block (see [Profiles](#profiles-operator-authored)). A
+working, verified example lives at **`examples/profiles/seatbelt.yml`** — a
+file-deny-all profile validated live against a real macOS host.
+
+**Generation order.** `sbpl.Generate` emits sections in a fixed order — imports
+→ `(deny default)` → network → mach → sysctl → file → **your `seatbelt.sbpl`
+last, verbatim**. Because the last matching rule wins in Seatbelt, the operator
+tail is where you selectively re-open surfaces the server baseline closed. In
+detail:
+
+1. `(import "system.sb")`, then `(deny default)` — the deny-everything baseline.
+2. **Network**: `(deny network*)` for `none` (default); `(allow network-outbound)`
+   for `bridge`/`host`.
+3. **Mach**: `(deny mach-lookup)` plus an `(allow mach-lookup (global-name …))`
+   per `mach_lookups` entry.
+4. **Sysctl**: `(deny sysctl*)` plus an `(allow sysctl-read …)` per `sysctls`
+   entry.
+5. **File**: `(allow file-read* …)` for every mount source / working dir inside
+   `ALLOW_DIRS` (or the scratch dir); `(allow file-write* …)` only for read-write
+   mounts, a `cwd.mode=rw` working dir and the scratch dir. Paths **outside
+   `ALLOW_DIRS` are silently skipped** — deny-by-default (S04).
+6. Your operator `seatbelt.sbpl`, appended **last** and verbatim.
+
+**Minimal recipe to actually run a command.** The server baseline does **not**
+emit `(allow process-exec*)`, so `sandbox-exec` fails at `execvp()` of the shell
+unless the operator tail grants exec. Either form works:
+
+- **`(allow process-exec*)`** plus the file/mach/sysctl grants the shell and
+  dyld need; or
+- **`(allow default)`** for non-file operations (process/mach/syscall/iokit/ipc)
+  and narrow the **file** surface with explicit `(deny file-read*)` /
+  `(deny file-write*)` + allow-lists — the model used by the working
+  `examples/profiles/seatbelt.yml`.
+
+In both cases remember:
+
+- `shell` **must be an absolute path** (`/bin/bash`) — `sandbox-exec` runs
+  `execvp(shell)` against the **server** process `PATH`, not the per-exec env.
+- The **dyld chain must be readable**: keep `/usr/lib`, `/System/Library`,
+  `/usr/bin`, `/bin` in file-read scope — macOS cannot start any binary without
+  it.
+- Grant `(allow file-read-metadata)` **globally**: it exposes only
+  `stat`/`readlink` (never contents) and lets `go`, `golangci-lint`, `make`,
+  `git` resolve path components without whitelisting every directory.
+- Add `(allow network-outbound)` only if the command needs the network
+  (curl/git fetch).
+
+**Debugging denials.** `(debug deny)` does **not** work on macOS 26 — the
+`debug` macro is absent from `system.sb` (SBPL v3), so it fails with
+`unbound variable: debug`. Diagnose instead with:
+`log stream --predicate 'subsystem == "com.apple.sandbox"'`.
+
+> **`(allow default)` weakens the boundary — know the trade-off.** In the
+> file-deny-all model, `(allow default)` is _required_ for non-file operations
+> (the shell needs dozens of them and cannot start under a hand-listed
+> deny-all), but it **re-opens** mach-lookup, sysctl, iokit, IPC, network and
+> syscall. Because your `seatbelt.sbpl` is appended last, it **overrides** the
+> server's `(deny default)`, `(deny network*)`, `(deny mach-lookup)` and
+> `(deny sysctl*)`. What actually isolates the example is the **file** scope —
+> and `(allow network-outbound)` cannot be restricted by destination on macOS,
+> so a compromised process could exfiltrate or reach internal services. Treat
+> this backend as a file/network confinement convenience, never as container
+> isolation (see the security posture below).
+
 ## OpenCode setup
 
 Use mcp-sandbox as the execution environment for **opencode** instead of the
@@ -379,9 +452,7 @@ In your opencode config (`opencode.jsonc`), deny the built-in `shell` tool:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "permissions": [
-    { "action": "shell", "resource": "*", "effect": "deny" }
-  ]
+  "permissions": [{ "action": "shell", "resource": "*", "effect": "deny" }],
 }
 ```
 
@@ -402,11 +473,11 @@ server:
         "command": ["mcp-sandbox"],
         "environment": {
           "ALLOW_DIRS": "{env:PWD}",
-          "LOG_LEVEL": "info"
-        }
-      }
-    }
-  }
+          "LOG_LEVEL": "info",
+        },
+      },
+    },
+  },
 }
 ```
 
@@ -546,13 +617,35 @@ Review and choose the socket access model appropriate to your host. See
 
 The `sandbox-exec` backend (`SPEC.md` §7.12) is **policy-based containment,
 not kernel/container isolation** and is strictly **weaker** than the Docker
-backend: it shares the host kernel (no namespaces), has **no cgroup resource
-quotas** (only soft `setrlimit`), **no network isolation**, and no live
-`Introspectable` stats. It blocks direct access to disallowed paths (e.g.
-`cat ~/.secret`) at the kernel level via a deny-by-default SBPL profile, with
-**SBPL-injection validation** on every path. It is a convenience for macOS
-hosts — treat it as a lower-security alternative to the Docker backend, never
-as an equivalent.
+backend:
+
+- **Shared host kernel** — no namespaces; an SBPL bypass or kernel bug is a
+  full host compromise at the operator's privilege, not a root boundary.
+- **No cgroup resource quotas** — only soft per-process `setrlimit`
+  (`nofile`/`cpu`/`as`/`nproc`/`fsize`/`stack`/`core`); a runaway process can
+  degrade the whole host (DoS). `sandbox_stats` → `ErrCapabilityNotSupported`.
+- **No network isolation** — macOS has no network namespaces, so only
+  `network-outbound` is enforceable and it cannot be restricted by destination.
+- **No uid change** — the sandbox runs as the **current host user** (`UIDGID`
+  is not applied; only `euid != 0` is refused), sharing the host user's identity.
+- **No `no-new-privileges` / read-only-rootfs / cap-drop / tmpfs-workdir
+  enforcement** — those immutable `Isolation` fields are validated by
+  `spec.Validate`, but the darwin backend has **no mechanism** to enforce them
+  (`runner_darwin.go` applies only `Setpgid`). See `SPEC.md` §7.12.
+- **No image / digest supply-chain boundary** — there is no image; SBPL runs on
+  host libraries against the operator-authored profile.
+- **Deprecated Apple API** — `/usr/bin/sandbox-exec(1)` and `sandbox_init(3)`
+  are deprecated and **not guaranteed** by Apple as a security boundary.
+- **`(allow default)` boundary reduction** — where the operator profile uses
+  `(allow default)` for non-file operations, it re-opens mach-lookup/sysctl/
+  iokit/ipc/network/syscall; the real isolation is then the **file** scope only.
+
+It blocks direct access to disallowed paths (e.g. `cat ~/.secret`) at the
+kernel level via a deny-by-default SBPL profile, with **SBPL-injection
+validation** on every typed path (each path is rejected if it contains any SBPL
+metacharacter). It is a convenience for macOS hosts — treat it as a
+lower-security alternative to the Docker backend, never as an equivalent. Full
+threat model: `SPEC.md` §7.13.
 
 ## Development
 
@@ -566,7 +659,7 @@ Tests are never weakened to make the implementation pass.
   (fails below).
 - **Mutation testing:** gremlins as a hard gate (80/80) — dedicated CI job.
 - **e2e:** **scoped** — a **darwin e2e smoke suite** exists (`//go:build e2e &&
-  darwin`) and runs under the generic **`make e2e`** (`go test -tags e2e ./...`)
+darwin`) and runs under the generic **`make e2e`** (`go test -tags e2e ./...`)
   on a **dedicated macOS CI `e2e` job**; on Linux it is excluded by the `darwin`
   build tag (there is **no `e2e-darwin` target** by design). **Docker-in-Docker
   e2e remains out of scope** — a real Docker e2e would need a nested/rootless
