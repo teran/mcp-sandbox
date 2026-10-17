@@ -193,8 +193,9 @@ primitives are displayed; the visible `command` is the primary display scalar).
 Output is ANSI-sanitized; the command runs under the sandbox user with
 `no-new-privileges`; only allowed capabilities are available. A scoped
 `user: root` / sudo-classed exec runs as uid 0 per the sandbox's `SudoPolicy`
-(§7.10) — never `--privileged`. Note: the `command` is recorded as-is in the
-access-log and is **not** a channel for secrets (see §7.3 S02 disclaimer).
+(§7.10) — never `--privileged`. Note: the `command`, per-exec `env` and
+`summary` are recorded as-is in the access-log and are **not** a channel for
+secrets (see §7.3 S02 disclaimer).
 Optional `timeout` (seconds) is honored as a `context.WithTimeout` cancellation
 that also reaches the Docker API calls and any progress stream (§6.10);
 `timeout == 0` means no deadline.
@@ -771,21 +772,25 @@ itself can **never** be weakened (by profile or caller).
   to the `notifications/progress` chunks emitted while a command runs, so no
   secret leaks through the live-streaming channel.
 
-> **⚠ command is logged as-is (S02 disclaimer).** The access-log line (L08)
-> records the `sandbox_exec` `command` **as passed** — the access-log path is
-> **not** run through secret-value redaction. This is a **deliberate design
-> choice**: the secret model is struct-annotation-based, and `command` is a
-> free-form command line for which **no** secret values are known in advance, so
-> they **cannot** be reliably masked if one ever appeared there. **Contract /
-> expectation:** `command` is **not** a channel for secrets — secrets are
+> **⚠ `command`, `env` and `summary` are logged as-is (S02 disclaimer).** The
+> access-log line (L08) records the `sandbox_exec` `command`, the per-exec
+> `env` (a `map[string]string` of literal `KEY=VALUE` entries) and `summary`
+> **as passed** — the access-log path is **not** run through secret-value
+> redaction. This is a **deliberate design choice**: the secret model is
+> struct-annotation-based, and `command`, `env` and `summary` are free-form for
+> which **no** secret values are known in advance, so they **cannot** be
+> reliably masked if one ever appeared there. **Contract / expectation:**
+> `command`, `env` and `summary` are **not** a channel for secrets — secrets are
 > delivered as tmpfs `0600` files (§7.3) and must never be placed in a command
-> line. Operators who may pass sensitive values in a command line should note
-> that:
+> line or an env entry. The same applies to the `start` event of the
+> `notifications/progress` stream (§5.1), which echoes the redacted-later
+> `command`/`summary` to the initiating client. Operators who may pass sensitive
+> values in a command line, an env entry or a summary should note that:
 >
 > - the access log is written to `LOG_FILENAME` (`chmod 600`, operator-owned); and
 > - logging is **opt-in** — it is enabled **only when `LOG_LEVEL` is set**
->   (L02); with `LOG_LEVEL` unset no log file is written and no command is
->   persisted at all.
+>   (L02); with `LOG_LEVEL` unset no log file is written and no `command`/`env`/
+>   `summary` is persisted at all.
 
 ### 7.4 Strict input & output validation (S08/S09)
 
@@ -1376,14 +1381,70 @@ no-shell-concat preserved.
   is explicit per platform, and the absence of an available backend surfaces
   `ErrNoAvailableBackend` rather than silently degrading (§6.3).
 
-### 7.13 Domain security audit — darwin / `sandbox-exec` backend (S14)
+### 7.13 Domain security audit — Docker MVP & darwin / `sandbox-exec` backend (S14)
 
-This subsection is the **consolidated, authoritative** threat model for the
-darwin backend. It supersedes the scattered per-item notes in §7.12 as the
-single source of truth for security review, and cross-references §7.12
-(mechanism / projection / lifecycle) and §8 (data & state).
+This subsection is the **consolidated, authoritative** threat model. It covers
+**both** backends: the **Docker MVP** (default) and the **darwin / `sandbox-exec`**
+backend. It supersedes the scattered per-item notes in §7.1–§7.12 as the single
+source of truth for security review, and cross-references §7.12 (mechanism /
+projection / lifecycle) and §8 (data & state).
 
-#### Trust zones
+#### Docker MVP — consolidated audit
+
+The Docker backend is the **default** isolation mechanism (kernel/container
+isolation via namespaces + cgroups + seccomp + read-only rootfs). Its threat
+model is distributed across §7.1–§7.11; this block consolidates it.
+
+##### Trust zones (Docker)
+
+| Zone                                                         | Trust                          | Notes                                                                                                                                                                                    |
+| ------------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Model-host caller**                                        | **Untrusted**                  | Supplies only a typed `SandboxSpec`; can never weaken the immutable `Isolation` block or widen `ALLOW_DIRS` (§6.5/§7.1).                                                                 |
+| **Operator profile author**                                  | **Trusted**                    | Authors the read-only profile (image/env/mounts/network/limits/user/sudo); can choose `host` network or any registry image, but can **never** weaken the immutable `Isolation` block (§7.1/§7.11). |
+| **Sandbox container**                                        | **Untrusted**                  | A possibly-hostile command runs inside an isolated, hardened container (namespaces, cgroups, seccomp, read-only rootfs, non-root).                                                       |
+| **Host kernel**                                              | **Isolated (kernel boundary)** | Container isolation is a **kernel-escape** boundary; a container escape would be a host compromise at operator privilege (§7.7 target is gVisor/runsc).                                  |
+| **Docker daemon / socket**                                   | **Trusted but privileged**     | The Docker socket is effectively root on the host (§7.6); access is confined to the server process and never exposed to the model-host.                                                  |
+
+##### Threat vectors (Docker, D1–D6)
+
+| ID     | Threat                                                                   | Docker exposure                                                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **D1** | **Container escape (kernel-escape)**                                     | **MED-HIGH.** No gVisor/runsc yet (roadmap §7.7); a kernel/container-runtime vulnerability could escape to the host at operator privilege. Mitigated by hardened defaults (seccomp, cap-drop ALL, no-new-privileges, non-root, read-only rootfs).       |
+| **D2** | **Host-path access via mounts**                                          | **LOW-MED.** Host access only via `ALLOW_DIRS` (S04), read-only by default; `EvalSymlinks` + open-then-verify + `O_NOFOLLOW` reject escapes; hardlinks mitigated at OS level (§7.2). A `cwd.mode=rw` mount widens the host-write surface.             |
+| **D3** | **Privilege escalation inside the container**                            | **MED.** Commands run unprivileged by default; scoped `exec -u 0` gives container-internal uid 0 still bounded by cap-drop ALL + no-new-privileges + read-only rootfs — never `--privileged`, never host root (§7.10).                                  |
+| **D4** | **Resource exhaustion (DoS)**                                            | **LOW-MED.** cgroup quotas (`Memory`/`MemorySwap`/`NanoCPUs`/`PidsLimit`/`Ulimits`) bound the container (§7.1). A runaway container cannot degrade the whole host beyond its quota.                                                                       |
+| **D5** | **Supply chain / image**                                                 | **MED (operator-managed).** Image comes from the operator profile; **digest-pinning is the recommended convention** (§7.9). No registry allowlist — the operator is the trust boundary for the image source.                                             |
+| **D6** | **Network reach-in / exfiltration**                                      | **MED.** Network comes from the operator profile: `bridge` (safe default) or `none`; `host` only when operator-authored (§7.1). Outbound connectivity is operator-controlled.                                                                            |
+
+##### Data-sensitivity (Docker, C-I-A)
+
+| Property            | Assessment                                                                                                                                                                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Confidentiality** | Stronger: container isolation + read-only rootfs + non-root; host filesystem visible only within `ALLOW_DIRS` (read-only default). Secrets delivered as tmpfs `0600` files, never argv/image/env (§7.3).                                                     |
+| **Integrity**       | Container-internal writes only into writable tmpfs `/tmp` (+ `cwd` when `mode=rw`); host-visible state is protected by read-only mounts and the immutable `Isolation` block.                                                                                |
+| **Availability**    | cgroup resource quotas bound the container; explicit-only cleanup means orphaned containers are possible on server exit without destroy (§6.6, future orphan-GC).                                                                                         |
+
+##### Auditor checklist (Docker, filled)
+
+| Check                                                      | Result                                                                                                               |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Immutable `Isolation` hardening (read-only rootfs, cap-drop ALL, no-new-privileges, seccomp, non-root)? | ✅ Enforced by the server, cannot be weakened by caller or profile (§7.1). |
+| Host-path gate (`ALLOW_DIRS`, S04) + symlink safety?       | ✅ `EvalSymlinks` + open-then-verify + `O_NOFOLLOW`; `ALLOW_SYMLINKS` default `false` (§7.2).                        |
+| No shell/SQL/URL concatenation (S11)?                      | ✅ Fixed `[<shell>,"-c",command]` wrapper; no user string interpolated into a shell string (§7.5).                  |
+| Secrets out of argv/env/image (S02)?                       | ✅ Redaction + tmpfs `0600` secret files (§7.3); `command`/`env`/`summary` disclaimer recorded.                     |
+| Resource budgets?                                          | ✅ cgroup quotas (`Memory`/`NanoCPUs`/`PidsLimit`/`Ulimits`), profile-overridable but never below hardening (§7.1).  |
+| Privilege model (scoped root only)?                        | ✅ `exec -u 0` bounded by immutable block; never `--privileged` (§7.10).                                             |
+| Docker socket access confined?                             | ✅ Documented known limitation (§7.6); never exposed to output/tools.                                                |
+| Cleanup explicit + idempotent?                             | ✅ Explicit `destroy`; `AutoRemove=true`; idempotent (X02); no automatic GC (§6.6).                                  |
+
+**Verdict (Docker S14):** the Docker MVP is the **security target** — a
+kernel-escape boundary with hardened defaults. Residual dominant risks are **D1**
+(kernel escape — mitigate toward gVisor/runsc, §7.7) and **D5** (supply chain —
+mitigate with digest-pinning, §7.9). The Docker path is the supported, stronger
+isolation mechanism; the darwin backend below is strictly weaker and must not be
+presented as equivalent.
+
+#### Trust zones (darwin)
 
 | Zone                                                         | Trust                          | Notes                                                                                                                                                                                    |
 | ------------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1393,7 +1454,7 @@ single source of truth for security review, and cross-references §7.12
 | **Host kernel / Mach / IPC**                                 | **Shared, not isolated**       | No namespaces; the child shares the kernel and Mach namespace with every other host process.                                                                                             |
 | **Apple runtime (`sandbox-exec`/`sandboxd`/`sandbox_init`)** | **Deprecated, not guaranteed** | Formally `API_DEPRECATED`; not guaranteed by Apple as a security boundary for hostile code.                                                                                              |
 
-#### Threat vectors (T1–T8)
+#### Threat vectors (darwin, T1–T8)
 
 | ID     | Threat                                                                   | darwin exposure                                                                                                                                                                                                                                           |
 | ------ | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1406,7 +1467,7 @@ single source of truth for security review, and cross-references §7.12
 | **T7** | **Supply-chain / image**                                                 | **N/A (no image).** No image/digest boundary (§7.9 not applicable); SBPL executes on host libraries. The risk shifts entirely to an over-broad operator profile.                                                                                          |
 | **T8** | **Operator-profile over-breadth (`(allow default)` boundary reduction)** | **HIGH (explicit).** Because the operator tail is appended last, `(allow default)` re-opens mach-lookup/sysctl/iokit/ipc/network/syscall; the **file** scope is the only real isolation in that model. `network-outbound` cannot be destination-limited.  |
 
-#### Data-sensitivity (C-I-A)
+#### Data-sensitivity (darwin, C-I-A)
 
 | Property            | Assessment                                                                                                                                                                                                                                                 |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1414,7 +1475,7 @@ single source of truth for security review, and cross-references §7.12
 | **Integrity**       | Weakened: a compromised child can write anywhere the SBPL allows (a `cwd.mode=rw` or host `rw` mount) and, without kernel isolation, tamper with host-visible state at operator privilege if SBPL is bypassed.                                             |
 | **Availability**    | Weakened: no resource quotas; explicit-only cleanup means orphaned children are possible on server exit without destroy (§8).                                                                                                                              |
 
-#### Auditor checklist (filled)
+#### Auditor checklist (darwin, filled)
 
 | Check                                                      | Result                                                                                                               |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -1617,7 +1678,7 @@ socket**, accessed through the **official `github.com/docker/docker` SDK**.
 ## 13. Conformance summary (MUST / MUST-NOT)
 
 **MUST satisfied:** M01–M07, C01, C02, C04, C05, T01, T02, C01GO–C09GO,
-S01–S12, R02, R05, R06, R07, B01, B02, B05, L01–L09,
+S01–S12, **S14**, R02, R05, R06, R07, B01, B02, B05, L01–L09,
 L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 
 **Explicitly not applicable (documented):**
@@ -1645,7 +1706,12 @@ e2e && darwin`, `make e2e` on a dedicated macOS CI `e2e` job, §11); listed as
 undeclared optional Makefile targets; N36 — CI read-only; N05GO — official
 Docker SDK, not low-level `http.Client`).
 
-> **§7.12 note:** the darwin/`sandbox-exec` driver section does **not** change
-> any existing MUST/NOT; it records an **additional** contract for the
+> **§7.12/§7.13 note:** the darwin/`sandbox-exec` driver section does **not**
+> change any existing MUST/NOT; it records an **additional** contract for the
 > macOS-only backend with a strictly reduced threat model (policy-based
-> containment, not kernel isolation).
+> containment, not kernel isolation). **§7.13** now carries the consolidated
+> **S14 domain security audit for both backends** — a filled Docker-audit block
+> (trust zones, D1–D6 vectors, C-I-A, auditor checklist) and the darwin audit
+> (T1–T8) — satisfying **S14/N38** (recorded trust boundaries + concrete threat
+> model + data-sensitivity classification + filled auditor checklist for the
+> actual domain).
