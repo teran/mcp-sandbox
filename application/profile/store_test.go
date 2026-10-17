@@ -403,8 +403,8 @@ docker:
 }
 
 // TestGet_SeatbeltSandboxBlockParsed pins that the hybrid schema parses a
-// seatbelt profile with a `seatbelt:` block (SBPL + mach_lookups + sysctls) into
-// the domain SeatbeltProfile, with the docker block nil (SPEC §7.12).
+// seatbelt profile with a `seatbelt:` block (SBPL + mach_lookups + sysctls +
+// env) into the domain SeatbeltProfile, with the docker block nil (SPEC §7.12).
 func TestGet_SeatbeltSandboxBlockParsed(t *testing.T) {
 	const yaml = `name: mac
 description: a seatbelt profile
@@ -417,6 +417,8 @@ seatbelt:
     - com.apple.system.logger
   sysctls:
     - kern.osversion
+  env:
+    MY_VAR: hello-from-profile
 cwd:
   mode: ro
 `
@@ -445,6 +447,9 @@ cwd:
 	}
 	if len(p.Seatbelt.Sysctls) != 1 || p.Seatbelt.Sysctls[0] != "kern.osversion" {
 		t.Fatalf("Sysctls = %+v", p.Seatbelt.Sysctls)
+	}
+	if p.Seatbelt.Env["MY_VAR"] != "hello-from-profile" {
+		t.Fatalf("Env = %+v, want profile env", p.Seatbelt.Env)
 	}
 }
 

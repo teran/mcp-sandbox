@@ -96,6 +96,7 @@ type SeatbeltProfile struct {
 	SBPL        string
 	MachLookups []string
 	Sysctls     []string
+	Env         map[string]string
 }
 
 // Profile is a fully-populated operator-authored profile. It is READ-ONLY by
@@ -415,6 +416,7 @@ func (p *Profile) applySeatbelt(sp *spec.SandboxSpec) {
 		MachLookups: seatbelt.MachLookups,
 		Sysctls:     seatbelt.Sysctls,
 	}
+	sp.Env = seatbelt.Env
 	sp.UIDGID = sp.Isolation.User
 	sp.Sudo = spec.SudoNever
 	sp.Resources = spec.Resources{

@@ -1019,7 +1019,7 @@ Schema key reference (`domain/sandbox/profile.Profile`):
 | `user`        | `{uid,gid}`                                         | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user.                                                                                                                                                                                          |
 | `sudo`        | string                                              | Optional. `never`(default)/`require`.                                                                                                                                                                                                                                     |
 | `shell`       | string                                              | Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image. |
-| `seatbelt`    | `{sbpl,mach_lookups,sysctls}`                       | Optional. **darwin/Seatbelt only (§7.12)** — carries the operator SBPL template (merged after server-hardening ops), extra `mach-lookup` services and `sysctl` keys. Ignored by the Docker backend. Validation rejects only NUL in `sbpl`.                                |
+| `seatbelt`    | `{env,sbpl,mach_lookups,sysctls}`                   | Optional. **darwin/Seatbelt only (§7.12)** — carries the session environment (`env`, redacted per S02 like Docker profile `env`), the operator SBPL template (merged after server-hardening ops), extra `mach-lookup` services and `sysctl` keys. Ignored by the Docker backend. Validation rejects only NUL in `sbpl`.                             |
 
 #### Loader & store (read-only)
 
@@ -1164,6 +1164,9 @@ backend (`domain/sandbox/spec.Sandbox`):
 
 ```yaml
 seatbelt: # optional; darwin/Seatbelt
+  env: # optional; session environment (redacted per S02, §7.3)
+    GIT_AUTHOR_NAME: "Igor Shishkin"
+    GIT_AUTHOR_EMAIL: "me@teran.dev"
   sbpl: | # operator SBPL merged AFTER server-hardening ops
     (import "system.sb")
     (allow process-fork)
@@ -1174,8 +1177,12 @@ seatbelt: # optional; darwin/Seatbelt
 ```
 
 `domain/sandbox/profile.Profile.Seatbelt` is a `*SeatbeltProfile` (SBPL,
-MachLookups, Sysctls) that `BuildSpec` projects into `spec.Sandbox{SBPL,
-MachLookups, Sysctls}`. **The operator `seatbelt.sbpl` is appended verbatim
+Env, MachLookups, Sysctls) that `BuildSpec` projects into
+`SandboxSpec{Env, Sandbox: spec.Sandbox{SBPL, MachLookups, Sysctls}}` —
+the `env` values populate the session environment (delivered via `cmd.Env`,
+redacted per S02 like Docker profile `env`, §7.3) and the SBPL/mach/sysctl
+fields fill the `spec.Sandbox` block consumed by the darwin backend. **The
+operator `seatbelt.sbpl` is appended verbatim
 (last-match-wins) and does NOT pass through the `sbpl` metacharacter validators**
 (`ValidatePath`/`ValidateMachName`/`ValidateSysctlName`) — only a NUL byte is
 rejected (`profile.ValidateSeatbelt`, `spec.Validate`). This is a deliberate

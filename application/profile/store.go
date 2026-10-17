@@ -43,9 +43,10 @@ type yamlDocker struct {
 
 // yamlSeatbelt is the darwin/Seatbelt block of a profile (SPEC §7.12).
 type yamlSeatbelt struct {
-	SBPL        string   `yaml:"sbpl"`
-	MachLookups []string `yaml:"mach_lookups"`
-	Sysctls     []string `yaml:"sysctls"`
+	SBPL        string            `yaml:"sbpl"`
+	MachLookups []string          `yaml:"mach_lookups"`
+	Sysctls     []string          `yaml:"sysctls"`
+	Env         map[string]string `yaml:"env"`
 }
 
 type yamlMount struct {
@@ -167,6 +168,7 @@ func (yp *yamlProfile) toDomain() *domainprofile.Profile {
 			SBPL:        yp.Seatbelt.SBPL,
 			MachLookups: yp.Seatbelt.MachLookups,
 			Sysctls:     yp.Seatbelt.Sysctls,
+			Env:         yp.Seatbelt.Env,
 		}
 	}
 	p.Shell = yp.Shell
