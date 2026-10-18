@@ -195,7 +195,7 @@ type execInput struct {
 // sandboxExecDef declares sandbox_exec: run a command via the sandbox's
 // configured shell wrapper.
 func sandboxExecDef(b builder) *def.ToolDef {
-	return writeTool(b, "sandbox_exec", "Execute a command in a sandbox",
+	d := writeTool(b, "sandbox_exec", "Execute a command in a sandbox",
 		"Execute a command inside the sandbox via its configured shell. Runs under the sandbox user "+
 			"by default; user=root runs as scoped uid 0 per the sudo policy. Output is ANSI-sanitized.",
 		"Pass the command as a single string, never a shell string (it is executed via the sandbox's "+
@@ -216,6 +216,12 @@ func sandboxExecDef(b builder) *def.ToolDef {
 		nil, // no secret fields: command/env are not sensitive and are kept visible in access logs
 		execHandler(b),
 	)
+	// Hoist the redacted command/summary to top-level access-log fields and drop
+	// the args map (L08), so the executed command is visible without the noise
+	// of the whole args map.
+	d.AccessLogHoist = []string{"command", "summary"}
+
+	return d
 }
 
 // execHandler builds the sandbox_exec handler: parse and validate the input,

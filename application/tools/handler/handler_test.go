@@ -375,3 +375,120 @@ func TestAccessLogEntry(t *testing.T) {
 		t.Fatal("duration not set")
 	}
 }
+
+// hoistTool returns a ToolDef whose AccessLogHoist contract declares command
+// and summary (the sandbox_exec contract), so the wrapper must hoist those
+// redacted args to top-level access-log fields and drop the args map (L08).
+func hoistTool() *def.ToolDef {
+	return &def.ToolDef{
+		Name:           "sandbox_exec",
+		Title:          "T",
+		Description:    "D",
+		Instructions:   "I",
+		AccessLogHoist: []string{"command", "summary"},
+		InputSchema: stringSchema(map[string]*jsonschema.Schema{
+			"id":      {Type: "string"},
+			"command": {Type: "string"},
+			"summary": {Type: "string"},
+		}, []string{"id", "command"}),
+		OutputSchema: &jsonschema.Schema{Type: "object"},
+		Handler:      func(_ context.Context, _ json.RawMessage) (any, error) { return map[string]any{}, nil },
+	}
+}
+
+// TestCall_HoistsCommandAndSummaryAndDropsArgs pins the new sandbox_exec
+// access-log behavior: for a tool that declares AccessLogHoist, the redacted
+// command and summary become top-level fields on the AccessLogEntry and the
+// args map is dropped entirely (no args= field) (L08).
+func TestCall_HoistsCommandAndSummaryAndDropsArgs(t *testing.T) {
+	al := &fakeAccessLogger{}
+	d := hoistTool()
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{
+		"id":      "seatbelt:darwin-2",
+		"command": "git status ...",
+		"summary": "verify status",
+	})}}
+	if _, err := Call(context.Background(), newDeps(al, nil), d, req); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	entries := al.entries()
+	if len(entries) != 1 {
+		t.Fatalf("access log entries = %d, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Tool != "sandbox_exec" {
+		t.Fatalf("Tool = %q, want sandbox_exec", e.Tool)
+	}
+	if e.Command != "git status ..." {
+		t.Fatalf("Command = %q, want %q", e.Command, "git status ...")
+	}
+	if e.Summary != "verify status" {
+		t.Fatalf("Summary = %q, want %q", e.Summary, "verify status")
+	}
+	if e.Args != nil {
+		t.Fatalf("Args = %#v, want nil (args map dropped for hoisted tool)", e.Args)
+	}
+}
+
+// TestCall_HoistedToolMissesArgsKeysStillDropsArgs pins that a hoisted tool
+// whose redacted args lack one of the declared keys must not leave a partial
+// args map and must not panic; the missing key's field stays empty.
+func TestCall_HoistedToolMissesArgsKeysStillDropsArgs(t *testing.T) {
+	al := &fakeAccessLogger{}
+	d := hoistTool()
+	// Omit "summary" from the arguments.
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{
+		"id":      "seatbelt:darwin-2",
+		"command": "git status ...",
+	})}}
+	if _, err := Call(context.Background(), newDeps(al, nil), d, req); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	e := al.entries()[0]
+	if e.Command != "git status ..." {
+		t.Fatalf("Command = %q", e.Command)
+	}
+	if e.Summary != "" {
+		t.Fatalf("Summary = %q, want empty (key absent from args)", e.Summary)
+	}
+	if e.Args != nil {
+		t.Fatalf("Args = %#v, want nil even with a missing hoisted key", e.Args)
+	}
+}
+
+// TestCall_NonHoistedToolKeepsArgsMap pins that tools without an
+// AccessLogHoist contract (i.e. every tool except sandbox_exec) keep the
+// current behavior: Args stays populated with the redacted map and Command/
+// Summary stay empty (L08).
+func TestCall_NonHoistedToolKeepsArgsMap(t *testing.T) {
+	al := &fakeAccessLogger{}
+	d := testTool(func(_ context.Context, _ json.RawMessage) (any, error) { return map[string]any{}, nil })
+	if len(d.AccessLogHoist) != 0 {
+		t.Fatalf("testTool unexpectedly declares AccessLogHoist %v", d.AccessLogHoist)
+	}
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{"path": "/x"})}}
+	if _, err := Call(context.Background(), newDeps(al, nil), d, req); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	entries := al.entries()
+	if len(entries) != 1 {
+		t.Fatalf("access log entries = %d, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Command != "" {
+		t.Fatalf("Command = %q, want empty for non-hoisted tool", e.Command)
+	}
+	if e.Summary != "" {
+		t.Fatalf("Summary = %q, want empty for non-hoisted tool", e.Summary)
+	}
+	if e.Args == nil {
+		t.Fatal("Args is nil, want redacted args map for non-hoisted tool")
+	}
+	m, ok := e.Args.(map[string]any)
+	if !ok {
+		t.Fatalf("Args = %T, want map[string]any", e.Args)
+	}
+	if m["path"] != "/x" {
+		t.Fatalf("Args = %#v, want path=/x", m)
+	}
+}

@@ -1079,24 +1079,28 @@ itself can **never** be weakened (by profile or caller).
   to the `notifications/progress` chunks emitted while a command runs, so no
   secret leaks through the live-streaming channel.
 
-> **⚠ `command`, `env` and `summary` are logged as-is (S02 disclaimer).** The
-> access-log line (L08) records the `sandbox_exec` `command`, the per-exec
-> `env` (a `map[string]string` of literal `KEY=VALUE` entries) and `summary`
-> **as passed** — the access-log path is **not** run through secret-value
-> redaction. This is a **deliberate design choice**: the secret model is
-> struct-annotation-based, and `command`, `env` and `summary` are free-form for
-> which **no** secret values are known in advance, so they **cannot** be
-> reliably masked if one ever appeared there. **Contract / expectation:**
-> `command`, `env` and `summary` are **not** a channel for secrets — secrets are
+> **⚠ `command` and `summary` are logged as-is (S02 disclaimer).** The
+> access-log line (L08) records the `sandbox_exec` `command` and `summary`
+> **as passed**, hoisted to **top-level** `command`/`summary` fields via the
+> tool's `AccessLogHoist` contract (§6.4) — the access-log path is **not** run
+> through secret-value redaction. This is a **deliberate design choice**: the
+> secret model is struct-annotation-based, and `command`/`summary` are free-form
+> for which **no** secret values are known in advance, so they **cannot** be
+> reliably masked if one ever appeared there. The per-exec `env` override map (a
+> `map[string]string` of literal `KEY=VALUE` entries) lives **inside the
+> `sandbox_exec` args map**, which is **dropped** for that tool (the whole
+> `args` map is omitted in favour of the hoisted `command`/`summary`), so `env`
+> is **no longer logged** for `sandbox_exec`. **Contract / expectation:**
+> `command` and `summary` are **not** a channel for secrets — secrets are
 > delivered as tmpfs `0600` files (§7.3) and must never be placed in a command
 > line or an env entry. The same applies to the `start` event of the
 > `notifications/progress` stream (§5.1), which echoes the redacted-later
 > `command`/`summary` to the initiating client. Operators who may pass sensitive
-> values in a command line, an env entry or a summary should note that:
+> values in a command line or a summary should note that:
 >
 > - the access log is written to `LOG_FILENAME` (`chmod 600`, operator-owned); and
 > - logging is **opt-in** — it is enabled **only when `LOG_LEVEL` is set**
->   (L02); with `LOG_LEVEL` unset no log file is written and no `command`/`env`/
+>   (L02); with `LOG_LEVEL` unset no log file is written and no `command`/
 >   `summary` is persisted at all.
 
 ### 7.4 Strict input & output validation (S08/S09)
@@ -2169,7 +2173,12 @@ true` is declared only where such a mechanism exists.
 - **Access log (L08/L03GO):** every `tools/call` emits a **per-request line at
   `info`** (visible whenever logging is enabled — **no `debug` gate**) with
   structured fields `tool`, non-sensitive redacted `args`, `source` (`STDIO`),
-  `duration`, `outcome` (`ok`/`error`); **no secrets**.
+  `duration`, `outcome` (`ok`/`error`); **no secrets**. **`sandbox_exec`
+  exception:** via its `AccessLogHoist` contract (§6.4), the redacted `command`
+  and `summary` args are hoisted to **top-level** `command`/`summary` fields and
+  the whole `args` map is **dropped** for that tool — so the per-exec `env`
+  override map, which lives inside the args map, is **no longer logged** for
+  `sandbox_exec`. Every **other** tool logs the `args` map unchanged.
 - **`request_id` correlation (L09/L04GO):** generated per request, carried via
   context (`WithRequestID`/`RequestIDFromContext`), threaded on every log
   record.
