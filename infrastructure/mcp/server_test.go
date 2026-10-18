@@ -101,6 +101,57 @@ func TestAccessLogger_EmitsLine(t *testing.T) {
 	}
 }
 
+// TestAccessLogger_EmitsHoistedCommandAndSummary pins the new sandbox_exec
+// emission: when an entry carries Command/Summary and a nil Args, the line has
+// command and summary as top-level fields and NO args field (L08).
+func TestAccessLogger_EmitsHoistedCommandAndSummary(t *testing.T) {
+	var buf bytes.Buffer
+	base := logrus.New()
+	base.SetOutput(&buf)
+	al := NewAccessLogger(base.WithField("server", "test"))
+	al.AccessLog(handler.AccessLogEntry{
+		Tool: "sandbox_exec", Command: "git status ...", Summary: "verify status",
+		Source: "STDIO", Outcome: "ok", RequestID: "r1",
+	})
+	out := buf.String()
+	for _, want := range []string{
+		"tools/call",
+		`command="git status ..."`,
+		`summary="verify status"`,
+		"tool=sandbox_exec",
+		"source=STDIO",
+		"outcome=ok",
+		"request_id=r1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log line missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "args=") {
+		t.Fatalf("log line must NOT contain args= when Args is nil: %s", out)
+	}
+}
+
+// TestAccessLogger_EmitsArgsForNonHoisted pins that a normal (non-hoisted)
+// entry still emits the args map and no command/summary fields (L08).
+func TestAccessLogger_EmitsArgsForNonHoisted(t *testing.T) {
+	var buf bytes.Buffer
+	base := logrus.New()
+	base.SetOutput(&buf)
+	al := NewAccessLogger(base.WithField("server", "test"))
+	al.AccessLog(handler.AccessLogEntry{
+		Tool: "sandbox_list", Args: map[string]any{"x": "y"},
+		Source: "STDIO", Outcome: "ok", RequestID: "r1",
+	})
+	out := buf.String()
+	if !strings.Contains(out, "args=") {
+		t.Fatalf("log line missing args= for non-hoisted entry: %s", out)
+	}
+	if strings.Contains(out, "command=") || strings.Contains(out, "summary=") {
+		t.Fatalf("log line must not emit command/summary when empty: %s", out)
+	}
+}
+
 func TestHandlerDependencies(t *testing.T) {
 	l, err := logging.New(logging.Options{})
 	if err != nil {

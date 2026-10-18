@@ -242,7 +242,10 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
 - **SDK logger (L07/L03GO):** the go-sdk `slog` logger is wired into logrus.
 - **Access log (L08/L03GO):** every `tools/call` emits a line **at `info`**
   (visible whenever logging is on — no `debug` gate) with `tool`, redacted
-  `args`, `source` (`STDIO`), `duration`, `outcome`.
+  `args`, `source` (`STDIO`), `duration`, `outcome`. **`sandbox_exec` only:**
+  `command`/`summary` are hoisted to **top-level** fields and the whole `args`
+  map (including the per-exec `env`) is dropped for that tool; every other tool
+  keeps logging the `args` map unchanged.
 - **`request_id` (L09/L04GO):** per request, via context.
 - **Logger:** `logrus` (N04GO). **No secrets in logs (L05).**
 

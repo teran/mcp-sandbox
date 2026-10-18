@@ -68,6 +68,11 @@ type ToolDef struct {
 	// RedactionContract lists the sensitive fields of the output (S02). The
 	// wrapper redacts these from every emitted value.
 	RedactionContract []RedactionField
+	// AccessLogHoist lists argument keys whose redacted values are hoisted to
+	// top-level access-log fields (L08) instead of being logged inside the args
+	// map. When non-empty, the wrapper promotes those args and drops the whole
+	// args map from the log line. Empty for every tool except sandbox_exec.
+	AccessLogHoist []string
 	// Handler implements the tool.
 	Handler ToolHandler
 }

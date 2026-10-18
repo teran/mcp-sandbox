@@ -218,6 +218,13 @@ export LOG_FILENAME=/tmp/mcp-sandbox.log
 ./mcp-sandbox
 ```
 
+> **Access log (L08):** every `tools/call` is logged at `info` with `tool`,
+> redacted `args`, `source`, `duration`, `outcome` and `request_id`. For
+> `sandbox_exec` only, the redacted `command`/`summary` are hoisted to
+> top-level fields and the whole `args` map is omitted (so the per-exec `env`
+> is no longer logged for that tool); every other tool logs the `args` map
+> unchanged. See `SPEC.md` §9.
+
 ## Profiles (operator-authored)
 
 Sandboxes are created from **operator-authored, read-only YAML profiles** — one

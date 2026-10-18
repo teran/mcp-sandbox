@@ -22,16 +22,27 @@ func NewAccessLogger(entry *logrus.Entry) *AccessLogger {
 	return &AccessLogger{entry: entry}
 }
 
-// AccessLog emits the per-call line (L08).
+// AccessLog emits the per-call line (L08). For a hoisted entry (sandbox_exec)
+// it emits the top-level command/summary fields and omits args entirely; for a
+// normal entry it emits the args map and no command/summary.
 func (a *AccessLogger) AccessLog(e handler.AccessLogEntry) {
-	a.entry.WithFields(logrus.Fields{
+	fields := logrus.Fields{
 		"tool":       e.Tool,
-		"args":       e.Args,
 		"source":     e.Source,
 		"duration":   e.Duration.Milliseconds(),
 		"outcome":    e.Outcome,
 		"request_id": e.RequestID,
-	}).Info("tools/call")
+	}
+	if e.Command != "" {
+		fields["command"] = e.Command
+	}
+	if e.Summary != "" {
+		fields["summary"] = e.Summary
+	}
+	if e.Args != nil {
+		fields["args"] = e.Args
+	}
+	a.entry.WithFields(fields).Info("tools/call")
 }
 
 // TraceLogger adapts the shared handler-wrapper's trace hook to the server's

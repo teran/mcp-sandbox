@@ -33,8 +33,16 @@ const Source = "STDIO"
 type AccessLogEntry struct {
 	// Tool is the tool name.
 	Tool string
-	// Args are the redacted arguments (never secret-bearing).
+	// Args are the redacted arguments (never secret-bearing). It is nil for a
+	// tool whose AccessLogHoist contract promotes command/summary to top-level
+	// fields (L08), so the log line omits the whole args map.
 	Args any
+	// Command is the hoisted redacted `command` argument for tools that declare
+	// an AccessLogHoist contract (sandbox_exec). Empty otherwise.
+	Command string
+	// Summary is the hoisted redacted `summary` argument for tools that declare
+	// an AccessLogHoist contract (sandbox_exec). Empty otherwise.
+	Summary string
 	// Source is the transport source ("STDIO").
 	Source string
 	// Duration is the wall-clock time of the call.
@@ -130,14 +138,23 @@ func Call(ctx context.Context, deps Dependencies, tool *def.ToolDef, req *mcp.Ca
 	outcome := "ok"
 
 	defer func() {
-		deps.AccessLogger.AccessLog(AccessLogEntry{
+		entry := AccessLogEntry{
 			Tool:      tool.Name,
 			Args:      redactedArgs,
 			Source:    Source,
 			Duration:  time.Since(start),
 			Outcome:   outcome,
 			RequestID: requestID,
-		})
+		}
+		// A tool with an AccessLogHoist contract promotes the redacted
+		// command/summary args to top-level fields and drops the whole args map
+		// (L08). The decision is a declared contract on the ToolDef, never a
+		// tool-name string compare, so the wrapper stays decoupled from names.
+		if len(tool.AccessLogHoist) > 0 {
+			hoistArgs(redactedArgs, tool.AccessLogHoist, &entry)
+			entry.Args = nil
+		}
+		deps.AccessLogger.AccessLog(entry)
 		trace.Tracef("handler: call done")
 	}()
 
@@ -234,6 +251,26 @@ func parseArgs(args json.RawMessage) any {
 	}
 
 	return v
+}
+
+// hoistArgs promotes the redacted values of the declared hoist keys from the
+// args map to the matching top-level AccessLogEntry fields (L08). It is driven
+// purely by the tool's declared AccessLogHoist contract, never by a tool-name
+// compare. A key absent from the args (or non-string) leaves its field empty.
+func hoistArgs(args any, keys []string, e *AccessLogEntry) {
+	m, ok := args.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, k := range keys {
+		v, _ := m[k].(string)
+		switch k {
+		case "command":
+			e.Command = v
+		case "summary":
+			e.Summary = v
+		}
+	}
 }
 
 // IsInvalidArguments reports whether err is an invalid-arguments (S08) failure

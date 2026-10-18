@@ -245,6 +245,26 @@ func TestSandboxExec_NoArgvRedaction(t *testing.T) {
 	}
 }
 
+// TestSandboxExec_AccessLogHoist pins the wiring: sandbox_exec declares the
+// AccessLogHoist contract ["command","summary"] so the shared wrapper hoists
+// those redacted args to top-level access-log fields and drops the args map
+// (L08). No other sandbox tool may declare the contract.
+func TestSandboxExec_AccessLogHoist(t *testing.T) {
+	svc := newFake()
+	d := toolByName(t, svc, "sandbox_exec")
+	if !reflect.DeepEqual(d.AccessLogHoist, []string{"command", "summary"}) {
+		t.Fatalf("sandbox_exec AccessLogHoist = %v, want [command summary]", d.AccessLogHoist)
+	}
+	for _, other := range All(svc) {
+		if other.Name == "sandbox_exec" {
+			continue
+		}
+		if len(other.AccessLogHoist) != 0 {
+			t.Fatalf("%s must not declare AccessLogHoist %v", other.Name, other.AccessLogHoist)
+		}
+	}
+}
+
 func TestSandboxList_Handler(t *testing.T) {
 	svc := newFake()
 	sp := defaultPolicy().Isolation

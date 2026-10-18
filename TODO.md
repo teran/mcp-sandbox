@@ -335,10 +335,14 @@ impl) with `@security` review first.
       phase before SIGKILL on destroy / timeout / cancel so children can flush/
       clean up; update `SPEC.md` §7.12 and `README.md` — `@developer`/`@qa`,
       `X05 C01 C04GO T01`
-- [ ] **Always-mask `command`/`env` in the `sandbox_exec` access-log (R-4,
-      stopgap):** owner decision 2026-10-18 — for now mask **ALL** env values and
-      the whole `command` string in the access-log (no name/value heuristics;
-      revisit value-based redaction against known session secrets later) —
+- [ ] **Always-mask `command`/`summary` in the `sandbox_exec` access-log (R-4,
+      stopgap):** owner decision 2026-10-18 — for now mask the whole `command`
+      string in the access-log (no name/value heuristics; revisit value-based
+      redaction against known session secrets later). Since the `AccessLogHoist`
+      change `command`/`summary` are logged as **top-level** fields and the whole
+      `args` map — including the per-exec `env` — is **dropped** for
+      `sandbox_exec` (L08), so masking now targets the top-level
+      `command`/`summary` fields (env is no longer logged at all). —
       `@developer`/`@qa`, `S02 L05 L08 T01 C01`
 - [ ] **Correct SPEC/README darwin "per-session 0700 secret dir" claims (R-2):**
       `SPEC.md` §7.12/§7.13 (str. 1676/1801/1951) and `README.md` §seatbelt state
