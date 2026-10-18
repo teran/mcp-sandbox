@@ -278,6 +278,60 @@ func TestEnforceHardening_EmptyMountSourceTarget(t *testing.T) {
 	}
 }
 
+// TestEnforceHardening_TraversalRejected (F1, HIGH) pins the fail-closed
+// traversal defense in allowedSource: a mount source (and every allowDir) must
+// be an ABSOLUTE path with NO "." or ".." path component. Without this, a
+// hostile model-host can pass cwd=/allowed/../.ssh or a mount source like
+// /allowed/sub/../../etc, which lexically passes the ALLOW_DIRS gate, defeats
+// the Docker backend's TOCTOU-only verifyHostPath, and bind-mounts a host path
+// OUTSIDE ALLOW_DIRS into the sandbox (confidentiality/integrity breach of host
+// files, defeats S04/N03). Mirrors the darwin backend (hasDotComponent +
+// isSubpath in domain/sandbox/sbpl/sbpl.go).
+func TestEnforceHardening_TraversalRejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		allowDirs []string
+		source    string
+		wantErr   bool
+	}{
+		// The reported exploit: ".." escapes an allowed root into .ssh.
+		{"dotdot into hidden dir", []string{"/allowed"}, "/allowed/../.ssh", true},
+		// Deep escape through multiple ".." components.
+		{"deep traversal escape", []string{"/allowed"}, "/allowed/sub/../../etc", true},
+		// Bare ".." as the final component escapes to the parent of the root.
+		{"dotdot at end", []string{"/allowed"}, "/allowed/..", true},
+		// Relative source with a ".." component must never be admitted.
+		{"relative dotdot", []string{"/allowed"}, "..", true},
+		// A relative "." source is ambiguous and must be rejected.
+		{"dot source", []string{"/allowed"}, ".", true},
+		// Non-absolute sources must always be rejected (require absolute path).
+		{"relative non-absolute", []string{"/allowed"}, "relative/x", true},
+		// An allowDir that itself contains a ".." component is malformed and must
+		// never admit anything — not even a source that lexically nests under it.
+		{"malformed allowDir with dotdot", []string{"/allowed/.."}, "/allowed/../x", true},
+
+		// --- Negative controls (regression; must STILL pass) ---
+		{"equal to allow dir", []string{"/allowed"}, "/allowed", false},
+		{"nested directly under", []string{"/allowed"}, "/allowed/x", false},
+		{"nested deep under", []string{"/allowed"}, "/allowed/a/b", false},
+		// Trailing slash is normalized away and remains a valid, in-scope source.
+		{"trailing slash normalized", []string{"/allowed"}, "/allowed/", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := validSpec()
+			s.Mounts = []Mount{{Source: c.source, Target: "/mnt"}}
+			err := EnforceHardening(validIsolation(), s, c.allowDirs)
+			if c.wantErr && err == nil {
+				t.Fatalf("source %q with allowDirs %v: expected error (traversal/ambiguous path), got nil", c.source, c.allowDirs)
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("source %q with allowDirs %v: expected nil, got: %v", c.source, c.allowDirs, err)
+			}
+		})
+	}
+}
+
 // TestEnforceHardening_NoPartialMutationOnError pins the fail-closed contract:
 // on a failing call EnforceHardening must NOT mutate the spec at all — not even
 // the immutable hardening fields it would otherwise re-assert.
