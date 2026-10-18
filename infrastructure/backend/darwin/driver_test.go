@@ -178,16 +178,16 @@ func TestBuildSeatbelt_ResultEnforceHardening(t *testing.T) {
 // TestBuildSeatbelt_CwdMode_ReadOnlyFlag pins the cwd mount read-only flag for
 // both a "ro" (read-only mount) and "rw" (writable mount) profile cwd mode.
 func TestBuildSeatbelt_CwdMode_ReadOnlyFlag(t *testing.T) {
-	for _, tc := range []struct {
+	for _, testCase := range []struct {
 		mode     string
 		readOnly bool
 	}{
 		{mode: "ro", readOnly: true},
 		{mode: "rw", readOnly: false},
 	} {
-		t.Run(tc.mode, func(t *testing.T) {
+		t.Run(testCase.mode, func(t *testing.T) {
 			ctx := seatbeltCtx(t, validSeatbeltOptions)
-			ctx.Cwd.Mode = tc.mode
+			ctx.Cwd.Mode = testCase.mode
 			sp, err := buildSeatbelt(ctx)
 			if err != nil {
 				t.Fatalf("buildSeatbelt: %v", err)
@@ -195,8 +195,8 @@ func TestBuildSeatbelt_CwdMode_ReadOnlyFlag(t *testing.T) {
 			if len(sp.Mounts) != 1 {
 				t.Fatalf("Mounts = %+v, want only the cwd mount", sp.Mounts)
 			}
-			if sp.Mounts[0].ReadOnly != tc.readOnly {
-				t.Fatalf("cwd mount ReadOnly = %v, want %v (mode %q)", sp.Mounts[0].ReadOnly, tc.readOnly, tc.mode)
+			if sp.Mounts[0].ReadOnly != testCase.readOnly {
+				t.Fatalf("cwd mount ReadOnly = %v, want %v (mode %q)", sp.Mounts[0].ReadOnly, testCase.readOnly, testCase.mode)
 			}
 		})
 	}
