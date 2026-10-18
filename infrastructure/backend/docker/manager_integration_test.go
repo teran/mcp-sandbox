@@ -31,7 +31,7 @@ import (
 // STRIPPED raw container id (without the "docker:" slug) to the Docker API.
 func TestManagerBackend_IntegratedDestroy(t *testing.T) {
 	api := newFakeClient()
-	be := New(api, nil)
+	be := New(api)
 	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
@@ -65,7 +65,7 @@ func TestManagerBackend_IntegratedDestroy(t *testing.T) {
 func TestManagerBackend_IntegratedExec(t *testing.T) {
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
-	be := New(api, nil)
+	be := New(api)
 	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
@@ -91,7 +91,7 @@ func TestManagerBackend_IntegratedExec(t *testing.T) {
 // namespaced session id does not error and inspects the STRIPPED raw id.
 func TestManagerBackend_IntegratedInfo(t *testing.T) {
 	api := newFakeClient()
-	be := New(api, nil)
+	be := New(api)
 	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())
@@ -117,7 +117,7 @@ func TestManagerBackend_IntegratedInfo(t *testing.T) {
 // namespaced session id does not error and reads the STRIPPED raw id.
 func TestManagerBackend_IntegratedStats(t *testing.T) {
 	api := newFakeClient()
-	be := New(api, nil)
+	be := New(api)
 	m := session.NewManager(be.Slug(), be)
 
 	sess, err := m.Create(context.Background(), baseSpec())

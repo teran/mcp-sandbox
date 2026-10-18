@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,11 +11,13 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sirupsen/logrus"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/application/tools/guidance"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/application/tools/registry"
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -982,8 +985,10 @@ func TestBuildSpec_ProfileCwdAndClientSessionID(t *testing.T) {
 func TestBuildSpec_ProfileEnvAndMounts(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
-	p.Docker.Env = map[string]string{"A": "1"}
-	p.Docker.Mounts = []domainprofile.Mount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
+	opts := dockerOptsFixture()
+	opts.Env = map[string]string{"A": "1"}
+	opts.Mounts = []fakeDockerMount{{Source: "/host", Target: "/mnt", ReadOnly: true}}
+	setOptions(t, p, opts)
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
@@ -1009,11 +1014,10 @@ func TestBuildSpec_ProfileSeatbeltEnv(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
 	p.Driver = spec.DriverSeatbelt
-	p.Docker = nil
-	p.Seatbelt = &domainprofile.SeatbeltProfile{
+	setOptions(t, p, fakeSeatbeltOpts{
 		SBPL: "(import \"system.sb\")\n(allow process-fork)",
 		Env:  map[string]string{"A": "1"},
-	}
+	})
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
@@ -1034,7 +1038,9 @@ func TestBuildSpec_ProfileSeatbeltEnv(t *testing.T) {
 func TestBuildSpec_ProfileUser(t *testing.T) {
 	svc := newFake()
 	p := defaultProfile()
-	p.Docker.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	opts := dockerOptsFixture()
+	opts.User = &spec.UIDGID{UID: 2000, GID: 2000}
+	setOptions(t, p, opts)
 	svc.policy.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"default": p}}
 
 	b := builder{svc: svc}
@@ -1184,5 +1190,151 @@ func TestOutputTypes_SecretTagging(t *testing.T) {
 	sec := SecretSummary{Name: "k"}
 	if sec.Name != "k" {
 		t.Fatal("SecretSummary broken")
+	}
+}
+
+// --- Envelope apiVersion reconciliation (SPEC §7.11) ---
+
+// serviceWithProfile returns a fakeService-backed builder whose policy resolves
+// the given profile under the name "env".
+func serviceWithProfile(p *domainprofile.Profile) builder {
+	pol := defaultPolicy()
+	pol.Profiles = fakeResolver{profiles: map[string]*domainprofile.Profile{"env": p}}
+	svc := newFake()
+	svc.policy = pol
+
+	return builder{svc: svc}
+}
+
+// TestBuildSpec_EnvelopeCreate pins the e2e envelope path: a profile with
+// apiVersion + cwd/shell from spec builds through the versioned docker
+// test-double builder, producing a spec with the spec-derived cwd/shell.
+func TestBuildSpec_EnvelopeCreate(t *testing.T) {
+	p := defaultProfile()
+	p.Name = "env"
+	p.APIVersion = "docker.profiles.sandbox.teran.dev/v1"
+	p.Cwd = domainprofile.CwdConfig{Target: "/work", Mode: "rw"}
+	p.Shell = "/bin/sh"
+
+	svc := serviceWithProfile(p)
+	sp, err := buildSpec(svc, createInput{Profile: "env", Cwd: "/home/user/proj", SessionID: "opencode-sess-9"})
+	if err != nil {
+		t.Fatalf("buildSpec(envelope): %v", err)
+	}
+	// cwd from the spec target, read-write because spec.cwd.mode=rw.
+	if sp.WorkingDir != "/work" {
+		t.Fatalf("WorkingDir = %q, want /work (spec cwd target)", sp.WorkingDir)
+	}
+	if sp.Mounts[0].Target != "/work" || sp.Mounts[0].ReadOnly {
+		t.Fatalf("cwd mount = %+v, want target /work writable", sp.Mounts[0])
+	}
+	if sp.Shell != "/bin/sh" {
+		t.Fatalf("Shell = %q, want /bin/sh from spec", sp.Shell)
+	}
+	if sp.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("Image = %q, want profile image", sp.Image)
+	}
+}
+
+// TestBuildSpec_LegacyStillWorks pins the Phase A additive contract: a legacy
+// profile (no apiVersion) still builds through the same builder.
+func TestBuildSpec_LegacyStillWorks(t *testing.T) {
+	svc := serviceWithProfile(defaultProfile())
+	sp, err := buildSpec(svc, createInput{Profile: "env", Cwd: "/c", SessionID: "s"})
+	if err != nil {
+		t.Fatalf("buildSpec(legacy): %v", err)
+	}
+	if sp.Driver != spec.DriverDocker || sp.Shell != "bash" {
+		t.Fatalf("spec = %+v, want docker/bash legacy build", sp)
+	}
+}
+
+// TestBuildSpec_APIVersionMismatch pins that a profile whose apiVersion the
+// selected builder does not declare fails closed with ErrAPIVersionMismatch.
+func TestBuildSpec_APIVersionMismatch(t *testing.T) {
+	const drv = spec.Driver("mismatchdrv")
+	if err := driver.Register(drv, driver.BuildFuncWithVersion(fakeDockerBuild,
+		"docker.profiles.sandbox.teran.dev/v99")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	p := defaultProfile()
+	p.Driver = drv
+	p.APIVersion = "docker.profiles.sandbox.teran.dev/v1"
+
+	svc := serviceWithProfile(p)
+	_, err := buildSpec(svc, createInput{Profile: "env", Cwd: "/c", SessionID: "s"})
+	if !errors.Is(err, driver.ErrAPIVersionMismatch) {
+		t.Fatalf("buildSpec(mismatch) err = %v, want ErrAPIVersionMismatch", err)
+	}
+}
+
+// TestBuildSpec_NonDeclaringBuilderEnvelopeError pins that an envelope profile
+// routed to a builder that does NOT implement APIVersioner fails closed.
+func TestBuildSpec_NonDeclaringBuilderEnvelopeError(t *testing.T) {
+	const drv = spec.Driver("nondecldrv")
+	if err := driver.Register(drv, driver.BuildFunc(fakeDockerBuild)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	p := defaultProfile()
+	p.Driver = drv
+	p.APIVersion = "docker.profiles.sandbox.teran.dev/v1"
+
+	svc := serviceWithProfile(p)
+	_, err := buildSpec(svc, createInput{Profile: "env", Cwd: "/c", SessionID: "s"})
+	if !errors.Is(err, driver.ErrAPIVersionMismatch) {
+		t.Fatalf("buildSpec(non-declaring) err = %v, want ErrAPIVersionMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "does not declare") {
+		t.Fatalf("err = %v, want 'does not declare' mention", err)
+	}
+}
+
+// --- logDeprecation ---
+
+func TestLogDeprecation_Disabled(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "")
+	var buf bytes.Buffer
+	std := logrus.StandardLogger()
+	oldOut := std.Out
+	std.SetOutput(&buf)
+	defer func() { std.SetOutput(oldOut) }()
+
+	logDeprecation(defaultProfile())
+	if buf.Len() != 0 {
+		t.Fatalf("expected no deprecation log when LOG_LEVEL unset, got %q", buf.String())
+	}
+}
+
+func TestLogDeprecation_Enabled(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+	var buf bytes.Buffer
+	std := logrus.StandardLogger()
+	oldOut, oldLevel := std.Out, std.Level
+	std.SetOutput(&buf)
+	std.SetLevel(logrus.DebugLevel)
+	defer func() { std.SetOutput(oldOut); std.SetLevel(oldLevel) }()
+
+	logDeprecation(defaultProfile())
+	if !strings.Contains(buf.String(), "legacy driver+options") {
+		t.Fatalf("log = %q, want legacy deprecation notice", buf.String())
+	}
+	if !strings.Contains(buf.String(), "default") {
+		t.Fatalf("log = %q, want profile name", buf.String())
+	}
+}
+
+func TestLogDeprecation_EnvelopeNoLog(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+	var buf bytes.Buffer
+	std := logrus.StandardLogger()
+	oldOut := std.Out
+	std.SetOutput(&buf)
+	defer func() { std.SetOutput(oldOut) }()
+
+	p := defaultProfile()
+	p.APIVersion = "docker.profiles.sandbox.teran.dev/v1"
+	logDeprecation(p)
+	if buf.Len() != 0 {
+		t.Fatalf("envelope profile must not log a deprecation notice, got %q", buf.String())
 	}
 }

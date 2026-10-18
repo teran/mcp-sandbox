@@ -121,6 +121,26 @@ type Mount struct {
 	ReadOnly bool
 }
 
+// CwdConfig configures the session working-directory mount: the container
+// target (defaults to the client-supplied cwd 1:1) and the mount mode ("ro"
+// read-only default, "rw" writable). It lives in the leaf `spec` package so
+// both the driver registry (driver.Context.Cwd) and the profile model can
+// reference it without an import cycle.
+type CwdConfig struct {
+	Target string
+	Mode   string
+}
+
+// Params are the per-request, client-supplied parameters merged into a spec by
+// a driver builder. The profile/operator owns everything else. It lives in the
+// leaf `spec` package so the driver registry can reference it without importing
+// the profile package (driver↔profile would be an import cycle).
+type Params struct {
+	Cwd             string
+	Secrets         []SecretRef
+	ClientSessionID string
+}
+
 // SecretRef references a secret that is delivered into the sandbox as a tmpfs
 // file with mode 0600. Value is annotated secret:true and is redacted from all
 // output and logs (S02).

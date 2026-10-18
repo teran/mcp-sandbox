@@ -266,6 +266,109 @@ infrastructure.
   `LineBatcher` is **line-buffered with no goroutine/ticker** (zero lifecycle
   risk). Nil-sink leaves behavior **byte-for-byte unchanged**.
 
+### Driver registry & external drivers (in-process IMPLEMENTED; external loader/IPC FUTURE)
+
+The driver-registry + driver-owned config work in `SPEC.md` §6.11/§7.11 is
+**partially implemented**. The **profile schema is the envelope `apiVersion` +
+`spec`** (Phase A, additive — `SPEC.md` §7.11): `apiVersion` =
+`«<driver>.profiles.sandbox.teran.dev/vN»` (driver = first DNS label, `vN` =
+profile-schema version, NOT the driver implementation version), `spec` is the
+**driver-owned** blob that replaces the legacy `options:`, and `cwd`/`shell`
+live **inside** `spec` as common server-understood fields. At USE time
+`driver.Reconcile` fail-closes on an `apiVersion` mismatch
+(`ErrAPIVersionMismatch`); legacy profiles without `apiVersion` pass. The
+**legacy `driver:` + `options:` + top-level `cwd`/`shell` form still works but
+is DEPRECATED** (Phase A is additive; making `.spec` the only form is future
+Phase B, owner decision).
+**Implemented (Phase 1, in-process):** the
+**driver-owned profile key** (`spec`, legacy `options:`), **`driver.Options`**
+(opaque `*yaml.Node` wrapper),
+the **`driver.Registry` / `Builder` / `BuildFunc` / `Context`** model, the
+built-in `docker`/`seatbelt` builders (registering via `init()` into
+`driver.Default`), the **`EnforceHardening`** pure function, the docker backend's
+**`New(api, opts ...Option)`** no-allow-dirs signature, and `Service.BuildSpec` +
+`Service.Create` wiring (fail-closed unknown driver, ALLOW_DIRS gate at the
+Service). These are **real, live code** — treat them as such, not as a design
+sketch. **NOT implemented — FUTURE (Phase 2):** the **`SANDBOX_DRIVERS_DIR`**
+loader, out-of-process **IPC** (STDIO child + protobuf-like), and admission of
+external/non-auditable drivers. **Delivery roadmap (settled):**
+**Phase 1 = in-process Go plugins** (done); **Phase 2 (later) = out-of-process
+IPC**. The loader/manifest/IPC content below is the Phase-2 realization.
+
+- **Driver = single-sandbox primitive.** A driver implements the interface to
+  work with **ONE** sandbox, mapping onto the existing roles (§6.2):
+  `Create`/`Destroy` (Lifecycle), `Exec` (Executable), `Info`/`Stats`
+  (Introspectable), `Available` (Factory). **`List` is NOT a single-sandbox
+  primitive** — it is an optional reconciliation seam for the future orphan-GC;
+  **`Delete` is renamed `Destroy`** (QA P1, §6.11). **Orchestration** of many
+  sandboxes (session manager, routing, lifecycle, HITL, streaming/redaction,
+  `sandbox_list`) stays with the MCP server. In the implemented shape the
+  registry maps `spec.Driver` → `Builder` (`Build(ctx Context) (spec.SandboxSpec,
+  error)`); the built-in builders decode the opaque `options` into their own
+  typed structs and register via `init()`.
+- **`Driver()` vs `Slug()` (QA P2, implemented):** `role.Backend` exposes both
+  `Driver()` and `Slug()`; `Slug()` (docker → `docker`, seatbelt → `seatbelt`)
+  is the implemented namespacing prefix for the `slug:internalID` session id
+  (SPEC §7.8), a **distinct**, stable token — do not conflate the two.
+- **`driver` is the registry key, and is REQUIRED in the shipped schema.**
+  `auto`/empty is **removed** and rejected at the profile layer (§7.11); the
+  profile driver (from the envelope `apiVersion` group, or the legacy `driver:`
+  token) selects the builder; its driver-owned `spec:` blob (legacy `options:`)
+  is opaque and
+  driver-owned. An **unknown driver fails closed at USE time** with
+  `ErrUnknownDriver` — no silent fallback (§6.3). **Reserved built-in names**
+  (`docker`, `seatbelt`) cannot be shadowed; duplicate registration fails closed
+  with `ErrDuplicateDriver`; a driver spec failing post-build `Validate()` is
+  **rejected**, not patched (Security B/F3).
+- **Hardening-on-result = DATA-PLANE only** (§6.11 F1). For the shipped in-process
+  builders it is defense-in-depth/DRY: `Service.Create` re-asserts the immutable
+  `Isolation` via `EnforceHardening` and gates every mount `source` by
+  `ALLOW_DIRS` before the backend runs. For **future external non-auditable
+  drivers** the core re-asserts only **declared** `Isolation` fields; the
+  **mechanism-plane is self-attestation / unaudited**. A **closed enum** of
+  isolation guarantees (readonly-rootfs, cap-drop, no-new-privileges, non-root,
+  cgroup-quotas, network-isolation, tmpfs, autoremove) must be filled explicitly,
+  with a **pessimistic default** (missing = "not guaranteed"); a declared
+  weakness yields an honest **REDUCED-POSTURE marker** — never silently ignored,
+  never presented as full isolation (analog of the darwin rule, §7.12). _One-liner
+  (data-plane):_ "trust the driver to apply isolation, but guarantee a uniform
+  security floor at the *input* that does not depend on whose driver it is or how
+  careful it is." — it does **not** extend to the mechanism-plane.
+- **`EnforceHardening` is the single core-owned choke-point** (Developer G,
+  implemented): a pure domain function in `domain/sandbox/spec` (`enforce.go`),
+  called from `Service.Create` **FIRST — before backend selection/creation** on
+  the `Service.BuildSpec` output (§6.5/§7.11). The **`ALLOW_DIRS` mount gate is
+  lifted to the Service level**, not duplicated in backends — the docker backend
+  keeps only the **TOCTOU** `EvalSymlinks`/open-then-verify path check, and its
+  constructor `New(api, opts ...Option)` **no longer takes an allow-dirs arg**
+  (the darwin constructor keeps `allowDirs` only to feed `sbpl.Generate`, not for
+  containment gating). It is a pure function, testable without any concrete
+  driver (fake/malicious spec → hardened result; reuse the fake-driver pattern).
+- **Loader & tamper control (Phase 2 — FUTURE):** traversal-safe (`os.OpenRoot`,
+  name validated like `profile.ValidName`), fail-closed; driver binary
+  **digest/signature in the manifest** (analog of §7.9); `Available()`/spawn
+  stays **lazy** (A02/N35) — never at startup.
+- **IPC/stream boundary (Phase 2 — FUTURE):** frame size limits, fail-closed
+  framing (negative/overflow/huge lengths, premature EOF, partial frames),
+  **every driver byte ANSI-sanitized (S09) + redacted (S02) server-side** (never
+  trust a driver to redact itself), `request_id` per frame, a **cancel/abort
+  frame** so `req.Timeout` becomes a wire deadline, and secrets (tmpfs `0600`)
+  **never echo** over IPC or logs.
+- **New trust zone (Phase 2 — FUTURE):** "external drivers" added to `SPEC.md`
+  §7.13 (S14 audit) with threat model (lying self-attestation, sandbox→driver→server
+  escalation, DoS via IPC, name shadowing; X1–X4) and an auditor checklist.
+- **Migration (J2): one-shot breaking, DONE** — the `docker:`/`seatbelt:` →
+  `driver:` + `options:` conversion is complete; the server **no longer reads**
+  the old typed blocks (no compat shim). The README **migration guide** maps the
+  old block keys to `options:` keys and gives a convert checklist (§7.11).
+- **Namespaced id** (`slug:internalID`, §7.8) is **implemented** — it landed
+  ahead of the driver-registry work as its own breaking change to the sandbox id
+  schema (slug from `role.Backend.Slug()`, composed in `session.NewManager`,
+  routing via `Service.resolveSessionID`).
+- Remaining open (implementation stage, §7.14): exact Phase-2 wire framing,
+  driver supervision, and the Phase-2 external Go-plugin ABI (the built-in
+  Phase-1 shape is realized via `driver.Builder`/`BuildFunc` + `Register`).
+
 ## Definition of done
 
 A change is done **only when CI is green**:

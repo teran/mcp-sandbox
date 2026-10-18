@@ -13,7 +13,7 @@ import (
 func TestCreate_ContainerCreateError(t *testing.T) {
 	api := newFakeClient()
 	api.createErr = errors.New("create fail")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if _, err := b.Create(context.Background(), baseSpec()); err == nil {
 		t.Fatal("expected container create error")
 	}
@@ -24,7 +24,7 @@ func TestCreate_ContainerCreateError(t *testing.T) {
 func TestExec_StdCopyReadError(t *testing.T) {
 	api := newFakeClient()
 	api.execReaderErr = errors.New("stream broken")
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	id, err := b.Create(context.Background(), baseSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)

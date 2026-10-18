@@ -122,7 +122,6 @@ type Backend struct {
 
 // config holds the resolved server settings the backend needs.
 type config struct {
-	allowDirs     []string
 	allowSymlinks bool
 	// logEntry is the base logrus entry for trace diagnostics. It is derived
 	// from the context at each call site to attach session_id/request_id, and
@@ -147,23 +146,17 @@ func WithLogger(e *logrus.Entry) Option {
 	return func(c *config) { c.logEntry = e }
 }
 
-// New returns a docker backend for the given server configuration. Allow dirs
-// are canonicalized with EvalSymlinks so path checks compare like-for-like
-// (config.Validate already does this; canonicalizing again is idempotent).
-// Optional Options (e.g. WithAllowSymlinks) tune path verification. The image
-// source, network and resources come from the operator profile (Phase 7), so
-// there is no registry allowlist or network-mode gate here.
-func New(api dockerAPI, allowDirs []string, opts ...Option) *Backend {
-	canon := make([]string, 0, len(allowDirs))
-	for _, d := range allowDirs {
-		if r, err := filepath.EvalSymlinks(d); err == nil {
-			canon = append(canon, r)
-		} else {
-			canon = append(canon, d)
-		}
-	}
+// New returns a docker backend for the given server settings. The ALLOW_DIRS
+// host-path containment decision no longer lives in the backend (Slice 4, SPEC
+// §6.11 G): EnforceHardening at the Service level owns mount-source containment,
+// so the constructor takes no allow-dirs argument. Optional Options (e.g.
+// WithAllowSymlinks, WithLogger) tune path verification. The backend retains
+// TOCTOU integrity — verifyHostPath still EvalSymlinks + open-then-verifies
+// every host path. The image source, network and resources come from the
+// operator profile (Phase 7), so there is no registry allowlist or network-mode
+// gate here.
+func New(api dockerAPI, opts ...Option) *Backend {
 	cfg := config{
-		allowDirs:     canon,
 		allowSymlinks: false,
 		logEntry:      log,
 	}
@@ -380,7 +373,9 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 // mount specs (Phase 7). The session cwd is mounted 1:1 at the same absolute
 // path (§7.2) as the first mount, honouring the profile's cwd.mode (rw/ro) via
 // the spec's cwd mount entry. Every host path — the cwd and each profile mount
-// source — must stay within ALLOW_DIRS (S04).
+// source — is verified for TOCTOU integrity (EvalSymlinks + open-then-verify,
+// S04); the ALLOW_DIRS containment gate is owned by EnforceHardening at the
+// Service level (SPEC §6.11 G), not duplicated here.
 func (b *Backend) resolveMounts(s spec.SandboxSpec) ([]mount.Mount, error) {
 	var out []mount.Mount
 
@@ -707,9 +702,11 @@ func (b *Backend) Stats(ctx context.Context, id string) (any, error) {
 // helpers
 // ---------------------------------------------------------------------------
 
-// verifyHostPath ensures a host path stays within ALLOW_DIRS (S04). When
-// symlinks are disallowed it resolves symlinks, checks the real path against
-// the allowed roots, then open-then-verifies the path identity.
+// verifyHostPath validates a host path's TOCTOU integrity (S04, SPEC §7.2). The
+// ALLOW_DIRS containment decision no longer lives in the backend (Slice 4, SPEC
+// §6.11 G) — EnforceHardening at the Service level owns it — so this only
+// ensures the path resolves and its post-open identity is stable. When symlinks
+// are disallowed it resolves symlinks and open-then-verifies the path identity.
 func (b *Backend) verifyHostPath(src string) error {
 	if strings.TrimSpace(src) == "" {
 		return fmt.Errorf("empty host path")
@@ -717,9 +714,6 @@ func (b *Backend) verifyHostPath(src string) error {
 	resolved, err := filepath.EvalSymlinks(src)
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", src, err)
-	}
-	if !b.withinAllowDirs(resolved) {
-		return fmt.Errorf("host path %q escapes ALLOW_DIRS", src)
 	}
 	if b.cfg.allowSymlinks {
 		return nil
@@ -740,18 +734,6 @@ func (b *Backend) verifyHostPath(src string) error {
 	}
 
 	return nil
-}
-
-// withinAllowDirs reports whether p equals or is contained under an allowed
-// directory.
-func (b *Backend) withinAllowDirs(p string) bool {
-	for _, d := range b.cfg.allowDirs {
-		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // validateImageRef enforces parse-only image validation (Phase 7): the

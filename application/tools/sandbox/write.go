@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/sirupsen/logrus"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/application/tools/guidance"
 	"github.com/teran/mcp-sandbox/application/tools/handler"
 	"github.com/teran/mcp-sandbox/domain/progress"
+	"github.com/teran/mcp-sandbox/domain/sandbox/driver"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
 	domainprofile "github.com/teran/mcp-sandbox/domain/sandbox/profile"
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -23,6 +26,19 @@ import (
 // the marker used by the server's redactors so tool output and logs stay
 // consistent.
 const redactedMarker = "***REDACTED***"
+
+// logDeprecation emits a one-line deprecation notice when a legacy
+// driver+options profile is used. Logging is enabled only when LOG_LEVEL is set
+// (L02, mirroring the server's logging enablement); when unset it is a no-op.
+func logDeprecation(p *domainprofile.Profile) {
+	if strings.TrimSpace(p.APIVersion) != "" || strings.TrimSpace(os.Getenv("LOG_LEVEL")) == "" {
+		return
+	}
+	logrus.WithField("component", "sandbox-tools").Warnf(
+		"profile %q uses the legacy driver+options schema; migrate to apiVersion+spec (README §migration)",
+		p.Name,
+	)
+}
 
 // writeTool builds a non-read-only, non-destructive tool definition (S03).
 func writeTool(
@@ -107,10 +123,11 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 }
 
 // buildSpec assembles a typed SandboxSpec from the create input by resolving
-// the selected operator profile and merging it with the server-enforced
-// immutable Isolation (§7.1/§7.11). The image, env, mounts, network, resources,
-// user and sudo all come from the profile; a caller cannot weaken any hardening
-// value.
+// the selected operator profile and dispatching to the driver registry's
+// builder for the profile's concrete driver (SPEC §6.11/§7.11). The image, env,
+// mounts, network, resources, user and sudo all come from the profile's opaque
+// options (decoded by the builder); a caller cannot weaken any hardening value
+// because the builder takes the immutable Isolation policy from the Service.
 func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 	pol := b.svc.Policy()
 
@@ -131,11 +148,34 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 		secrets = append(secrets, spec.SecretRef{Name: sec.Name, Value: sec.Value})
 	}
 
-	return p.BuildSpec(pol.Isolation, domainprofile.Params{
-		Cwd:             in.Cwd,
-		Secrets:         secrets,
-		ClientSessionID: in.SessionID,
-	}), nil
+	// Dispatch to the profile's driver builder (fail-closed: an unknown driver
+	// fails here with ErrUnknownDriver, at USE time, not at scan time).
+	bld, err := driver.Default.Get(p.Driver)
+	if err != nil {
+		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: %w", err)
+	}
+	// Reconcile the profile's declared schema apiVersion against the builder
+	// (envelope form). A legacy profile (empty apiVersion) is a no-op; an
+	// envelope profile whose apiVersion the builder does not declare fails
+	// closed (SPEC §7.11).
+	if err := driver.Reconcile(p.APIVersion, bld); err != nil {
+		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: %w", err)
+	}
+	logDeprecation(p)
+
+	return bld.Build(driver.Context{
+		Name:        p.Name,
+		Description: p.Description,
+		Cwd:         p.Cwd,
+		Shell:       p.Shell,
+		Options:     p.Options,
+		Policy:      pol.Isolation,
+		Params: spec.Params{
+			Cwd:             in.Cwd,
+			Secrets:         secrets,
+			ClientSessionID: in.SessionID,
+		},
+	})
 }
 
 // execInput is the typed sandbox_exec arguments. The command is a single string

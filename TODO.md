@@ -52,6 +52,79 @@ documented in `SPEC.md` / `README.md` / `AGENTS.md`. Summary:
 
 ## Open backlog (future work)
 
+### Driver registry + opaque `options:` — IMPLEMENTED & action plan (2026-10-18)
+
+The driver registry and the opaque `options:` profile key (SPEC §6.11/§7.11)
+are **implemented, tested and documented** on branch
+`docs/driver-options-design` (plus the earlier namespaced-id work). Summary and
+next steps:
+
+- **Done (implemented, tested, documented):**
+  - **Namespaced sandbox id `slug:internalID`** (merged as #14): `Slug()` on
+    `role.Backend` (docker → `docker`, seatbelt → `seatbelt`);
+    `session.NewManager(slug, ...)` composes `slug:internalID`;
+    `Service.resolveSessionID` routes by slug (no `sessionDriver` map); backends
+    strip the slug before their underlying call; `ShortID` keeps the slug;
+    destroy by unknown slug → `ErrSessionNotFound`; `sandbox_create` returns the
+    namespaced `ShortID`.
+  - **Driver registry + opaque `options:`** (branch `docs/driver-options-design`):
+    profile schema `driver:` (**required**, `auto`/empty removed) + `options:`
+    (opaque `yaml.Node`); `driver.Options` / `Registry` / `Builder` / `BuildFunc`;
+    built-in `docker` / `seatbelt` builders (registering via `init()` into
+    `driver.Default`); `Service.BuildSpec` + `EnforceHardening` **first** in
+    `Create`; `ALLOW_DIRS` containment lifted to the Service (docker backend keeps
+    only the TOCTOU `EvalSymlinks`/open-then-verify path check;
+    `New(api, opts ...Option)` **no longer takes an allow-dirs arg**); unknown
+    driver → `ErrUnknownDriver` at use; reserved built-ins not shadowable;
+    **one-shot migration** (no compat shim for the old `docker:`/`seatbelt:`
+    blocks); `examples/profiles/*.yml` converted; `README` / `SPEC` / `AGENTS`
+    updated.
+  - **Gates green on the merged branch:** `make lint` (0 issues), `make test`
+    (95.8% ≥ 95), `make build` (goreleaser) — verified.
+
+- **Open / next (action plan):**
+  - **Push `docs/driver-options-design` and open PR;** merge after the darwin e2e
+    passes on macOS CI (`make e2e`; Docker-in-Docker e2e remains N/A).
+  - **Live-test in a real seatbelt sandbox** (the `sandbox` MCP is available
+    again): verify `/usr/bin/sandbox-exec` on the macOS host and run
+    `make lint test build` inside a seatbelt sandbox.
+  - **External drivers:** Phase 1 = in-process Go plugins
+    (`driver.Builder` / `Register` already the ABI); Phase 2 (later) =
+    out-of-process IPC (STDIO child + protobuf-like) + `SANDBOX_DRIVERS_DIR`
+    loader/manifest — all per SPEC §6.11/§7.14.
+  - **Orphan-GC + idle reaper** (per SPEC §6.6): wire `Manager.Reap` / `Touch` +
+    an orphan sweep via the driver `List` reconciliation seam.
+  - **govulncheck:** re-review accepted IDs `GO-2026-4883` / `GO-2026-4887`
+    (docker plugin-authz) when a fix lands upstream.
+  - **Docs polish (low):** wire live badges (coverage/gosec/govulncheck/gremlins)
+    to real sources; pin CI tool versions in SPEC.
+
+### Profile schema → envelope `apiVersion` + `spec` (Phase A done / in progress; Phase B future)
+
+The preferred profile schema migrates from the legacy `driver:` + `options:` +
+top-level `cwd`/`shell` form to the **envelope** `apiVersion` + `spec`
+(`SPEC.md` §7.11). `apiVersion` = `«<driver>.profiles.sandbox.teran.dev/vN»`
+(driver = first DNS label; `vN` = profile-schema version, NOT the driver
+implementation version); `spec` is driver-owned (replaces `options:`); `cwd`/
+`shell` live **inside** `spec` as common server-understood fields. At USE time
+`driver.Reconcile` fail-closes on an `apiVersion` mismatch
+(`ErrAPIVersionMismatch`); legacy profiles without `apiVersion` pass.
+
+- [x] **Phase A (additive) — envelope schema accepted & implemented:** the
+      envelope `apiVersion` + `spec` profile form; `spec.cwd`/`spec.shell`
+      extracted by the store into `Profile.Cwd`/`Profile.Shell`; `driver.Reconcile`
+      fail-closed `apiVersion` check; built-in drivers declare
+      `docker`/`seatbelt.profiles.sandbox.teran.dev/v1`; legacy `driver:` +
+      `options:` + top-level `cwd`/`shell` **still works but deprecated** (warning
+      at the tool boundary) — `@architect`/`@developer`, `D01 D02`
+- [ ] **Docs (Phase A):** README / SPEC / AGENTS describe the envelope, the
+      migration table (legacy → envelope) and the deprecation of the legacy form —
+      English, `D01 D02`
+- [ ] **Phase B (future — owner decision):** make the `.spec` envelope the
+      **only** accepted profile form and **remove** legacy `driver:` / `options:` /
+      top-level `cwd` / `shell` — a breaking change, scheduled by the owner, not
+      yet done (`SPEC.md` §7.11/§7.14) — `@architect`/`@developer`, `D01 D02`
+
 ### Sandbox lifecycle & GC (backlog — designed, not yet wired)
 
 Sandboxes are currently removed **only** by explicit

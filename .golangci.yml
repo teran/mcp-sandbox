@@ -88,6 +88,9 @@ linters:
         - ^github\.com/teran/mcp-sandbox/application/tools/handler\.TraceLogger$
         - ^github\.com/modelcontextprotocol/go-sdk/mcp\.Transport$
         - ^github\.com/teran/mcp-sandbox/domain/sandbox/role\.Backend$
+        # The driver registry's Get returns a Builder (the registry seam,
+        # SPEC §6.11); like role.Backend it is an interface by design.
+        - ^github\.com/teran/mcp-sandbox/domain/sandbox/driver\.Builder$
         # The darwin backend's own package-local boundary interfaces: runner
         # returns a Process, and newRunner returns a runner. These are the
         # backend's test seam (fakeRunner substitutes for os/exec) and are

@@ -4,9 +4,11 @@
 # as `golang.yml` and fill in the <PLACEHOLDER> values. Profiles are read on
 # demand and are operator-authored; the model references one by name.
 #
-# Hybrid driver-aware schema (SPEC §7.11/§7.12): `driver` selects the backend
-# and the matching `docker:` block carries the Docker-specific fields; `cwd`
-# and `shell` sit at the top level.
+# Hybrid driver-aware schema (SPEC §7.11/§7.12): `apiVersion` selects the
+# backend/driver and the `spec` block carries the driver-specific fields (here
+# the `docker` spec that buildDocker decodes); `cwd` and `shell` live INSIDE
+# `spec` (common fields the server understands and strips before handing the
+# rest to the builder).
 #
 # NOTE: `sandbox_exec` commands run through the profile-configured shell
 # (default `bash`). The env block below defaults the Go build caches to the
@@ -14,14 +16,14 @@
 # `sandbox://guidance/filesystem-mounts`). If the daemon forces `noexec` on
 # `/tmp` (e.g. Docker Desktop), point `GOTMPDIR` at a writable cwd subdir
 # instead; `GOCACHE` only needs to be writable, not exec.
+apiVersion: docker.profiles.sandbox.teran.dev/v1
 name: golang
 description: >-
   Go 1.27.2 toolchain sandbox: compiles host sources with a writable cwd, a
   shared writable Go module cache at /go/pkg/mod, read-only access to the
   opencode data directory, and GOCACHE/GOTMPDIR defaulted to the executable
   /tmp tmpfs; bridge network, 4 CPU / 8 GiB / 2048 pids, non-root, no sudo.
-driver: docker
-docker:
+spec:
   image: golang:1.27.2
   env:
     GOMODCACHE: /go/pkg/mod      # shared writable mount (below)
@@ -52,6 +54,6 @@ docker:
     uid: 1000
     gid: 1000
   sudo: never
-cwd:
-  mode: rw
-shell: bash
+  cwd:
+    mode: rw
+  shell: bash

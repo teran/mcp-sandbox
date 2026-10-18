@@ -1,8 +1,10 @@
 # Working operator profile for live-testing the darwin (sandbox-exec / Seatbelt)
-# backend on macOS. Hybrid driver-aware schema (SPEC §7.11/§7.12).
+# backend on macOS. Envelope schema (SPEC §7.11/§7.12).
 #
-# `driver: seatbelt` selects the darwin backend and requires the matching
-# `seatbelt:` block (mutually exclusive with `docker:`). The darwin backend has
+# `apiVersion: seatbelt...` selects the darwin backend; the `spec` block carries
+# the `seatbelt` options the darwin builder decodes (mutually exclusive with
+# `docker`). `cwd`/`shell` live inside `spec` (common fields the server
+# understands and strips). The darwin backend has
 # no container/image: the server renders the Seatbelt (SBPL) profile from the
 # typed SandboxSpec — imports → `(deny default)` → network → mach → sysctl →
 # file (ALLOW_DIRS + session cwd, S04) → operator `seatbelt.sbpl` below. The
@@ -50,11 +52,11 @@
 name: seatbelt
 description: >-
   Verified file-deny-all profile for the darwin (sandbox-exec) backend on macOS.
-  driver=seatbelt; server-rendered SBPL + operator template. File access is
+  apiVersion=seatbelt; server-rendered SBPL + operator template. File access is
   deny-all: read/write only in the repo root (cwd) plus the system dirs macOS
   needs to load binaries; outbound network allowed.
-driver: seatbelt
-seatbelt:
+apiVersion: seatbelt.profiles.sandbox.teran.dev/v1
+spec:
   # Optional operator-authored environment variables for the sandbox session,
   # delivered via spec.Env -> cmd.Env (S02: do not put secrets here; use tmpfs
   # 0600 secret files under /run/sandbox instead).
@@ -99,6 +101,6 @@ seatbelt:
       (subpath "/tmp"))
   mach_lookups: []
   sysctls: []
-cwd:
-  mode: rw
-shell: /bin/bash
+  cwd:
+    mode: rw
+  shell: /bin/bash

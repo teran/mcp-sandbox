@@ -33,7 +33,7 @@ func TestBackend_TraceLogsCarryRequestSessionIDAndNoSecrets(t *testing.T) {
 	var buf bytes.Buffer
 	api := newFakeClient()
 	api.requirePull = true // exercise the pull trace path
-	b := New(api, nil, WithLogger(newBufferLogger(&buf)))
+	b := New(api, WithLogger(newBufferLogger(&buf)))
 
 	ctx := domainsession.WithSessionID(
 		logging.WithRequestID(context.Background(), "req-xyz"),
@@ -70,7 +70,7 @@ func TestBackend_TraceLogsCarrySessionIDArg(t *testing.T) {
 	var buf bytes.Buffer
 	api := newFakeClient()
 	api.execResults = []execResult{{stdout: "hi", exitCode: 0}}
-	b := New(api, nil, WithLogger(newBufferLogger(&buf)))
+	b := New(api, WithLogger(newBufferLogger(&buf)))
 
 	// Seed a container so Exec can run against a real container id (the session
 	// id IS the container id).

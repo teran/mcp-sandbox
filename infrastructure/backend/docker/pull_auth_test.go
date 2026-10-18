@@ -43,7 +43,7 @@ func writeDockerConfig(t *testing.T, auths map[string]string) string {
 func TestPullImage_RegistryAuthFromConfig(t *testing.T) {
 	writeDockerConfig(t, map[string]string{"ghcr.io": "user:pass"})
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 
 	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
 		t.Fatalf("pullImage: %v", err)
@@ -70,7 +70,7 @@ func TestPullImage_RegistryAuthFromConfig(t *testing.T) {
 func TestPullImage_RegistryAuth_DockerHubNormalized(t *testing.T) {
 	writeDockerConfig(t, map[string]string{"https://index.docker.io/v1/": "hub:token"})
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 
 	if err := b.pullImage(context.Background(), "alpine:3.20"); err != nil {
 		t.Fatalf("pullImage: %v", err)
@@ -98,7 +98,7 @@ func TestPullImage_RegistryWithoutCredentials_EmptyAuth(t *testing.T) {
 	// Config exists but only has credentials for a different registry.
 	writeDockerConfig(t, map[string]string{"docker.io": "u:p"})
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 
 	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
 		t.Fatalf("pullImage: %v", err)
@@ -118,7 +118,7 @@ func TestPullImage_NoConfigFile_EmptyAuth(t *testing.T) {
 	dir := t.TempDir() // no config.json inside
 	t.Setenv(dockerconfig.EnvOverrideConfigDir, dir)
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 
 	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
 		t.Fatalf("pullImage: %v", err)
@@ -138,7 +138,7 @@ func TestPullImage_NoConfigFile_EmptyAuth(t *testing.T) {
 func TestPullImage_DockerConfigEnvHonoured(t *testing.T) {
 	writeDockerConfig(t, map[string]string{"registry.example.com": "svc:secret"})
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 
 	if err := b.pullImage(context.Background(), "registry.example.com/team/app:v1"); err != nil {
 		t.Fatalf("pullImage: %v", err)
@@ -191,7 +191,7 @@ func TestRegistryAuth_ConfigLoadError_EmptyAuth(t *testing.T) {
 	t.Setenv(dockerconfig.EnvOverrideConfigDir, dir)
 
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
 		t.Fatalf("pullImage: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRegistryAuth_ConfigEntryWithEmptyAuth(t *testing.T) {
 	t.Setenv(dockerconfig.EnvOverrideConfigDir, dir)
 
 	api := newFakeClient()
-	b := newBackendForDirs(api)
+	b := newBackend(api)
 	if err := b.pullImage(context.Background(), "ghcr.io/org/app:v1"); err != nil {
 		t.Fatalf("pullImage: %v", err)
 	}
