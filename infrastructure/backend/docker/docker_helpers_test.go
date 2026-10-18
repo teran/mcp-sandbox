@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
@@ -84,6 +85,23 @@ func TestBuildHostConfig_AppliesImmutableHardening(t *testing.T) {
 	}
 	if hc.Memory != 128*1024*1024 {
 		t.Errorf("Memory = %d", hc.Memory)
+	}
+}
+
+// TestBuildHostConfig_NoSeccompEmission pins R-3: the Docker backend must NEVER
+// emit a seccomp SecurityOpt. The daemon's default seccomp profile applies
+// automatically, Docker rejects `seccomp=default`, and emitting
+// `seccomp=unconfined` would weaken security (forbidden). The Seccomp field is an
+// honest marker enforced by the closed-enum invariant in spec.Validate /
+// EnforceHardening — it is not a docker SecurityOpt and must not be mapped into
+// one, so this guards against a future weakening in the backend itself.
+func TestBuildHostConfig_NoSeccompEmission(t *testing.T) {
+	b := newBackend(newFakeClient())
+	hc := b.buildHostConfig(baseSpec(), nil, nil)
+	for _, s := range hc.SecurityOpt {
+		if s == "seccomp=unconfined" || strings.HasPrefix(s, "seccomp=") {
+			t.Fatalf("buildHostConfig must not emit a seccomp SecurityOpt, got %q", s)
+		}
 	}
 }
 

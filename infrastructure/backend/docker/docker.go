@@ -351,9 +351,16 @@ func (b *Backend) buildHostConfig(s spec.SandboxSpec, mounts []mount.Mount, tmpf
 		// Forced hardening (immutable).
 		ReadonlyRootfs: true,
 		CapDrop:        []string{"ALL"},
-		SecurityOpt:    []string{"no-new-privileges"},
-		AutoRemove:     true,
-		NetworkMode:    container.NetworkMode(networkMode),
+		// INVARIANT (R-3): seccomp is NOT mapped into a SecurityOpt. The daemon's
+		// default seccomp profile applies automatically and is never overridden.
+		// `seccomp=default` is rejected by Docker and `seccomp=unconfined` /
+		// `seccomp=<path>` would weaken security — neither is emitted in the MVP.
+		// The only valid Seccomp value (SeccompDefault) is enforced fail-closed by
+		// spec.Validate()/EnforceHardening, so the field is an honest marker, not a
+		// docker SecurityOpt.
+		SecurityOpt: []string{"no-new-privileges"},
+		AutoRemove:  true,
+		NetworkMode: container.NetworkMode(networkMode),
 
 		// Bounded resources.
 		PidsLimit:  &pids,

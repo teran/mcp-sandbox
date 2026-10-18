@@ -181,6 +181,7 @@ func defaultPolicy() Policy {
 			ReadOnlyRootfs:  true,
 			CapDrop:         []string{"ALL"},
 			NoNewPrivileges: true,
+			Seccomp:         spec.SeccompDefault,
 			User:            spec.UIDGID{UID: 1000, GID: 1000},
 			PidsLimit:       512,
 			Memory:          512 * 1024 * 1024,
