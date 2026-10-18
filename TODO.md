@@ -322,13 +322,25 @@ Findings from the 2026-10-18 conformance (`qa`) + security (`security`) review.
 Approved for the backlog; implemented **TDD** (`@qa` tests first, `@developer`
 impl) with `@security` review first.
 
-- [ ] **Map `spec.Isolation.Seccomp` into the docker backend (R-3):**
-      `buildHostConfig` (`infrastructure/backend/docker/docker.go`) does not map
-      the seccomp field into any Docker `SecurityOpt` — only the daemon's default
-      seccomp profile applies, so the field is decorative. Wire
-      `iso.Seccomp` → `SecurityOpt: seccomp=<profile>` (or make the default
-      profile explicit) and fix `SPEC.md` §7 so the field is not misleading —
-      `@security` first, `S08 S05`, `C01 C08GO T01`
+- [x] **Map `spec.Isolation.Seccomp` into the docker backend (R-3) — RESOLVED via
+      the alternative option (fail-closed marker + explicit default):** the
+      field is **no longer decorative** and is **not** wired into any Docker
+      `SecurityOpt` **by design**. `spec.Isolation.Seccomp` is now a fail-closed
+      **closed-enum marker** — `domain/sandbox/spec/spec.go` admits only
+      `SeccompDefault` (`IsValidSeccompProfile`), enforced by `spec.Validate()`
+      and `EnforceHardening` (`domain/sandbox/spec/enforce.go`). The docker
+      backend deliberately emits **no** seccomp `SecurityOpt`
+      (`infrastructure/backend/docker/docker.go:354-361`, comment "INVARIANT
+      (R-3)"): `seccomp=default` is rejected by Docker and
+      `seccomp=unconfined`/`<path>` would **weaken** security — this takes the
+      original TODO's offered alternative **"make the default profile
+      explicit"**. Guarded by `TestBuildHostConfig_NoSeccompEmission`
+      (`infrastructure/backend/docker/docker_helpers_test.go`); `SPEC.md` §7
+      updated (~534, 978, 1904) so the field is not misleading.
+      **Status: code + tests done and CI-verified** (`@security`/`@developer`/
+      `@qa`). The **only remaining** seccomp backlog item is the **custom
+      seccomp profile** ("mandatory roadmap", `SPEC.md` §7.7) — not yet
+      implemented.
 - [ ] **seatbelt: SIGTERM grace before SIGKILL (R-6):** `Backend.Destroy` and the
       exec-cancel path (`infrastructure/backend/darwin/darwin.go`) SIGKILL the
       whole process group with no grace period. Add a short, configurable SIGTERM
