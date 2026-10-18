@@ -716,13 +716,16 @@ sandbox**. Its responsibilities map 1:1 onto the existing ISP role interfaces
 - **`Delete` is renamed `Destroy` (QA P1).** The `Lifecycle` role already uses
   `Destroy` (§6.2, `domain/sandbox/role.Lifecycle`); the driver contract uses
   the same verb — there is **no `Delete`**.
-- **`Driver()` vs `Slug()` (QA P2).** `role.Backend` already exposes `Driver()`
-  (`spec.Driver`, §6.2) — the runtime capability selector. A future **`Slug()`**
-  — a **stable, allowlist-validated** identifier used to build a namespaced
-  session id (`slug:internalID`, §7.8) — is a **distinct concept and must not be
-  conflated** with `Driver()`. `Slug()` is a stable, collision-free namespace
-  token validated exactly like `profile.ValidName` (fail-closed on anything
-  outside the allowlist). See §7.8 for the namespaced-id step.
+- **`Driver()` vs `Slug()` (QA P2, implemented).** `role.Backend` exposes both
+  `Driver()` (`spec.Driver`, §6.2) — the runtime capability selector — and
+  **`Slug()`** (§7.8) — the backend-authored **namespacing prefix** used to build
+  a namespaced session id (`slug:internalID`; docker → `docker`, seatbelt →
+  `seatbelt`). They are **distinct concepts and must not be conflated**: `Driver()`
+  selects the runtime capability; `Slug()` namespaces session ids. The service
+  uses `Slug()` to build the manager's namespace (`session.NewManager(slug, …)`)
+  and routes session-id-addressed ops by the parsed slug (§7.8). Parsing
+  validates the slug against the slug allowlist (fail-closed on anything outside
+  it), so a slug stays a stable, collision-free namespace token.
 
 The driver is **not** responsible for orchestrating multiple sandboxes. All
 **orchestration** is the **MCP server's** job — the session manager, per-driver
@@ -1171,19 +1174,14 @@ mcp-sandbox`) so the server can identify, reap and destroy exactly its own
   that build a spec directly can omit it.
 - Each session has a **per-session mutex**; `destroy` is **idempotent** (X02).
 
-> **Namespaced session id (`slug:internalID`) — planned as a SEPARATE FIRST
-> implementation step (user decision, J4).** The driver-registry + `options:`
-> work (§6.11/§7.11/§7.14) is being finalized in these docs as design direction,
-> but the **namespaced-id change is a distinct, earlier step** that will be
-> implemented first — it is a breaking change to the **sandbox id schema** of
-> this section, independent of the registry. Requirements recorded for that step:
-> a **stable, allowlist-validated `slug`** (the `Slug()` token, §6.11 I) joined
-> to an **opaque internal id** by a single `:` (`slug:internalID`);
-> **fail-closed parsing on the first `:`**; rework of `ShortID` (§6.6),
-> `resolveID` (both `application/session/manager.go` and
-> `infrastructure/mcp/service.go`) and their tests. This step is **not part of
-> the docs being finalized here** — it is tracked as its own breaking change to
-> this section.
+> **Namespaced session id (`slug:internalID`) — implemented.** The namespaced-id
+> change (user decision, J4) landed **ahead of** the driver-registry work as its
+> own breaking change to the sandbox id schema of this section: the slug comes
+> from `role.Backend.Slug()` (§6.11 I), the id is composed by
+> `session.NewManager(slug, …)`, `ShortID` preserves the slug (§6.6), and
+> `resolveSessionID` (in `application/session/manager.go` and
+> `infrastructure/mcp/service.go`) routes by slug. The rest of this section
+> documents the implemented behavior.
 
 ### 7.9 Supply-chain (T7 / C05 / S05)
 
@@ -1430,10 +1428,9 @@ README **migration guide** documents the key mapping and a convert checklist.
 `Service.resolveDriver` (which still resolves auto/empty to a concrete driver at
 the runtime layer, `infrastructure/mcp/service.go`) remains **only for
 internal/built-in compatibility**, not for stored profiles — a stored profile
-must always carry an explicit `driver:`. A canonical converted docker example:
-`examples/profiles/golang.yml`; the working darwin profile
-`examples/profiles/seatbelt.yml` still uses the legacy `seatbelt:` block and
-follows the same conversion.
+must always carry an explicit `driver:`. Canonical converted examples:
+`examples/profiles/golang.yml` (docker) and `examples/profiles/seatbelt.yml`
+(seatbelt) — both use `driver:` + `options:`.
 
 The core's hardening enforcement is the **data-plane floor (§6.11)**: the
 immutable `Isolation` block is re-asserted on the result via `EnforceHardening`
@@ -1463,8 +1460,8 @@ immutable `Isolation` block is re-asserted on the result via `EnforceHardening`
 > `runner_other.go` — non-darwin stand-in; `deny.go` — portable policy-denial
 > classifier; `tailer_darwin.go` — the **macOS-specific unified-log `log stream`
 > tailer wrapper** behind the `darwin` build tag, `//go:build darwin`), wired
-> end-to-end via the `seatbelt` profile block
-> (`application/profile`), `spec.Sandbox` / `spec.DriverSeatbelt`
+> end-to-end via the `seatbelt` driver (`driver: seatbelt` + its `options:`,
+> `application/profile`), `spec.Sandbox` / `spec.DriverSeatbelt`
 > (`domain/sandbox/spec`), the SBPL generator+validator
 > (`domain/sandbox/sbpl`), and factory registration through `init()`
 > (`Driver: seatbelt`, `Priority` 10). The full backend logic — including the
@@ -1996,9 +1993,10 @@ the out-of-process IPC.
    DoS via IPC, name shadowing; X1–X4) with an auditor checklist (§7.13).
 10. **Role alignment (QA P1):** `List` is an **optional reconciliation seam**
     (not a single-sandbox primitive); `Delete` → **`Destroy`** (§6.11 F).
-11. **`Driver()` vs `Slug()` (QA P2):** distinct concepts; a future `Slug()` is a
-    stable, allowlist-validated namespace token, not conflated with `Driver()`
-    (§6.11 I; §7.8).
+11. **`Driver()` vs `Slug()` (QA P2, implemented):** distinct concepts;
+    `Slug()` (on `role.Backend`, §7.8) is the implemented namespacing prefix for
+    `slug:internalID` session ids — docker → `docker`, seatbelt → `seatbelt` — a
+    stable namespace token, not conflated with `Driver()` (§6.11 I; §7.8).
 12. **Testability (QA P1/H):** seams documented (registry / loader / IPC codec /
     supervision / enforcement floor); the security floor is a pure function
     testable without a concrete driver (fake-driver pattern) (§6.11 H).

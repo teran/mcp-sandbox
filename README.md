@@ -284,11 +284,10 @@ implemented** `driver:` + `options:` form is a **one-shot breaking schema change
 (no compat shim): `driver` is **required** and `auto`/empty is **removed**, and
 every typed block key moves under `options:`. The migration is **done** — the
 old `docker:` / `seatbelt:` blocks are **no longer read** by the server, so any
-still-typed profile must be converted to the new form. A canonical converted
-docker example is bundled at **`examples/profiles/golang.yml`** (uses `driver:`
-+ `options:`); the working darwin profile **`examples/profiles/seatbelt.yml`**
-still carries its keys in the legacy `seatbelt:` block and follows the same
-conversion below.
+still-typed profile must be converted to the new form. Canonical converted
+examples are bundled at **`examples/profiles/golang.yml`** (docker) and
+**`examples/profiles/seatbelt.yml`** (seatbelt) — both use `driver:` +
+`options:`.
 
 **Key mapping — `docker:` block → `options:`:**
 

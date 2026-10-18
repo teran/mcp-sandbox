@@ -294,9 +294,10 @@ IPC**. The loader/manifest/IPC content below is the Phase-2 realization.
   registry maps `spec.Driver` → `Builder` (`Build(ctx Context) (spec.SandboxSpec,
   error)`); the built-in builders decode the opaque `options` into their own
   typed structs and register via `init()`.
-- **`Driver()` vs `Slug()` (QA P2):** `role.Backend` already has `Driver()`; a
-  future `Slug()` (for the namespaced `slug:internalID` id, SPEC §7.8) is a
-  **distinct**, stable, allowlist-validated token — do not conflate the two.
+- **`Driver()` vs `Slug()` (QA P2, implemented):** `role.Backend` exposes both
+  `Driver()` and `Slug()`; `Slug()` (docker → `docker`, seatbelt → `seatbelt`)
+  is the implemented namespacing prefix for the `slug:internalID` session id
+  (SPEC §7.8), a **distinct**, stable token — do not conflate the two.
 - **`driver` is the registry key, and is REQUIRED in the shipped schema.**
   `auto`/empty is **removed** and rejected at the profile layer (§7.11); the
   profile `driver:` selects the builder; its `options:` blob is opaque and
@@ -346,9 +347,10 @@ IPC**. The loader/manifest/IPC content below is the Phase-2 realization.
   `driver:` + `options:` conversion is complete; the server **no longer reads**
   the old typed blocks (no compat shim). The README **migration guide** maps the
   old block keys to `options:` keys and gives a convert checklist (§7.11).
-- **Namespaced id** (`slug:internalID`, §7.8) is a **separate future
-  implementation step**, ahead of the external-driver work — its own breaking
-  change to the sandbox id schema.
+- **Namespaced id** (`slug:internalID`, §7.8) is **implemented** — it landed
+  ahead of the driver-registry work as its own breaking change to the sandbox id
+  schema (slug from `role.Backend.Slug()`, composed in `session.NewManager`,
+  routing via `Service.resolveSessionID`).
 - Remaining open (implementation stage, §7.14): exact Phase-2 wire framing,
   driver supervision, and the Phase-2 external Go-plugin ABI (the built-in
   Phase-1 shape is realized via `driver.Builder`/`BuildFunc` + `Register`).
