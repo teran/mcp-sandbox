@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/sirupsen/logrus"
 
 	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/application/tools/guidance"
@@ -24,6 +26,19 @@ import (
 // the marker used by the server's redactors so tool output and logs stay
 // consistent.
 const redactedMarker = "***REDACTED***"
+
+// logDeprecation emits a one-line deprecation notice when a legacy
+// driver+options profile is used. Logging is enabled only when LOG_LEVEL is set
+// (L02, mirroring the server's logging enablement); when unset it is a no-op.
+func logDeprecation(p *domainprofile.Profile) {
+	if strings.TrimSpace(p.APIVersion) != "" || strings.TrimSpace(os.Getenv("LOG_LEVEL")) == "" {
+		return
+	}
+	logrus.WithField("component", "sandbox-tools").Warnf(
+		"profile %q uses the legacy driver+options schema; migrate to apiVersion+spec (README §migration)",
+		p.Name,
+	)
+}
 
 // writeTool builds a non-read-only, non-destructive tool definition (S03).
 func writeTool(
@@ -139,6 +154,14 @@ func buildSpec(b builder, in createInput) (spec.SandboxSpec, error) {
 	if err != nil {
 		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: %w", err)
 	}
+	// Reconcile the profile's declared schema apiVersion against the builder
+	// (envelope form). A legacy profile (empty apiVersion) is a no-op; an
+	// envelope profile whose apiVersion the builder does not declare fails
+	// closed (SPEC §7.11).
+	if err := driver.Reconcile(p.APIVersion, bld); err != nil {
+		return spec.SandboxSpec{}, fmt.Errorf("sandbox_create: %w", err)
+	}
+	logDeprecation(p)
 
 	return bld.Build(driver.Context{
 		Name:        p.Name,

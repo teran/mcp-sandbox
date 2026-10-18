@@ -224,3 +224,38 @@ func TestProfile_HasNoDockerOrSeatbeltBlocks(t *testing.T) {
 		t.Fatal("empty description must fail even without a driver block")
 	}
 }
+
+// TestProfile_EnvelopeDriverValidates pins that an envelope-form profile (the
+// driver derived from the apiVersion label) still passes the driver-agnostic
+// Validate — the driver token and cwd/shell invariants are unchanged by the
+// envelope migration.
+func TestProfile_EnvelopeDriverValidates(t *testing.T) {
+	p := validProfile()
+	p.APIVersion = "docker.profiles.sandbox.teran.dev/v1"
+	if err := p.Validate(); err != nil {
+		t.Fatalf("envelope docker profile should validate: %v", err)
+	}
+
+	s := validSeatbeltProfile()
+	s.APIVersion = "seatbelt.profiles.sandbox.teran.dev/v1"
+	if err := s.Validate(); err != nil {
+		t.Fatalf("envelope seatbelt profile should validate: %v", err)
+	}
+}
+
+// TestProfile_APIVersionRoundTrip pins the APIVersion field is carried verbatim
+// on the profile (envelope form) and empty for legacy.
+func TestProfile_APIVersionRoundTrip(t *testing.T) {
+	p := validProfile()
+	if p.APIVersion != "" {
+		t.Fatalf("legacy profile APIVersion = %q, want empty", p.APIVersion)
+	}
+	const v = "docker.profiles.sandbox.teran.dev/v1"
+	p.APIVersion = v
+	if p.APIVersion != v {
+		t.Fatalf("APIVersion = %q, want %q", p.APIVersion, v)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("profile with APIVersion should validate: %v", err)
+	}
+}

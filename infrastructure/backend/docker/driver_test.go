@@ -519,6 +519,31 @@ totally_bogus_key: true
 	}
 }
 
+// TestDockerBuilder_DeclaresSchemaVersion pins that the docker builder,
+// registered in init() into the process-wide driver registry, declares the
+// docker profile schema apiVersion it supports (SPEC §7.11).
+func TestDockerBuilder_DeclaresSchemaVersion(t *testing.T) {
+	b, err := driver.Default.Get(spec.DriverDocker)
+	if err != nil {
+		t.Fatalf("Get(docker): %v", err)
+	}
+	ver, ok := b.(driver.APIVersioner)
+	if !ok {
+		t.Fatal("docker builder must implement APIVersioner")
+	}
+	if want := "docker.profiles.sandbox.teran.dev/v1"; ver.APIVersion() != want {
+		t.Fatalf("APIVersion() = %q, want %q", ver.APIVersion(), want)
+	}
+	// Reconcile against its own declared version succeeds; a different version
+	// fails closed.
+	if err := driver.Reconcile(ver.APIVersion(), b); err != nil {
+		t.Fatalf("Reconcile(own) = %v, want nil", err)
+	}
+	if err := driver.Reconcile("docker.profiles.sandbox.teran.dev/v99", b); err == nil {
+		t.Fatal("Reconcile(wrong version) must fail")
+	}
+}
+
 // TestBuildDocker_InvalidImage_Error pins that a malformed image is rejected at
 // build time (parse-only validation).
 func TestBuildDocker_InvalidImage_Error(t *testing.T) {

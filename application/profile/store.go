@@ -18,18 +18,29 @@ import (
 	"github.com/teran/mcp-sandbox/domain/sandbox/spec"
 )
 
-// yamlProfile mirrors the operator-authored YAML document under the
-// driver-registry schema (SPEC §7.11): a REQUIRED concrete `driver` plus an
-// opaque `options:` blob, with `cwd`/`shell` on the top level. The store parses
-// `options:` into an opaque yaml.Node without interpreting it — the concrete
-// driver builder decodes it.
+// yamlProfile mirrors the operator-authored YAML document (SPEC §7.11). Two
+// mutually exclusive forms are accepted:
+//
+//   - envelope (Phase A, preferred): `apiVersion` + `name`/`description` +
+//     `spec`. The envelope is server-interpreted (`apiVersion`, `name`,
+//     `description`); `spec` is driver-owned. `cwd`/`shell` live INSIDE `spec`
+//     (common fields the server understands, stripped from the driver options).
+//   - legacy (deprecated, Phase A additive): `driver` + opaque `options:` +
+//     top-level `cwd`/`shell`.
+//
+// The form is discriminated by `apiVersion` being non-empty. Mixing the two
+// (apiVersion with top-level driver/options, or apiVersion with top-level
+// cwd/shell) fails closed at scan time.
 type yamlProfile struct {
+	APIVersion  string    `yaml:"apiVersion"`
 	Name        string    `yaml:"name"`
 	Description string    `yaml:"description"`
-	Driver      string    `yaml:"driver"`
-	Options     yaml.Node `yaml:"options"`
-	Cwd         yamlCwd   `yaml:"cwd"`
-	Shell       string    `yaml:"shell"`
+	Spec        yaml.Node `yaml:"spec"`
+	// legacy (Phase A, deprecated)
+	Driver  string    `yaml:"driver"`
+	Options yaml.Node `yaml:"options"`
+	Cwd     yamlCwd   `yaml:"cwd"`
+	Shell   string    `yaml:"shell"`
 }
 
 type yamlCwd struct {
@@ -37,11 +48,21 @@ type yamlCwd struct {
 	Mode   string `yaml:"mode"`
 }
 
-// toDomain converts the parsed YAML into a domain Profile. The driver is kept
-// as-authored (empty stays empty so Validate rejects it; there is no auto
-// resolution at the profile layer). `options:` is wrapped as an opaque
-// driver.Options; an absent `options:` key yields a nil node.
-func (yp *yamlProfile) toDomain() *domainprofile.Profile {
+// toDomain dispatches on the profile form (envelope vs legacy) and converts
+// the parsed YAML into a domain Profile. An error is returned when the
+// documented mixing rules are violated or the envelope apiVersion is invalid.
+func (yp *yamlProfile) toDomain() (*domainprofile.Profile, error) {
+	if strings.TrimSpace(yp.APIVersion) != "" {
+		return yp.envelopeToDomain()
+	}
+
+	return yp.legacyToDomain(), nil
+}
+
+// legacyToDomain converts the legacy driver+options form. The driver is kept
+// as-authored (empty stays empty so Validate rejects it); `options:` is wrapped
+// as an opaque driver.Options; `cwd`/`shell` are read from the top level.
+func (yp *yamlProfile) legacyToDomain() *domainprofile.Profile {
 	var opts driver.Options
 	if yp.Options.Kind != 0 {
 		opts = driver.NewOptions(&yp.Options)
@@ -65,6 +86,52 @@ func (yp *yamlProfile) toDomain() *domainprofile.Profile {
 	}
 
 	return p
+}
+
+// envelopeToDomain converts the apiVersion+spec envelope form. `apiVersion`
+// selects the driver (first DNS label) and records the declared schema version;
+// the `cwd`/`shell` common fields are read from inside `spec`; the remaining
+// `spec` keys become the opaque driver-owned Options (common keys stripped).
+// Mixing apiVersion with the legacy top-level driver/options or cwd/shell fails
+// closed.
+func (yp *yamlProfile) envelopeToDomain() (*domainprofile.Profile, error) {
+	if strings.TrimSpace(yp.Driver) != "" || yp.Options.Kind != 0 {
+		return nil, fmt.Errorf("use either apiVersion+spec or legacy driver+options, not both")
+	}
+	if yp.Cwd != (yamlCwd{}) || strings.TrimSpace(yp.Shell) != "" {
+		return nil, fmt.Errorf("cwd/shell must live inside spec for the apiVersion form")
+	}
+
+	drv, version, err := driver.ParseAPIVersion(yp.APIVersion)
+	if err != nil {
+		return nil, err
+	}
+	_ = version
+
+	var specCfg struct {
+		Cwd   yamlCwd `yaml:"cwd"`
+		Shell string  `yaml:"shell"`
+	}
+	if yp.Spec.Kind == yaml.MappingNode {
+		if err := yp.Spec.Decode(&specCfg); err != nil {
+			return nil, fmt.Errorf("profile: decode spec cwd/shell: %w", err)
+		}
+	}
+
+	p := &domainprofile.Profile{
+		Name:        yp.Name,
+		Description: yp.Description,
+		Driver:      drv,
+		APIVersion:  strings.TrimSpace(yp.APIVersion),
+		Cwd:         domainprofile.CwdConfig{Target: specCfg.Cwd.Target, Mode: specCfg.Cwd.Mode},
+		Shell:       specCfg.Shell,
+		Options:     driver.NewOptions(driver.SplitCommon(&yp.Spec)),
+	}
+	if strings.TrimSpace(p.Shell) == "" {
+		p.Shell = "bash"
+	}
+
+	return p, nil
 }
 
 // Store is a read-on-demand view of the operator-authored profiles directory.
@@ -127,7 +194,10 @@ func (s *Store) scan() (map[string]*domainprofile.Profile, error) {
 		if err := yaml.Unmarshal(data, &yp); err != nil {
 			return nil, fmt.Errorf("profile: %s: parse: %w", fname, err)
 		}
-		p := yp.toDomain()
+		p, err := yp.toDomain()
+		if err != nil {
+			return nil, fmt.Errorf("profile: %s: %w", fname, err)
+		}
 		// Reject a declared name that is invalid / tries to traverse out of the
 		// profiles directory (fail-closed) before it could be used as a key.
 		if !domainprofile.ValidName(p.Name) {

@@ -31,8 +31,10 @@ var allowedSeatbeltKeys = map[string]struct{}{
 }
 
 // init registers the seatbelt builder into the process-wide driver registry.
+// The builder declares the schema apiVersion it supports, so the server can
+// reconcile a profile's declared apiVersion against it (SPEC §7.11).
 func init() {
-	_ = driver.Register(spec.DriverSeatbelt, driver.BuildFunc(buildSeatbelt))
+	_ = driver.Register(spec.DriverSeatbelt, driver.BuildFuncWithVersion(buildSeatbelt, "seatbelt.profiles.sandbox.teran.dev/v1"))
 }
 
 // checkKeys fail-closes on an unknown top-level option key.

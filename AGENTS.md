@@ -268,9 +268,21 @@ infrastructure.
 
 ### Driver registry & external drivers (in-process IMPLEMENTED; external loader/IPC FUTURE)
 
-The driver-registry + opaque `options:` work in `SPEC.md` §6.11/§7.11 is
-**partially implemented**. **Implemented (Phase 1, in-process):** the
-**`options:` profile key**, **`driver.Options`** (opaque `*yaml.Node` wrapper),
+The driver-registry + driver-owned config work in `SPEC.md` §6.11/§7.11 is
+**partially implemented**. The **profile schema is the envelope `apiVersion` +
+`spec`** (Phase A, additive — `SPEC.md` §7.11): `apiVersion` =
+`«<driver>.profiles.sandbox.teran.dev/vN»` (driver = first DNS label, `vN` =
+profile-schema version, NOT the driver implementation version), `spec` is the
+**driver-owned** blob that replaces the legacy `options:`, and `cwd`/`shell`
+live **inside** `spec` as common server-understood fields. At USE time
+`driver.Reconcile` fail-closes on an `apiVersion` mismatch
+(`ErrAPIVersionMismatch`); legacy profiles without `apiVersion` pass. The
+**legacy `driver:` + `options:` + top-level `cwd`/`shell` form still works but
+is DEPRECATED** (Phase A is additive; making `.spec` the only form is future
+Phase B, owner decision).
+**Implemented (Phase 1, in-process):** the
+**driver-owned profile key** (`spec`, legacy `options:`), **`driver.Options`**
+(opaque `*yaml.Node` wrapper),
 the **`driver.Registry` / `Builder` / `BuildFunc` / `Context`** model, the
 built-in `docker`/`seatbelt` builders (registering via `init()` into
 `driver.Default`), the **`EnforceHardening`** pure function, the docker backend's
@@ -300,7 +312,9 @@ IPC**. The loader/manifest/IPC content below is the Phase-2 realization.
   (SPEC §7.8), a **distinct**, stable token — do not conflate the two.
 - **`driver` is the registry key, and is REQUIRED in the shipped schema.**
   `auto`/empty is **removed** and rejected at the profile layer (§7.11); the
-  profile `driver:` selects the builder; its `options:` blob is opaque and
+  profile driver (from the envelope `apiVersion` group, or the legacy `driver:`
+  token) selects the builder; its driver-owned `spec:` blob (legacy `options:`)
+  is opaque and
   driver-owned. An **unknown driver fails closed at USE time** with
   `ErrUnknownDriver` — no silent fallback (§6.3). **Reserved built-in names**
   (`docker`, `seatbelt`) cannot be shadowed; duplicate registration fails closed

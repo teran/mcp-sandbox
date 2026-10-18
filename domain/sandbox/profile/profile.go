@@ -77,6 +77,11 @@ type Profile struct {
 	// Shell is the shell (and optional whitespace-separated args) used to run
 	// sandbox_exec commands. Empty means "bash" (defaulted by the builder).
 	Shell string
+	// APIVersion is the declared profile schema version (envelope form), e.g.
+	// "docker.profiles.sandbox.teran.dev/v1". It is empty for the legacy
+	// driver+options form. It is a schema declaration only — never the driver
+	// implementation version.
+	APIVersion string
 	// Options is the opaque, driver-owned options blob the selected builder
 	// decodes. The profile never interprets it.
 	Options driver.Options

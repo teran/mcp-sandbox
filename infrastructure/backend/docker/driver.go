@@ -63,9 +63,11 @@ const (
 	bytesPerGiB     = 1024 * 1024 * 1024
 )
 
-// init registers the docker builder into the process-wide driver registry.
+// init registers the docker builder into the process-wide driver registry. The
+// builder declares the schema apiVersion it supports, so the server can
+// reconcile a profile's declared apiVersion against it (SPEC §7.11).
 func init() {
-	_ = driver.Register(spec.DriverDocker, driver.BuildFunc(buildDocker))
+	_ = driver.Register(spec.DriverDocker, driver.BuildFuncWithVersion(buildDocker, "docker.profiles.sandbox.teran.dev/v1"))
 }
 
 // checkKeys fail-closes on an unknown top-level option key.

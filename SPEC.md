@@ -526,7 +526,8 @@ server's immutable `Isolation` policy (§6.5 → §7.11):
 
 - **Profile-owned fields override the server policy baseline** (`pol`):
   `NanoCPUs`, `Memory`/`MemorySwap`, `PidsLimit`, `Ulimits`, `NetworkMode` come
-  from the profile's decoded `options` `cgroups`/`network` (§7.11). The profile
+  from the profile's decoded driver-owned `spec` (legacy: `options`)
+  `cgroups`/`network` (§7.11). The profile
   also supplies `Image`, `Env`, `Mounts` (appended after the auto cwd mount),
   `UIDGID` (non-root enforced), `Sudo`, and the `cwd` target/mode.
 - **Hardening fields ALWAYS come from `pol` and are NEVER overridden by a
@@ -673,13 +674,17 @@ client supplied a progress token. Criteria: **X03**.
 ### 6.11 Driver registry & external drivers
 
 > **Status: PARTIALLY IMPLEMENTED.** The **in-process driver registry + opaque
-> `options:`** core is **implemented** and shipped: the profile schema is
-> `driver:` (required) + opaque **`options:`** (§7.11), the registry and builders
-> live in `domain/sandbox/driver` (`Options`, `Context`, `Builder`/`BuildFunc`,
-> `Registry`), the built-in `docker`/`seatbelt` builders register themselves via
-> `init()` into the process-wide `driver.Default` registry, `Service.BuildSpec`
-> dispatches through it, and `Service.Create` runs `EnforceHardening` first
-> (re-asserting the immutable `Isolation` + gating mounts by `ALLOW_DIRS`).
+> driver-owned config** core is **implemented** and shipped: the profile schema
+> is the **envelope** `apiVersion` + `spec` (§7.11, Phase A additive; the legacy
+> `driver:` + `options:` form still works but is deprecated), the registry and
+> builders live in `domain/sandbox/driver` (`Options`, `Context`,
+> `Builder`/`BuildFunc`, `Registry`), the built-in `docker`/`seatbelt` builders
+> register themselves via `init()` into the process-wide `driver.Default`
+> registry, `Service.BuildSpec` dispatches through it, at USE time
+> `driver.Reconcile` fail-closes on an `apiVersion` mismatch
+> (`ErrAPIVersionMismatch`, legacy profiles without `apiVersion` pass), and
+> `Service.Create` runs `EnforceHardening` first (re-asserting the immutable
+> `Isolation` + gating mounts by `ALLOW_DIRS`).
 > **Not implemented — FUTURE (Phase 2):** the **external-driver loader**
 > (`SANDBOX_DRIVERS_DIR`), the out-of-process **IPC** (STDIO child +
 > protobuf-like) and the external/non-auditable-driver admission. The
@@ -773,7 +778,9 @@ var Default = New()
 ```
 
 - The **`driver` name is the registry key** — the `Registry.Get` key for
-  selecting the builder, and the key that owns the profile `options:` block.
+  selecting the builder, and the key that owns the profile's driver-owned
+  `spec:` block (legacy: `options:`; the driver itself comes from the `apiVersion`
+  group in the envelope form, or the legacy `driver:` token).
 - The built-in `docker` / `seatbelt` builders **register themselves via `init()`**
   into `driver.Default`; an unknown name **fails closed at USE time** with
   `ErrUnknownDriver` (§6.3) — there is **no silent fallback** to another driver.
@@ -785,11 +792,13 @@ var Default = New()
 
 #### Driver registry keyed by `driver` (implemented)
 
-The registry key is the **`driver` name** from the profile; a profile's `options:`
-blob is handed to that driver's builder verbatim (decoded by the driver, not the
-core). `Service.BuildSpec` reads the profile's concrete `driver`, looks up its
-builder in `driver.Default`, and passes `driver.Context{Options: p.Options,
-Policy: defaultIsolation(), Params, …}` to `Builder.Build`.
+The registry key is the **`driver` name** from the profile (resolved from the
+`apiVersion` group in the envelope form, or the legacy `driver:` token); a
+profile's driver-owned `spec:` blob (legacy: `options:`) is handed to that
+driver's builder verbatim (decoded by the driver, not the core).
+`Service.BuildSpec` resolves the concrete `driver`, looks up its builder in
+`driver.Default`, and passes `driver.Context{Options: p.Options, Policy:
+defaultIsolation(), Params, …}` to `Builder.Build`.
 
 #### Reserved built-in names & fail-closed loading (Security B, HIGH)
 
@@ -1290,20 +1299,21 @@ mechanism and **no** profile tool that writes — profiles exist only as files.
 
 #### Schema
 
-> **Schema status (implemented):** the schema below is the **current, final,
-> implemented** form — a required **`driver:`** token plus an opaque
-> **`options:`** blob whose keys are **driver-owned** (interpreted only by the
-> builder the `driver` selects via the driver registry, §6.11). The typed
-> `docker:` / `seatbelt:` blocks are **gone**; the migration to `driver:` +
-> `options:` is **one-shot breaking and DONE** — there is **no compat shim** that
-> still reads the old blocks (§6.11 J2, §7.14). `auto`/empty is **removed**; a
-> stored profile must always carry an explicit concrete `driver`.
+> **Schema status (implemented, Phase A — additive):** the preferred profile
+> form is the **envelope** — `apiVersion` + `spec` — described below. The
+> **legacy** `driver:` + `options:` + top-level `cwd`/`shell` form **still
+> parses and works but is DEPRECATED** (a warning is logged at the tool
+> boundary) and is kept for backward compatibility until the owner decides on
+> **Phase B**, when `.spec` becomes the **only** accepted form (roadmap, §7.14).
+> The typed `docker:` / `seatbelt:` blocks remain **gone**; `auto`/empty
+> `driver` is **removed** — a legacy profile must carry an explicit concrete
+> `driver`.
 
 ```yaml
+apiVersion: docker.profiles.sandbox.teran.dev/v1 # REQUIRED envelope; driver = first DNS label, vN = profile-schema version (NOT the driver implementation version)
 name: default # required; store key; [a-zA-Z0-9._-], no path separators
 description: the default profile # required
-driver: docker # REQUIRED; the registry key — docker | seatbelt (auto/empty removed)
-options: # opaque; interpreted ONLY by the selected driver's builder
+spec: # driver-owned; replaces the legacy options: — interpreted ONLY by the selected driver's builder
   image: alpine@sha256:… # docker: required; parse-only validation (any registry; digest recommended, §7.9)
   env: # docker/seatbelt: optional session environment (redacted per S02)
     FOO: bar
@@ -1329,11 +1339,36 @@ options: # opaque; interpreted ONLY by the selected driver's builder
   #   sbpl: |            # operator SBPL template, appended verbatim (§7.12)
   #   mach_lookups: [...] # extra (allow mach-lookup ...) services
   #   sysctls: [...]      # extra (allow sysctl-read ...) keys
-cwd: # optional; controls the auto session-cwd mount (§7.2)
-  target: "" # empty ⇒ 1:1 at the same absolute path (default)
-  mode: ro # ro (default) | rw
-shell: bash # optional; default bash; whitespace-separated tokens (§7.5)
+  cwd: # common (server-understood); controls the auto session-cwd mount (§7.2)
+    target: "" # empty ⇒ 1:1 at the same absolute path (default)
+    mode: ro # ro (default) | rw
+  shell: bash # common (server-understood); default bash; whitespace-separated tokens (§7.5)
 ```
+
+#### Envelope (`apiVersion` + `spec`) — preferred form
+
+- **`apiVersion` is server-interpreted and selects the driver.** It is
+  `«<driver>.profiles.sandbox.teran.dev/vN»`. The **driver is the FIRST DNS
+  label** of the group — `docker` → `docker.profiles.sandbox.teran.dev`,
+  `seatbelt` → `seatbelt.profiles.sandbox.teran.dev`. The **`vN` suffix is the
+  version of the profile SCHEMA** (e.g. `v1`), **NOT** the driver implementation
+  version. Built-in drivers declare `…/v1`; an external driver may pin its own
+  schema version.
+- **The envelope is split in two.** The server interprets `apiVersion`, `name`
+  and `description`; everything under **`spec`** is **driver-owned** — it
+  replaces the legacy `options:` blob and is decoded **only** by the builder the
+  driver selects. The server never interprets `spec` keys.
+- **`cwd` / `shell` are common fields living INSIDE `spec`.** They are the two
+  fields the server itself understands: the store extracts them into
+  `Profile.Cwd` / `Profile.Shell` and **removes them** from the driver-owned
+  blob before it is handed to the builder. They are not driver convention.
+- **`driver.Reconcile` (fail-closed on USE, Phase A):** at USE time the
+  `driver.Reconcile` step compares the profile's `apiVersion` against the
+  declared `apiVersion` of the selected driver; a mismatch fails closed with the
+  sentinel **`ErrAPIVersionMismatch`**. **Legacy profiles WITHOUT `apiVersion`
+  pass reconciliation without restriction** (they carry an explicit `driver:`
+  token instead). This is additive — it never weakens the immutable `Isolation`
+  / `EnforceHardening` / `ALLOW_DIRS` / fail-closed security invariants.
 
 Schema key reference (`domain/sandbox/profile.Profile`):
 
@@ -1341,25 +1376,30 @@ Schema key reference (`domain/sandbox/profile.Profile`):
 | ------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`             | string                                 | Required. Store key. Regex `[a-zA-Z0-9._-]+`; must not be a path separator / `..` (path-traversal rejected, §7.11 loader).                                                                                                                                                            |
 | `description`      | string                                 | Required. Human-readable summary shown by `profile_list`.                                                                                                                                                                                                                               |
-| `driver`           | string                                 | **Required.** The registry key — a concrete `docker` or `seatbelt` token (the allowlisted driver-name charset). **`auto`/empty is removed and rejected** (fail-at-scan). An unknown-but-well-formed token is accepted at scan and **fails closed at USE time** with `ErrUnknownDriver` (§6.11). Reserved built-in names cannot be shadowed. |
-| `options`          | opaque `yaml.Node` (`driver.Options`)  | **Opaque, driver-owned.** Interpreted **only** by the builder the `driver` selects. The profile and registry never interpret it. Keys are a driver convention, not a server contract; an unknown top-level key **fails closed at build time** in each built-in builder. Absent `options:` ⇒ nil node. |
-| `cwd`              | `{target,mode}`                        | Optional. `target` empty ⇒ mounted 1:1 at the client path; `mode` `ro`(default)/`rw`.                                                                                                                                                                                                   |
-| `shell`            | string                                 | Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image.              |
-| `options.image` (docker)   | string                          | Required (docker). Parse-only reference validation (§7.9); digest-pinning recommended.                                                                                                                                                                                             |
-| `options.env` (docker/seatbelt) | map[string]string            | Optional. Session environment, redacted per S02.                                                                                                                                                                                                                                       |
-| `options.mounts[]` (docker) | `{source,target,read_only}`   | Optional. `source` must be absolute **and within `ALLOW_DIRS`** (§7.2).                                                                                                                                                                                                               |
-| `options.network` (docker) | `{mode}`                      | Optional. `bridge`(default)/`none`/`host` — `host` only when operator-authored.                                                                                                                                                                                                       |
-| `options.cgroups` (docker) | `{nano_cpus,memory,memory_swap,pids_limit,cpu_cores,memory_gb,ulimits}` | Optional. Bounded resource limits; profile overrides the server baseline; missing ⇒ server default (§7.1). Raw `nano_cpus`/`memory` take precedence over `cpu_cores`/`memory_gb`; `memory_swap` ≥ `memory`, defaults to `memory` when unset; values must be bounded (> 0). |
-| `options.user` (docker)   | `{uid,gid}`                    | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user.                                                                                                                                                                                                      |
-| `options.sudo` (docker)   | string                        | Optional. `never`(default)/`require`.                                                                                                                                                                                                                                                 |
-| `options.sbpl` (seatbelt) | string                        | Optional. Operator SBPL template, appended verbatim (last-match-wins) after the server-hardening ops; only NUL rejected (§7.12).                                                                                                                                                       |
-| `options.mach_lookups` (seatbelt) | `[]string`          | Optional. Extra `(allow mach-lookup …)` services (§7.12).                                                                                                                                                                                                                            |
-| `options.sysctls` (seatbelt) | `[]string`              | Optional. Extra `(allow sysctl-read …)` keys (§7.12).                                                                                                                                                                                                                                 |
+| `apiVersion`       | string                                 | **Envelope (preferred, required in the new form).** `«<driver>.profiles.sandbox.teran.dev/vN»`. The driver is the **first DNS label** of the group (`docker` / `seatbelt`); `vN` is the **profile-schema** version (NOT the driver implementation version). At USE time `driver.Reconcile` compares it against the driver's declared `apiVersion`; a mismatch **fails closed** with `ErrAPIVersionMismatch`. **Legacy profiles WITHOUT `apiVersion` pass this check unrestricted** (they carry an explicit `driver:`). Built-in drivers declare `…/v1`. |
+| `spec`             | opaque `yaml.Node` (`driver.Options`)  | **Envelope, driver-owned.** Replaces the legacy `options:` blob. Interpreted **only** by the builder the driver (from `apiVersion`) selects. The profile and registry never interpret it. `cwd` and `shell` are **common** fields the store extracts into `Profile.Cwd`/`Profile.Shell` and **removes** from the driver-owned blob. Absent `spec:` ⇒ nil node. |
+| `driver`           | string                                 | **LEGACY (deprecated).** The registry key — a concrete `docker` or `seatbelt` token (the allowlisted driver-name charset). **`auto`/empty is removed and rejected** (fail-at-scan). Still works in Phase A but deprecated in favor of `apiVersion`; an unknown-but-well-formed token is accepted at scan and **fails closed at USE time** with `ErrUnknownDriver` (§6.11). Reserved built-in names cannot be shadowed. |
+| `options`          | opaque `yaml.Node` (`driver.Options`)  | **LEGACY (deprecated).** Opaque, driver-owned; replaced by `spec:`. Interpreted **only** by the builder the `driver` selects. The profile and registry never interpret it. Keys are a driver convention, not a server contract; an unknown top-level key **fails closed at build time** in each built-in builder. Absent `options:` ⇒ nil node. |
+| `cwd`              | `{target,mode}`                        | **LEGACY (deprecated)** top-level form of `spec.cwd`. Optional. `target` empty ⇒ mounted 1:1 at the client path; `mode` `ro`(default)/`rw`. |
+| `shell`            | string                                 | **LEGACY (deprecated)** top-level form of `spec.shell`. Optional. The shell used for the **fixed** `sandbox_exec` wrapper `[ <shell>, "-c", command ]` (§7.5). Whitespace-separated tokens (split on whitespace); NUL/newline characters rejected; empty/missing ⇒ default `bash`. Operator picks a shell available in the image. |
+| `spec.cwd`         | `{target,mode}`                        | **Envelope (common, server-understood).** Same semantics as the legacy top-level `cwd` (§7.2). |
+| `spec.shell`       | string                                 | **Envelope (common, server-understood).** Same semantics as the legacy top-level `shell` (§7.5). |
+| `options.image` / `spec.image` (docker) | string                     | Required (docker). Parse-only reference validation (§7.9); digest-pinning recommended. |
+| `options.env` / `spec.env` (docker/seatbelt) | map[string]string    | Optional. Session environment, redacted per S02. |
+| `options.mounts[]` / `spec.mounts[]` (docker) | `{source,target,read_only}` | Optional. `source` must be absolute **and within `ALLOW_DIRS`** (§7.2). |
+| `options.network` / `spec.network` (docker) | `{mode}`               | Optional. `bridge`(default)/`none`/`host` — `host` only when operator-authored. |
+| `options.cgroups` / `spec.cgroups` (docker) | `{nano_cpus,memory,memory_swap,pids_limit,cpu_cores,memory_gb,ulimits}` | Optional. Bounded resource limits; profile overrides the server baseline; missing ⇒ server default (§7.1). Raw `nano_cpus`/`memory` take precedence over `cpu_cores`/`memory_gb`; `memory_swap` ≥ `memory`, defaults to `memory` when unset; values must be bounded (> 0). |
+| `options.user` / `spec.user` (docker) | `{uid,gid}`              | Optional. Must be **non-root** (`uid != 0`); nil ⇒ server default non-root user. |
+| `options.sudo` / `spec.sudo` (docker) | string                 | Optional. `never`(default)/`require`. |
+| `options.sbpl` / `spec.sbpl` (seatbelt) | string               | Optional. Operator SBPL template, appended verbatim (last-match-wins) after the server-hardening ops; only NUL rejected (§7.12). |
+| `options.mach_lookups` / `spec.mach_lookups` (seatbelt) | `[]string` | Optional. Extra `(allow mach-lookup …)` services (§7.12). |
+| `options.sysctls` / `spec.sysctls` (seatbelt) | `[]string`      | Optional. Extra `(allow sysctl-read …)` keys (§7.12). |
 
-> **`options:` keys are a driver convention, not a server contract.** The exact
-> key names above are owned by the built-in `docker`/`seatbelt` builders and may
-> differ for an external driver. Each built-in builder **fail-closes on an
-> unknown top-level `options:` key** rather than silently ignoring it.
+> **`spec:` (like the legacy `options:`) keys are a driver convention, not a
+> server contract.** The exact key names above are owned by the built-in
+> `docker`/`seatbelt` builders and may differ for an external driver. Each
+> built-in builder **fail-closes on an unknown top-level `spec:` key** rather
+> than silently ignoring it.
 
 #### Loader & store (read-only)
 
@@ -1396,18 +1436,24 @@ Schema key reference (`domain/sandbox/profile.Profile`):
 (required) and optional `secrets`. The server resolves `profile` to a
 `domain/sandbox/profile.Profile`, then `Service.BuildSpec(p, Params{Cwd,
 Secrets, ClientSessionID})` (**implemented**, §6.11/§6.5) dispatches through the
-**driver registry** to the builder the profile's `driver` selects
+**driver registry** to the builder the profile selects (from the `apiVersion`
+group in the envelope form, or the legacy `driver` token otherwise)
 (`driver.Registry.Get` → `Builder.Build(driver.Context{…, Policy:
 defaultIsolation(), Options})`, fail-closed on an unknown driver with
-`ErrUnknownDriver`). `Service.Create` then runs **`EnforceHardening` FIRST** —
-before backend selection/creation — re-asserting the immutable `Isolation` and
-gating every mount `source` by `ALLOW_DIRS` (S04) on the produced spec. The
-resulting typed `SandboxSpec` carries:
+`ErrUnknownDriver`). At USE time the **`driver.Reconcile`** step also compares
+the profile's `apiVersion` against the driver's declared version, failing
+closed with `ErrAPIVersionMismatch` on a mismatch (legacy profiles without
+`apiVersion` pass unchecked). `Service.Create` then runs
+**`EnforceHardening` FIRST** — before backend selection/creation — re-asserting
+the immutable `Isolation` and gating every mount `source` by `ALLOW_DIRS` (S04)
+on the produced spec. The resulting typed `SandboxSpec` carries:
 
 - `image`, `env`, `mounts` (appended after the auto cwd mount), `network`,
-  `cgroups`, `user`, `sudo` from the profile's decoded `options`;
+  `cgroups`, `user`, `sudo` from the profile's decoded `spec` (legacy:
+  `options`);
 - the **session `cwd` always mounted 1:1** at the same absolute path (read-only
-  by default) unless the profile's `cwd` remaps `target`/`mode` (§7.2);
+  by default) unless the profile's `cwd`/`spec.cwd` remaps `target`/`mode`
+  (§7.2);
 - the **immutable `Isolation` hardening block always from server policy**,
   never from the profile (§6.5/§7.1);
 - `secrets` delivered as tmpfs `0600` files under `/run/sandbox` (§7.3).
@@ -1415,14 +1461,37 @@ resulting typed `SandboxSpec` carries:
 If the requested `profile` is not in the store, `sandbox_create` returns a
 "not found" error.
 
-#### Migration to `driver` + `options:` (ONE-SHOT breaking — DONE)
+#### Migration to the envelope form (`apiVersion` + `spec`) — Phase A (additive)
 
-The typed `docker:` / `seatbelt:` blocks have migrated into the **implemented**
-`driver:` + opaque `options:` schema above (§6.11 J2). This was a **one-shot
-breaking change, now DONE**: there is **no compat shim** — the server **no longer
-reads** the old `docker:`/`seatbelt:` blocks. `driver` is **REQUIRED** and
+The preferred profile schema is the **envelope** `apiVersion` + `spec`. Phase A
+is **additive**: the legacy `driver:` + `options:` + top-level `cwd`/`shell`
+form (itself the Phase-7 migration target of the typed `docker:`/`seatbelt:`
+blocks — see below) **still parses and works but is DEPRECATED**, with a warning
+logged at the tool boundary. The store **extracts** `spec.cwd`/`spec.shell` into
+`Profile.Cwd`/`Profile.Shell` and removes them from the driver-owned blob, and
+`driver.Reconcile` fail-closes on an `apiVersion` mismatch
+(`ErrAPIVersionMismatch`) while passing legacy profiles (no `apiVersion`)
+unrestricted.
+
+Migration is a **1:1 mechanical rename** — `spec:` replaces `options:`, the
+driver moves from the `driver:` token into the `apiVersion` group, and top-level
+`cwd`/`shell` move inside `spec:`. The README **migration guide** documents the
+key mapping, the `apiVersion` semantics and a convert checklist.
+
+> **Roadmap (Phase B, future — owner decision):** Phase A keeps the legacy form
+> working. A later **Phase B** will make the `.spec` envelope the **only**
+> accepted profile form and **remove** legacy `driver:` / `options:` / top-level
+> `cwd` / `shell` — a breaking change, scheduled by the owner, not yet done
+> (§7.14 / `TODO.md`).
+
+#### Migration to `driver` + `options:` (ONE-SHOT breaking — DONE; legacy)
+
+The typed `docker:` / `seatbelt:` blocks migrated into the Phase-7 `driver:` +
+opaque `options:` schema (§6.11 J2). This was a **one-shot breaking change, now
+DONE**: there is **no compat shim** — the server **no longer reads** the old
+`docker:`/`seatbelt:` blocks. `driver` is **REQUIRED** and
 **`auto` / empty is REMOVED** — there is no typed block to auto-resolve and no
-implicit selection in a stored profile. Existing profiles must move their
+implicit selection in a stored profile. Existing profiles moved their
 `docker:` / `seatbelt:` keys under `options:` and set an explicit `driver:`; the
 README **migration guide** documents the key mapping and a convert checklist.
 `Service.resolveDriver` (which still resolves auto/empty to a concrete driver at
@@ -1430,12 +1499,13 @@ the runtime layer, `infrastructure/mcp/service.go`) remains **only for
 internal/built-in compatibility**, not for stored profiles — a stored profile
 must always carry an explicit `driver:`. Canonical converted examples:
 `examples/profiles/golang.yml` (docker) and `examples/profiles/seatbelt.yml`
-(seatbelt) — both use `driver:` + `options:`.
+(seatbelt). This `driver:` + `options:` form is now itself **deprecated** in
+favor of the envelope above (Phase A keeps it working).
 
 The core's hardening enforcement is the **data-plane floor (§6.11)**: the
 immutable `Isolation` block is re-asserted on the result via `EnforceHardening`
-(§6.11, G), and every mount `source` inside `options` is gated by `ALLOW_DIRS`
-(§6.11) — both at the Service level.
+(§6.11, G), and every mount `source` inside `spec`/`options` is gated by
+`ALLOW_DIRS` (§6.11) — both at the Service level.
 
 ### 7.12 Apple / `sandbox-exec` driver (darwin backend) — experimental
 
@@ -1526,15 +1596,17 @@ is evaluated **lazily** in `Select` (**A02/N35**): `runtime.GOOS == "darwin"`,
 
 #### Profile extension (seatbelt `options`, §7.11)
 
-The darwin profile's **`options:`** blob (under `driver: seatbelt`) carries the
+The darwin profile's **`spec:`** blob (under `apiVersion: seatbelt.profiles.sandbox.teran.dev/v1`; the legacy `driver: seatbelt` + `options:` also still works) carries the
 Seatbelt (SBPL) template and darwin knobs. The seatbelt builder
 (`infrastructure/backend/darwin/driver.go`) decodes them and projects them into
 `SandboxSpec.Sandbox`, consumed by the darwin backend
 (`domain/sandbox/spec.Sandbox`):
 
 ```yaml
-driver: seatbelt
-options: # darwin/Seatbelt
+apiVersion: seatbelt.profiles.sandbox.teran.dev/v1
+name: default
+description: darwin/Seatbelt profile
+spec: # darwin/Seatbelt
   env: # optional; session environment (redacted per S02, §7.3)
     GIT_AUTHOR_NAME: "Igor Shishkin"
     GIT_AUTHOR_EMAIL: "me@teran.dev"
@@ -1547,10 +1619,11 @@ options: # darwin/Seatbelt
     - kern.osversion
 ```
 
-The seatbelt builder decodes `options.{sbpl,mach_lookups,sysctls,env}` into
+The seatbelt builder decodes `spec.{sbpl,mach_lookups,sysctls,env}` (legacy:
+`options.{…}`) into
 `SandboxSpec{Env, Sandbox: spec.Sandbox{SBPL, MachLookups, Sysctls}}` — the
 `env` values populate the session environment (delivered via `cmd.Env`, redacted
-per S02 like the Docker profile's `options.env`, §7.3) and the SBPL/mach/sysctl
+per S02 like the Docker profile's `spec.env`, §7.3) and the SBPL/mach/sysctl
 fields fill the `spec.Sandbox` block consumed by the darwin backend. **The
 operator `sbpl` is appended verbatim
 (last-match-wins) and does NOT pass through the `sbpl` metacharacter validators**
@@ -1946,9 +2019,13 @@ silently ignored or presented as full isolation (§6.11 F2, analog of §7.12).
 The design-direction in §6.11/§7.11/§7.13 was reviewed by qa, devops, sre,
 developer and security (all approve-with-changes). The **settled decisions** below
 are recorded for traceability. **Implemented:** the in-process driver registry +
-opaque `options:` + `EnforceHardening` + required-`driver` schema (Phase 1).
+opaque driver-owned config + `EnforceHardening` + the **envelope** `apiVersion` +
+`spec` profile schema (Phase A, additive; the legacy `driver:` + `options:` form
+remains working but deprecated) (§7.11).
 **Still open / future (Phase 2):** the external `SANDBOX_DRIVERS_DIR` loader and
-the out-of-process IPC.
+the out-of-process IPC. **Future (Phase B, owner decision):** making the `.spec`
+envelope the **only** accepted profile form and **removing** legacy
+`driver:`/`options:`/top-level `cwd`/`shell`.
 
 #### Settled decisions (J1–J5 + reviewer F1–F6)
 
@@ -2002,6 +2079,11 @@ the out-of-process IPC.
     testable without a concrete driver (fake-driver pattern) (§6.11 H).
 
 #### Remaining open questions (implementation phase)
+
+0. **Profile envelope Phase B (future — owner decision):** after Phase A lands
+   (additive, legacy deprecated), make the `.spec` envelope the **only**
+   accepted profile form and **remove** legacy `driver:` / `options:` / top-level
+   `cwd` / `shell`. Breaking; scheduled by the owner, not yet done (§7.11).
 
 1. **Wire/encoding (Phase 2):** exact encoding of the IPC stream. **Settled:** it
    is a **STDIO child + protobuf-like** encoding, and the **process boundary is a

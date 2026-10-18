@@ -99,6 +99,32 @@ next steps:
   - **Docs polish (low):** wire live badges (coverage/gosec/govulncheck/gremlins)
     to real sources; pin CI tool versions in SPEC.
 
+### Profile schema → envelope `apiVersion` + `spec` (Phase A done / in progress; Phase B future)
+
+The preferred profile schema migrates from the legacy `driver:` + `options:` +
+top-level `cwd`/`shell` form to the **envelope** `apiVersion` + `spec`
+(`SPEC.md` §7.11). `apiVersion` = `«<driver>.profiles.sandbox.teran.dev/vN»`
+(driver = first DNS label; `vN` = profile-schema version, NOT the driver
+implementation version); `spec` is driver-owned (replaces `options:`); `cwd`/
+`shell` live **inside** `spec` as common server-understood fields. At USE time
+`driver.Reconcile` fail-closes on an `apiVersion` mismatch
+(`ErrAPIVersionMismatch`); legacy profiles without `apiVersion` pass.
+
+- [x] **Phase A (additive) — envelope schema accepted & implemented:** the
+      envelope `apiVersion` + `spec` profile form; `spec.cwd`/`spec.shell`
+      extracted by the store into `Profile.Cwd`/`Profile.Shell`; `driver.Reconcile`
+      fail-closed `apiVersion` check; built-in drivers declare
+      `docker`/`seatbelt.profiles.sandbox.teran.dev/v1`; legacy `driver:` +
+      `options:` + top-level `cwd`/`shell` **still works but deprecated** (warning
+      at the tool boundary) — `@architect`/`@developer`, `D01 D02`
+- [ ] **Docs (Phase A):** README / SPEC / AGENTS describe the envelope, the
+      migration table (legacy → envelope) and the deprecation of the legacy form —
+      English, `D01 D02`
+- [ ] **Phase B (future — owner decision):** make the `.spec` envelope the
+      **only** accepted profile form and **remove** legacy `driver:` / `options:` /
+      top-level `cwd` / `shell` — a breaking change, scheduled by the owner, not
+      yet done (`SPEC.md` §7.11/§7.14) — `@architect`/`@developer`, `D01 D02`
+
 ### Sandbox lifecycle & GC (backlog — designed, not yet wired)
 
 Sandboxes are currently removed **only** by explicit

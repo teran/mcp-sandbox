@@ -512,3 +512,268 @@ func TestStore_OptionsNodeIsOpaqueYamlNode(t *testing.T) {
 		t.Fatalf("Options.Node().Kind = %d, want MappingNode", p.Options.Node().Kind)
 	}
 }
+
+// --- Envelope form (apiVersion + spec, Phase A) ---
+
+// envelopeYAML is a valid envelope-form docker profile: apiVersion + spec with
+// cwd/shell inside spec.
+const envelopeYAML = `apiVersion: docker.profiles.sandbox.teran.dev/v1
+name: envdefault
+description: the envelope default profile
+spec:
+  image: docker.io/library/alpine:3.20
+  env:
+    A: "1"
+  network:
+    mode: bridge
+  user:
+    uid: 1000
+    gid: 1000
+  sudo: never
+  cwd:
+    target: /work
+    mode: rw
+  shell: /bin/sh
+`
+
+// TestGet_EnvelopeParses pins that an envelope-form profile parses into the
+// domain profile: driver from the apiVersion label, declared apiVersion,
+// cwd/shell extracted from spec, and the remaining spec keys as opaque options
+// (with cwd/shell stripped).
+func TestGet_EnvelopeParses(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "env.yml", envelopeYAML)
+	st := New(dir)
+
+	p, err := st.Get("envdefault")
+	if err != nil {
+		t.Fatalf("Get(envdefault): %v", err)
+	}
+	if p.Driver != spec.DriverDocker {
+		t.Fatalf("Driver = %q, want docker (from apiVersion label)", p.Driver)
+	}
+	if p.APIVersion != "docker.profiles.sandbox.teran.dev/v1" {
+		t.Fatalf("APIVersion = %q, want docker.../v1", p.APIVersion)
+	}
+	if p.Cwd.Target != "/work" || p.Cwd.Mode != "rw" {
+		t.Fatalf("Cwd = %+v, want target=/work mode=rw from spec", p.Cwd)
+	}
+	if p.Shell != "/bin/sh" {
+		t.Fatalf("Shell = %q, want /bin/sh from spec", p.Shell)
+	}
+	// The driver options carry the remaining spec keys; cwd/shell are stripped.
+	if p.Options.Node() == nil || p.Options.Node().Kind != yaml.MappingNode {
+		t.Fatal("Options node must be a mapping")
+	}
+	var o struct {
+		Image string `yaml:"image"`
+		Cwd   string `yaml:"cwd"`
+		Shell string `yaml:"shell"`
+	}
+	if err := p.Options.Node().Decode(&o); err != nil {
+		t.Fatalf("decode options: %v", err)
+	}
+	if o.Image != "docker.io/library/alpine:3.20" {
+		t.Fatalf("options image = %q", o.Image)
+	}
+	if o.Cwd != "" || o.Shell != "" {
+		t.Fatalf("options must NOT carry cwd/shell, got cwd=%q shell=%q", o.Cwd, o.Shell)
+	}
+}
+
+// TestGet_EnvelopeShellDefaultsBash pins that an envelope profile without a
+// shell in spec defaults to bash.
+func TestGet_EnvelopeShellDefaultsBash(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "env.yml", strings.Replace(envelopeYAML, "  shell: /bin/sh\n", "", 1))
+	st := New(dir)
+	p, err := st.Get("envdefault")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if p.Shell != "bash" {
+		t.Fatalf("Shell = %q, want default bash", p.Shell)
+	}
+}
+
+// TestGet_EnvelopeSeatbelt pins an envelope seatbelt profile: driver seatbelt
+// from the apiVersion, sbpl/env carried in the stripped options.
+func TestGet_EnvelopeSeatbelt(t *testing.T) {
+	const yaml = `apiVersion: seatbelt.profiles.sandbox.teran.dev/v1
+name: envmac
+description: an envelope seatbelt profile
+spec:
+  sbpl: |
+    (allow default)
+    (allow process-fork)
+  env:
+    MY_VAR: hello
+  cwd:
+    mode: ro
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "envmac.yml", yaml)
+	st := New(dir)
+	p, err := st.Get("envmac")
+	if err != nil {
+		t.Fatalf("Get(envmac): %v", err)
+	}
+	if p.Driver != spec.DriverSeatbelt {
+		t.Fatalf("Driver = %q, want seatbelt", p.Driver)
+	}
+	if p.APIVersion != "seatbelt.profiles.sandbox.teran.dev/v1" {
+		t.Fatalf("APIVersion = %q", p.APIVersion)
+	}
+	var o struct {
+		SBPL string            `yaml:"sbpl"`
+		Env  map[string]string `yaml:"env"`
+	}
+	if err := p.Options.Node().Decode(&o); err != nil {
+		t.Fatalf("decode options: %v", err)
+	}
+	if !strings.Contains(o.SBPL, "(allow process-fork)") || o.Env["MY_VAR"] != "hello" {
+		t.Fatalf("options = %+v", o)
+	}
+}
+
+// TestGet_EnvelopeUnknownWellFormedDriver pins that an envelope profile with a
+// well-formed but unknown driver is accepted at scan (fails at USE time).
+func TestGet_EnvelopeUnknownWellFormedDriver(t *testing.T) {
+	const yaml = `apiVersion: bwrap.profiles.sandbox.teran.dev/v3
+name: envbwrap
+description: an unknown-driver envelope profile
+spec:
+  anything: here
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "envbwrap.yml", yaml)
+	st := New(dir)
+	p, err := st.Get("envbwrap")
+	if err != nil {
+		t.Fatalf("Get(envbwrap): %v", err)
+	}
+	if p.Driver != spec.Driver("bwrap") {
+		t.Fatalf("Driver = %q, want bwrap", p.Driver)
+	}
+	if p.APIVersion != "bwrap.profiles.sandbox.teran.dev/v3" {
+		t.Fatalf("APIVersion = %q", p.APIVersion)
+	}
+}
+
+// TestGet_EnvelopeMalformedAPIVersion pins a malformed apiVersion fails closed
+// at scan (ErrInvalidAPIVersion wrapped).
+func TestGet_EnvelopeMalformedAPIVersion(t *testing.T) {
+	for _, apiVersion := range []string{"nope", "docker/v1", "docker.example.com/v1", ""} {
+		dir := t.TempDir()
+		writeProfile(t, dir, "bad.yml",
+			"apiVersion: "+apiVersion+"\nname: badp\ndescription: bad apiVersion\nspec:\n  image: alpine\n")
+		st := New(dir)
+		if _, err := st.Get("badp"); err == nil {
+			t.Errorf("apiVersion %q: expected scan error", apiVersion)
+		}
+	}
+}
+
+// TestGet_EnvelopeMixedWithDriver pins that apiVersion + top-level driver is
+// rejected at scan (mixing the two forms).
+func TestGet_EnvelopeMixedWithDriver(t *testing.T) {
+	const yaml = `apiVersion: docker.profiles.sandbox.teran.dev/v1
+name: mixed
+description: mixed form
+driver: docker
+spec:
+  image: alpine
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "mixed.yml", yaml)
+	st := New(dir)
+	if _, err := st.Get("mixed"); err == nil {
+		t.Fatal("expected error for apiVersion+driver mix")
+	} else if !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGet_EnvelopeMixedWithTopLevelCwdShell pins that apiVersion + top-level
+// cwd/shell is rejected at scan.
+func TestGet_EnvelopeMixedWithTopLevelCwdShell(t *testing.T) {
+	const yaml = `apiVersion: docker.profiles.sandbox.teran.dev/v1
+name: mixedcwd
+description: mixed cwd form
+spec:
+  image: alpine
+cwd:
+  mode: rw
+shell: bash
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "mixedcwd.yml", yaml)
+	st := New(dir)
+	if _, err := st.Get("mixedcwd"); err == nil {
+		t.Fatal("expected error for apiVersion+top-level cwd/shell")
+	} else if !strings.Contains(err.Error(), "must live inside spec") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGet_LegacyStillAccepted pins that the legacy driver+options form remains
+// accepted (Phase A additive) — validYAML is the canonical legacy document.
+func TestGet_LegacyStillAccepted(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "default.yml", validYAML)
+	st := New(dir)
+	p, err := st.Get("default")
+	if err != nil {
+		t.Fatalf("Get(default): %v", err)
+	}
+	if p.Driver != spec.DriverDocker || p.APIVersion != "" {
+		t.Fatalf("Driver=%q APIVersion=%q, want docker/empty (legacy)", p.Driver, p.APIVersion)
+	}
+	if p.Cwd.Target != "/work" || p.Cwd.Mode != "ro" {
+		t.Fatalf("Cwd = %+v, want legacy top-level cwd", p.Cwd)
+	}
+}
+
+// TestGet_EnvelopeCwdExtractedFromSpec pins that cwd inside spec is extracted
+// into Profile.Cwd (and stripped from options).
+func TestGet_EnvelopeCwdExtractedFromSpec(t *testing.T) {
+	const yaml = `apiVersion: docker.profiles.sandbox.teran.dev/v1
+name: cwdp
+description: cwd extraction
+spec:
+  image: alpine
+  cwd:
+    target: /src
+    mode: rw
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "cwdp.yml", yaml)
+	st := New(dir)
+	p, err := st.Get("cwdp")
+	if err != nil {
+		t.Fatalf("Get(cwdp): %v", err)
+	}
+	if p.Cwd.Target != "/src" || p.Cwd.Mode != "rw" {
+		t.Fatalf("Cwd = %+v, want target=/src mode=rw", p.Cwd)
+	}
+}
+
+// TestGet_EnvelopeSpecDecodeError pins that a spec whose cwd/shell common
+// fields are not the expected shape fails closed with a decode error.
+func TestGet_EnvelopeSpecDecodeError(t *testing.T) {
+	const yaml = `apiVersion: docker.profiles.sandbox.teran.dev/v1
+name: badspec
+description: bad spec
+spec:
+  image: alpine
+  cwd: not-a-mapping
+`
+	dir := t.TempDir()
+	writeProfile(t, dir, "badspec.yml", yaml)
+	st := New(dir)
+	if _, err := st.Get("badspec"); err == nil {
+		t.Fatal("expected error decoding a scalar cwd inside spec")
+	} else if !strings.Contains(err.Error(), "decode spec cwd/shell") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

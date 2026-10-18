@@ -411,10 +411,13 @@ func fakeSeatbeltBuild(ctx driver.Context) (spec.SandboxSpec, error) {
 // init seeds the domain driver.Default registry with the docker + seatbelt
 // test-double builders. This mirrors the production wiring where the
 // infrastructure packages register the real builders at startup; the tools
-// tests seed the domain registry directly to stay architecture-clean.
+// tests seed the domain registry directly to stay architecture-clean. The
+// doubles declare the same schema apiVersions as the real builders.
 func init() {
-	_ = driver.Register(spec.DriverDocker, driver.BuildFunc(fakeDockerBuild))
-	_ = driver.Register(spec.DriverSeatbelt, driver.BuildFunc(fakeSeatbeltBuild))
+	_ = driver.Register(spec.DriverDocker, driver.BuildFuncWithVersion(fakeDockerBuild,
+		"docker.profiles.sandbox.teran.dev/v1"))
+	_ = driver.Register(spec.DriverSeatbelt, driver.BuildFuncWithVersion(fakeSeatbeltBuild,
+		"seatbelt.profiles.sandbox.teran.dev/v1"))
 }
 
 // defaultProfile is the fake's built-in operator profile used by the sandbox

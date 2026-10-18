@@ -16,6 +16,8 @@ package driver
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -79,6 +81,140 @@ type BuildFunc func(ctx Context) (spec.SandboxSpec, error)
 // Build invokes the wrapped function.
 func (f BuildFunc) Build(ctx Context) (spec.SandboxSpec, error) {
 	return f(ctx)
+}
+
+// APIGroup is the DNS group that every profile `apiVersion` belongs to. The
+// first DNS label of a profile's apiVersion names the driver that owns its
+// `spec` (e.g. `docker.profiles.sandbox.teran.dev/v1` -> driver `docker`).
+const APIGroup = "profiles.sandbox.teran.dev"
+
+// APISuffix is the fully-qualified suffix a profile apiVersion must end with
+// (`.profiles.sandbox.teran.dev/<version>`).
+const APISuffix = ".profiles.sandbox.teran.dev"
+
+// Sentinel errors returned by the apiVersion contract (fail-closed).
+var (
+	// ErrInvalidAPIVersion reports that an apiVersion string does not conform
+	// to the `<driver>.profiles.sandbox.teran.dev/v<N>` shape (empty, no match,
+	// or a `.`/`..` driver label).
+	ErrInvalidAPIVersion = errors.New("driver: invalid apiVersion")
+	// ErrAPIVersionMismatch reports that a profile's declared schema apiVersion
+	// is not the version its driver builder declares (or the builder does not
+	// declare one at all).
+	ErrAPIVersionMismatch = errors.New("driver: apiVersion mismatch")
+)
+
+// apiVersionPattern matches the envelope apiVersion form:
+// `<driver>.profiles.sandbox.teran.dev/v<N>`, where `<driver>` is the FIRST DNS
+// label (the driver that owns `spec`) and `<N>` is the schema-version number
+// (the LAST segment after the `/`). This is the profile SCHEMA version, not the
+// driver implementation version.
+var apiVersionPattern = regexp.MustCompile(`^([a-z0-9._-]+)\.profiles\.sandbox\.teran\.dev/(v[0-9]+)$`)
+
+// ParseAPIVersion parses an envelope apiVersion into the owning driver (the
+// first DNS label) and the schema version (the segment after the `/`). An empty,
+// non-matching, or `.`/`..` driver label returns ErrInvalidAPIVersion.
+func ParseAPIVersion(s string) (spec.Driver, string, error) {
+	m := apiVersionPattern.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
+		return "", "", ErrInvalidAPIVersion
+	}
+	drv := m[1]
+	if drv == "." || drv == ".." {
+		return "", "", ErrInvalidAPIVersion
+	}
+
+	return spec.Driver(drv), m[2], nil
+}
+
+// Common option keys that the SERVER interprets from a driver's `spec` and
+// strips before handing the remainder to the builder (SPEC §7.11). These are
+// driver-agnostic and never appear in the builder-owned options.
+const (
+	CommonCwdKey   = "cwd"
+	CommonShellKey = "shell"
+)
+
+// SplitCommon returns a NEW mapping node containing every key of node EXCEPT
+// the server-interpreted common keys (cwd/shell). The input node is never
+// mutated. A nil or non-mapping node is returned as-is.
+func SplitCommon(node *yaml.Node) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return node
+	}
+	out := &yaml.Node{
+		Kind:    yaml.MappingNode,
+		Tag:     node.Tag,
+		Value:   node.Value,
+		Anchor:  node.Anchor,
+		Alias:   node.Alias,
+		Style:   node.Style,
+		Content: make([]*yaml.Node, 0, len(node.Content)),
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Kind == yaml.ScalarNode && (key.Value == CommonCwdKey || key.Value == CommonShellKey) {
+			continue
+		}
+		out.Content = append(out.Content, key, node.Content[i+1])
+	}
+
+	return out
+}
+
+// APIVersioner is the optional capability a Builder may implement to declare
+// the profile schema apiVersion it supports (SPEC §7.11). It is dispatched by
+// type-assertion — a Builder that does not implement it is a legacy builder
+// that does not participate in apiVersion reconciliation.
+type APIVersioner interface {
+	APIVersion() string
+}
+
+// VersionedBuildFunc is a Builder that also declares a supported schema
+// apiVersion (satisfies both Builder and APIVersioner). It is the versioned
+// counterpart of BuildFunc.
+type VersionedBuildFunc struct {
+	// BuildFn is the wrapped build function.
+	BuildFn func(ctx Context) (spec.SandboxSpec, error)
+	// Version is the declared schema apiVersion, e.g.
+	// "docker.profiles.sandbox.teran.dev/v1".
+	Version string
+}
+
+// Build invokes the wrapped build function.
+func (v VersionedBuildFunc) Build(ctx Context) (spec.SandboxSpec, error) {
+	return v.BuildFn(ctx)
+}
+
+// APIVersion returns the declared schema apiVersion.
+func (v VersionedBuildFunc) APIVersion() string { return v.Version }
+
+// BuildFuncWithVersion wraps a build function and a declared schema apiVersion
+// into a Builder that also satisfies APIVersioner.
+func BuildFuncWithVersion(fn func(ctx Context) (spec.SandboxSpec, error), apiVersion string) Builder {
+	return VersionedBuildFunc{BuildFn: fn, Version: apiVersion}
+}
+
+// Reconcile checks that the declared profile apiVersion is supported by the
+// builder b. An empty declared version (legacy driver+options form) is a no-op
+// returning nil. A builder that does not declare a schema apiVersion (does not
+// implement APIVersioner) fails closed with ErrAPIVersionMismatch, as does a
+// declared version that does not equal the builder's declared version.
+func Reconcile(declared string, b Builder) error {
+	if strings.TrimSpace(declared) == "" {
+		return nil
+	}
+	ver, ok := b.(APIVersioner)
+	if !ok {
+		return fmt.Errorf("%w: driver does not declare a schema apiVersion (profile declares %q)",
+			ErrAPIVersionMismatch, declared)
+	}
+	if strings.TrimSpace(ver.APIVersion()) != strings.TrimSpace(declared) {
+		return fmt.Errorf("%w: profile apiVersion %q is not supported (driver declares %q)",
+			ErrAPIVersionMismatch, declared, ver.APIVersion())
+	}
+
+	return nil
 }
 
 // Registry maps a spec.Driver to its Builder. It is concurrency-safe (X05): a

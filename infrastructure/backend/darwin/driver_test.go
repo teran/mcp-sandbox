@@ -174,3 +174,67 @@ func TestBuildSeatbelt_ResultEnforceHardening(t *testing.T) {
 		t.Fatalf("post-hardening spec must validate: %v", err)
 	}
 }
+
+// TestBuildSeatbelt_CwdMode_ReadOnlyFlag pins the cwd mount read-only flag for
+// both a "ro" (read-only mount) and "rw" (writable mount) profile cwd mode.
+func TestBuildSeatbelt_CwdMode_ReadOnlyFlag(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		readOnly bool
+	}{
+		{mode: "ro", readOnly: true},
+		{mode: "rw", readOnly: false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ctx := seatbeltCtx(t, validSeatbeltOptions)
+			ctx.Cwd.Mode = tc.mode
+			sp, err := buildSeatbelt(ctx)
+			if err != nil {
+				t.Fatalf("buildSeatbelt: %v", err)
+			}
+			if len(sp.Mounts) != 1 {
+				t.Fatalf("Mounts = %+v, want only the cwd mount", sp.Mounts)
+			}
+			if sp.Mounts[0].ReadOnly != tc.readOnly {
+				t.Fatalf("cwd mount ReadOnly = %v, want %v (mode %q)", sp.Mounts[0].ReadOnly, tc.readOnly, tc.mode)
+			}
+		})
+	}
+}
+
+// TestBuildSeatbelt_EmptyShell_DefaultsToBash pins that an empty profile shell
+// falls back to "bash" (SPEC §7.10).
+func TestBuildSeatbelt_EmptyShell_DefaultsToBash(t *testing.T) {
+	ctx := seatbeltCtx(t, validSeatbeltOptions)
+	ctx.Shell = ""
+	sp, err := buildSeatbelt(ctx)
+	if err != nil {
+		t.Fatalf("buildSeatbelt: %v", err)
+	}
+	if sp.Shell != "bash" {
+		t.Fatalf("Shell = %q, want \"bash\" default", sp.Shell)
+	}
+}
+
+// TestSeatbeltBuilder_DeclaresSchemaVersion pins that the seatbelt builder,
+// registered in init() into the process-wide driver registry, declares the
+// seatbelt profile schema apiVersion it supports (SPEC §7.11).
+func TestSeatbeltBuilder_DeclaresSchemaVersion(t *testing.T) {
+	b, err := driver.Default.Get(spec.DriverSeatbelt)
+	if err != nil {
+		t.Fatalf("Get(seatbelt): %v", err)
+	}
+	ver, ok := b.(driver.APIVersioner)
+	if !ok {
+		t.Fatal("seatbelt builder must implement APIVersioner")
+	}
+	if want := "seatbelt.profiles.sandbox.teran.dev/v1"; ver.APIVersion() != want {
+		t.Fatalf("APIVersion() = %q, want %q", ver.APIVersion(), want)
+	}
+	if err := driver.Reconcile(ver.APIVersion(), b); err != nil {
+		t.Fatalf("Reconcile(own) = %v, want nil", err)
+	}
+	if err := driver.Reconcile("seatbelt.profiles.sandbox.teran.dev/v99", b); err == nil {
+		t.Fatal("Reconcile(wrong version) must fail")
+	}
+}

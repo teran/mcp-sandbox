@@ -115,8 +115,13 @@ Highlights:
 
 ### Driver architecture
 
-> **Status: implemented (in-process driver registry + opaque `options:`).** The
-> profile schema is now `driver:` (required) + opaque **`options:`** and the
+> **Status: implemented (in-process driver registry; profile envelope
+> `apiVersion` + `spec`).** The profile schema now prefers the **envelope** form
+> `apiVersion` + `spec` (`SPEC.md` §7.11) — `spec` is the **driver-owned** blob
+> that replaces the legacy opaque **`options:`**; the legacy `driver:` +
+> `options:` + top-level `cwd`/`shell` form **still works but is deprecated**
+> (Phase A is additive; see the
+> [envelope migration](#migration-to-the-envelope-form-apiversion--spec)). The
 > `docker` / `seatbelt` builders are registered in-process in a driver registry
 > (`domain/sandbox/driver`), with the immutable hardening re-asserted by
 > `EnforceHardening` at the Service level (`SPEC.md` §6.11, §7.11). **Delivery
@@ -133,12 +138,13 @@ renamed `Destroy`. All **orchestration** of many sandboxes (session manager,
 routing, lifecycle, HITL, streaming/redaction, `sandbox_list`) is the **server's**
 job.
 
-The implemented design is a **driver registry + opaque `options:`** so new
-drivers can be added **without a commit to mcp-sandbox** and without linking
-proprietary code into the binary. `driver` is the registry key (**required**;
-`auto`/empty is removed); the typed `docker:` / `seatbelt:` blocks have migrated
-into an opaque, driver-owned **`options:`** blob (**one-shot breaking** change —
-see the [migration guide](#migration-to-driver--options)). Built-in names
+The implemented design is a **driver registry + opaque driver-owned config** so
+new drivers can be added **without a commit to mcp-sandbox** and without linking
+proprietary code into the binary. The driver-owned config is now carried in the
+profile **envelope `spec`** (`apiVersion` + `spec`, §7.11), which replaces the
+earlier **`options:`** blob (itself the Phase-7 migration target of the typed
+`docker:` / `seatbelt:` blocks — **one-shot breaking** change — see the
+[migration guide](#migration-to-driver--options)). Built-in names
 (`docker`, `seatbelt`) are reserved and cannot be shadowed (duplicate
 registration fails closed); a driver spec that fails validation is **rejected**,
 not patched; an unknown driver fails closed at **use** time with
@@ -224,13 +230,13 @@ image, env, mounts, network, cgroup limits, user and sudo. There are **no**
 profile create/update/delete tools; the model references a profile **by name**
 on `sandbox_create`, and `profile_list` enumerates what's available.
 
-Example `~/.config/sandbox/profiles/default.yml`:
+Example `~/.config/sandbox/profiles/default.yml` (envelope form):
 
 ```yaml
+apiVersion: docker.profiles.sandbox.teran.dev/v1 # REQUIRED envelope; the driver is the first label of the group, vN = profile-schema version (NOT the driver implementation version)
 name: default
 description: the default profile
-driver: docker # REQUIRED; the registry key (docker | seatbelt) — auto/empty removed
-options:        # opaque; interpreted ONLY by the selected driver's builder
+spec:          # driver-owned; replaces the legacy options: — interpreted ONLY by the selected driver's builder
   image: alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # digest-pinning recommended — replace with the real <repo>@sha256:<64 hex>
   env:
     FOO: bar
@@ -252,9 +258,10 @@ options:        # opaque; interpreted ONLY by the selected driver's builder
     uid: 1000
     gid: 1000
   sudo: never
-cwd:
-  target: "" # empty ⇒ mounted 1:1 at the same absolute path (default)
-  mode: ro # ro (default) | rw
+  cwd:
+    target: "" # empty ⇒ mounted 1:1 at the same absolute path (default)
+    mode: ro # ro (default) | rw
+  shell: bash
 ```
 
 > The example above is a minimal schema illustration. For a complete,
@@ -270,14 +277,30 @@ cwd:
   and sudo are never exposed (S02).
 - Full schema and trust model: `SPEC.md` §7.11.
 
-> **Schema (implemented):** a profile is a required **`driver: <name>`** token
-> (`docker` | `seatbelt`; `auto`/empty is removed) plus an opaque **`options:`**
-> blob whose keys are **driver-owned** and interpreted only by the selected
-> driver's builder. `cwd` and `shell` sit at the top level. See
+> **Schema (implemented, Phase A — additive):** the preferred profile form is
+> the **envelope** `apiVersion` + `spec`. `apiVersion` is
+> `«<driver>.profiles.sandbox.teran.dev/vN»` — the driver is the **first DNS
+> label** of the group, and `vN` is the **profile-schema** version (NOT the
+> driver implementation version). `spec` is **driver-owned** and replaces the
+> legacy `options:`; `cwd` and `shell` live **inside** `spec` as **common
+> fields** the server extracts into `Profile.Cwd`/`Profile.Shell` and removes
+> from the driver-owned blob. The **legacy** `driver:` + `options:` + top-level
+> `cwd`/`shell` form **still works but is deprecated** (a warning is logged at
+> the tool boundary). Phase A is additive; making `spec` the **only** accepted
+> form is future **Phase B** (owner decision). See the
+> [envelope migration](#migration-to-the-envelope-form-apiversion--spec),
 > [Migration to `driver` + `options:`](#migration-to-driver--options),
 > [Driver architecture](#driver-architecture) and `SPEC.md` §7.11.
 
 ### Migration to `driver` + `options:`
+
+> **Superseded — legacy, deprecated (Phase A is additive).** The `driver:` +
+> `options:` form described in this subsection is the **Phase-7 legacy form** and
+> now **still works but is deprecated** in favor of the **envelope**
+> `apiVersion` + `spec`. New profiles should use the envelope form (see
+> [Migration to the envelope form](#migration-to-the-envelope-form-apiversion--spec)).
+> This subsection documents the earlier (completed) Phase-7 migration from the
+> typed `docker:` / `seatbelt:` blocks.
 
 The move from the typed `docker:` / `seatbelt:` blocks to the **final
 implemented** `driver:` + `options:` form is a **one-shot breaking schema change**
@@ -359,6 +382,100 @@ The built-in `driver` names `docker` and `seatbelt` are reserved and cannot be
 shadowed by an external driver (duplicate registration fails closed); a driver
 spec that fails validation is rejected, not patched; an unknown driver fails
 closed at **use** time. Full schema and security model: `SPEC.md` §7.11/§6.11.
+
+### Migration to the envelope form (`apiVersion` + `spec`)
+
+The preferred profile schema is the **envelope** `apiVersion` + `spec` (Phase A,
+additive — `SPEC.md` §7.11). The legacy `driver:` + `options:` + top-level
+`cwd`/`shell` form **continues to work but is deprecated** (a warning is logged
+at the tool boundary). Migration is a **1:1 mechanical rename** — `spec:`
+replaces `options:`, the driver moves from the `driver:` token into the
+`apiVersion` group, and top-level `cwd`/`shell` move **inside** `spec`.
+
+**Key mapping — legacy `driver` + `options:` → envelope `apiVersion` + `spec`:**
+
+| Legacy (`driver` + `options:`)          | New (`apiVersion` + `spec`)                        |
+| --------------------------------------- | -------------------------------------------------- |
+| `driver: docker`                        | `apiVersion: docker.profiles.sandbox.teran.dev/v1` |
+| `driver: seatbelt`                      | `apiVersion: seatbelt.profiles.sandbox.teran.dev/v1` |
+| `options:` (whole block)                | `spec:` (whole block)                              |
+| `options.image`                         | `spec.image`                                       |
+| `options.env`                           | `spec.env`                                         |
+| `options.mounts`                        | `spec.mounts`                                      |
+| `options.network`                       | `spec.network`                                     |
+| `options.cgroups`                       | `spec.cgroups`                                     |
+| `options.user`                          | `spec.user`                                        |
+| `options.sudo`                          | `spec.sudo`                                        |
+| top-level `cwd:`                        | `spec.cwd:`                                        |
+| top-level `shell:`                      | `spec.shell:`                                      |
+
+> The `apiVersion` is **`«<driver>.profiles.sandbox.teran.dev/vN»`** — the
+> driver is the **first DNS label** of the group (so `docker` →
+> `docker.profiles.sandbox.teran.dev`, `seatbelt` →
+> `seatbelt.profiles.sandbox.teran.dev`) and `vN` is the **profile-schema**
+> version (NOT the driver implementation version). Built-in drivers declare
+> `…/v1`. On USE time the server's `driver.Reconcile` compares the profile's
+> `apiVersion` against the driver's declared version; a mismatch **fails
+> closed** with `ErrAPIVersionMismatch`. Legacy profiles **without** an
+> `apiVersion` pass this check unrestricted.
+
+**Convert checklist (legacy → envelope):**
+
+1. Read the legacy `driver:` value and set `apiVersion:` to the matching
+   `«<driver>.profiles.sandbox.teran.dev/v1»` (see table).
+2. Rename the whole `options:` block to `spec:`.
+3. Move top-level `cwd:` and `shell:` **inside** `spec:`.
+4. Remove the now-redundant `driver:` key (the driver now comes from the
+   `apiVersion` group). `name` and `description` stay at the top level.
+5. Restart/refresh — profiles are read on demand, so the converted file takes
+   effect immediately on the next lookup.
+
+Example conversion — legacy docker profile:
+
+```yaml
+# legacy (deprecated)
+name: default
+description: the default profile
+driver: docker
+options:
+  image: alpine@sha256:…
+  env: { FOO: bar }
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network: { mode: bridge }
+  cgroups: { cpu_cores: 1, memory_gb: 1, pids_limit: 256 }
+  user: { uid: 1000, gid: 1000 }
+  sudo: never
+cwd: { target: "", mode: ro }
+shell: bash
+```
+
+```yaml
+# new envelope form
+apiVersion: docker.profiles.sandbox.teran.dev/v1
+name: default
+description: the default profile
+spec:
+  image: alpine@sha256:…
+  env: { FOO: bar }
+  mounts:
+    - source: /data
+      target: /data
+      read_only: true
+  network: { mode: bridge }
+  cgroups: { cpu_cores: 1, memory_gb: 1, pids_limit: 256 }
+  user: { uid: 1000, gid: 1000 }
+  sudo: never
+  cwd: { target: "", mode: ro }
+  shell: bash
+```
+
+> **Roadmap (Phase B, future — owner decision):** Phase A keeps the legacy form
+> working. A later **Phase B** will make the `.spec` envelope the **only**
+> accepted profile form and **remove legacy `driver:`/`options:`/top-level
+> `cwd`/`shell`** — a breaking change scheduled by the owner, not yet done.
 
 ### Migration from the old `sandbox_create`
 
@@ -522,13 +639,14 @@ backend (or an error) is used instead.
 The darwin backend runs commands under Apple's **Seatbelt** sandbox, whose rules
 are expressed in **SBPL**. The server renders the profile automatically from
 the typed `SandboxSpec`; the operator supplies the permissive tail via the
-profile's `options.sbpl` (under `driver: seatbelt`, see
+profile's `spec.sbpl` (under `apiVersion: seatbelt.profiles.sandbox.teran.dev/v1`
+— the legacy `options.sbpl` under `driver: seatbelt` also still works, see
 [Profiles](#profiles-operator-authored)). A working, verified example lives at
 **`examples/profiles/seatbelt.yml`** — a file-deny-all profile validated live
 against a real macOS host.
 
-The darwin profile's `options:` blob also accepts an optional **`env:`** map of
-session environment variables, mirroring the Docker profile's `options.env:`
+The darwin profile's `spec:` blob also accepts an optional **`env:`** map of
+session environment variables, mirroring the Docker profile's `spec.env:`
 (SPEC §7.12). As with Docker profile env, the values are collected into the
 redaction set and **masked from output and logs (S02)** — do **not** put
 secrets here; use tmpfs `0600` secret files instead (see

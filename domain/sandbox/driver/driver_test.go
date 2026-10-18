@@ -251,6 +251,209 @@ func TestBuildFunc_IsABuilder(_ *testing.T) {
 	var _ driver.Builder = driver.BuildFunc(buildOK)
 }
 
+// --- apiVersion envelope (ParseAPIVersion) ---
+
+func TestParseAPIVersion_Valid(t *testing.T) {
+	tests := []struct {
+		in      string
+		driver  spec.Driver
+		version string
+	}{
+		{"docker.profiles.sandbox.teran.dev/v1", spec.DriverDocker, "v1"},
+		{"seatbelt.profiles.sandbox.teran.dev/v1", spec.DriverSeatbelt, "v1"},
+		{"my-driver.1.profiles.sandbox.teran.dev/v2", spec.Driver("my-driver.1"), "v2"},
+		{"foo_bar.profiles.sandbox.teran.dev/v123", spec.Driver("foo_bar"), "v123"},
+		// whitespace is tolerated
+		{"  docker.profiles.sandbox.teran.dev/v1  ", spec.DriverDocker, "v1"},
+	}
+	for _, tt := range tests {
+		d, v, err := driver.ParseAPIVersion(tt.in)
+		if err != nil {
+			t.Errorf("ParseAPIVersion(%q): %v", tt.in, err)
+
+			continue
+		}
+		if d != tt.driver || v != tt.version {
+			t.Errorf("ParseAPIVersion(%q) = (%q, %q), want (%q, %q)", tt.in, d, v, tt.driver, tt.version)
+		}
+	}
+}
+
+func TestParseAPIVersion_Invalid(t *testing.T) {
+	for _, in := range []string{
+		"", "   ", "docker", "v1", "docker/v1",
+		"docker.example.com/v1",                  // wrong group
+		"docker.profiles.sandbox.teran.dev",      // missing version
+		"docker.profiles.sandbox.teran.dev/",     // empty version
+		"docker.profiles.sandbox.teran.dev/v",    // version not numeric
+		".profiles.sandbox.teran.dev/v1",         // "." driver label
+		"..profiles.sandbox.teran.dev/v1",        // ".." driver label
+		"UPPER.profiles.sandbox.teran.dev/v1",    // uppercase label
+		"docker.profiles.sandbox.teran.dev/v01x", // trailing char
+	} {
+		if _, _, err := driver.ParseAPIVersion(in); err == nil {
+			t.Errorf("ParseAPIVersion(%q): expected ErrInvalidAPIVersion", in)
+		} else if !errors.Is(err, driver.ErrInvalidAPIVersion) {
+			t.Errorf("ParseAPIVersion(%q) err = %v, want ErrInvalidAPIVersion", in, err)
+		}
+	}
+}
+
+// --- SplitCommon ---
+
+func TestSplitCommon_RemovesCwdAndShell(t *testing.T) {
+	doc := "image: golang:1.27.2\nenv:\n  A: '1'\ncwd:\n  mode: rw\nshell: bash\n"
+	var n yaml.Node
+	if err := yaml.Unmarshal([]byte(doc), &n); err != nil {
+		t.Fatal(err)
+	}
+	root := rootNode(&n)
+	// The input node is a mapping (after unwrapping the doc) with 4 keys.
+	if root.Kind != yaml.MappingNode || len(root.Content) != 8 {
+		t.Fatalf("fixture root = kind %d content %d, want mapping with 4 keys", root.Kind, len(root.Content))
+	}
+
+	out := driver.SplitCommon(root)
+	if out == root {
+		t.Fatal("SplitCommon must return a NEW node, not the input")
+	}
+	if out.Kind != yaml.MappingNode {
+		t.Fatalf("out kind = %d, want mapping", out.Kind)
+	}
+	// The output has exactly image/env (cwd/shell stripped).
+	if len(out.Content) != 4 {
+		t.Fatalf("out content = %d, want 4 (image+env)", len(out.Content))
+	}
+	keys := map[string]bool{}
+	for i := 0; i+1 < len(out.Content); i += 2 {
+		keys[out.Content[i].Value] = true
+	}
+	if keys["image"] != true || keys["env"] != true {
+		t.Fatalf("out keys = %v, want image+env present", keys)
+	}
+	if keys["cwd"] || keys["shell"] {
+		t.Fatalf("out keys = %v, must NOT contain cwd/shell", keys)
+	}
+	// The input node is NOT mutated (still has all 4 keys).
+	if len(root.Content) != 8 {
+		t.Fatalf("input mutated: content = %d, want 8", len(root.Content))
+	}
+	// The remainder still decodes as driver options (image/env survive).
+	var o struct {
+		Image string            `yaml:"image"`
+		Env   map[string]string `yaml:"env"`
+	}
+	if err := out.Decode(&o); err != nil {
+		t.Fatalf("decode out: %v", err)
+	}
+	if o.Image != "golang:1.27.2" || o.Env["A"] != "1" {
+		t.Fatalf("decoded = %+v", o)
+	}
+}
+
+func TestSplitCommon_NilAndScalarAsIs(t *testing.T) {
+	if got := driver.SplitCommon(nil); got != nil {
+		t.Fatalf("SplitCommon(nil) = %v, want nil", got)
+	}
+	var scalar yaml.Node
+	if err := yaml.Unmarshal([]byte("just-a-scalar"), &scalar); err != nil {
+		t.Fatal(err)
+	}
+	if got := driver.SplitCommon(&scalar); got != &scalar {
+		t.Fatal("SplitCommon(scalar) must return the input unchanged")
+	}
+}
+
+func TestSplitCommon_NoCommonKeysPreservesAll(t *testing.T) {
+	doc := "image: golang:1.27.2\nnetwork:\n  mode: bridge\n"
+	var n yaml.Node
+	_ = yaml.Unmarshal([]byte(doc), &n)
+	root := rootNode(&n)
+	out := driver.SplitCommon(root)
+	if out.Kind != yaml.MappingNode || len(out.Content) != 4 {
+		t.Fatalf("out content = %d, want 4 (image+network preserved)", len(out.Content))
+	}
+}
+
+// --- BuildFuncWithVersion / VersionedBuildFunc ---
+
+// TestBuildFuncWithVersion_ImplementsAPIVersioner pins that
+// BuildFuncWithVersion returns a Builder that satisfies both Builder and
+// APIVersioner, delegating Build to the wrapped function.
+func TestBuildFuncWithVersion_ImplementsAPIVersioner(t *testing.T) {
+	const version = "docker.profiles.sandbox.teran.dev/v1"
+	called := false
+	b := driver.BuildFuncWithVersion(func(_ driver.Context) (spec.SandboxSpec, error) {
+		called = true
+
+		return spec.SandboxSpec{}, errForBuild
+	}, version)
+
+	_ = b
+	av, ok := b.(driver.APIVersioner)
+	if !ok {
+		t.Fatal("BuildFuncWithVersion result must implement APIVersioner")
+	}
+	if av.APIVersion() != version {
+		t.Fatalf("APIVersion() = %q, want %q", av.APIVersion(), version)
+	}
+	if _, err := b.Build(driver.Context{}); !errors.Is(err, errForBuild) {
+		t.Fatalf("Build err = %v, want errForBuild", err)
+	}
+	if !called {
+		t.Fatal("Build did not invoke the wrapped function")
+	}
+}
+
+// --- Reconcile ---
+
+func TestReconcile_Matched(t *testing.T) {
+	const version = "docker.profiles.sandbox.teran.dev/v1"
+	b := driver.BuildFuncWithVersion(buildOK, version)
+	if err := driver.Reconcile(version, b); err != nil {
+		t.Fatalf("Reconcile(matched) = %v, want nil", err)
+	}
+}
+
+func TestReconcile_Mismatch(t *testing.T) {
+	b := driver.BuildFuncWithVersion(buildOK, "docker.profiles.sandbox.teran.dev/v1")
+	err := driver.Reconcile("docker.profiles.sandbox.teran.dev/v2", b)
+	if !errors.Is(err, driver.ErrAPIVersionMismatch) {
+		t.Fatalf("Reconcile(mismatch) err = %v, want ErrAPIVersionMismatch", err)
+	}
+}
+
+func TestReconcile_LegacyEmptyDeclared(t *testing.T) {
+	// A legacy profile declares no apiVersion; reconciliation is a no-op
+	// regardless of whether the builder declares one.
+	b := driver.BuildFuncWithVersion(buildOK, "docker.profiles.sandbox.teran.dev/v1")
+	if err := driver.Reconcile("", b); err != nil {
+		t.Fatalf("Reconcile(empty) = %v, want nil", err)
+	}
+	if err := driver.Reconcile("   ", driver.BuildFunc(buildOK)); err != nil {
+		t.Fatalf("Reconcile(blank, non-declaring) = %v, want nil", err)
+	}
+}
+
+func TestReconcile_NonDeclaringBuilder(t *testing.T) {
+	// A builder that does NOT implement APIVersioner fails closed when the
+	// profile declares an apiVersion.
+	err := driver.Reconcile("docker.profiles.sandbox.teran.dev/v1", driver.BuildFunc(buildOK))
+	if !errors.Is(err, driver.ErrAPIVersionMismatch) {
+		t.Fatalf("Reconcile(non-declaring) err = %v, want ErrAPIVersionMismatch", err)
+	}
+}
+
+// rootNode unwraps a DocumentNode (from yaml.Unmarshal of a whole doc) to its
+// root mapping node, so tests can feed SplitCommon a bare mapping node.
+func rootNode(n *yaml.Node) *yaml.Node {
+	if n != nil && n.Kind == yaml.DocumentNode && len(n.Content) > 0 {
+		return n.Content[0]
+	}
+
+	return n
+}
+
 // --- Options (opaque yaml.Node) ---
 
 // TestOptions_NewOptions_NodeAccess pins that NewOptions wraps the given node
