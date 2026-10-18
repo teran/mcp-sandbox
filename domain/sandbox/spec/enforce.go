@@ -63,10 +63,48 @@ func EnforceHardening(pol Isolation, s *SandboxSpec, allowDirs []string) error {
 
 // allowedSource reports whether source is equal to an allowed dir or is
 // contained under one at a path-separator boundary (so "/data" does not admit
-// "/database" or "/datax").
+// "/database" or "/datax"). It is pure string logic with no filesystem access
+// and is deliberately fail-closed (S04/N03): it never over-approximates
+// containment.
+//
+// A source that is not absolute, or that carries a "." or ".." path component,
+// is ambiguous (a non-canonicalized path has no reliable containment without
+// filesystem access) and is REJECTED — mirroring hasDotComponent/isSubpath in
+// the darwin backend (S04). A malformed allowDir (non-absolute or with a "." /
+// ".." component) is skipped and can never admit anything (a hostile/malformed
+// allowDir must never widen the gate). A single trailing slash on an allowDir
+// (other than "/") is normalized away so "/allowed/" matches "/allowed", and
+// the root "/" is treated as containing every absolute path.
 func allowedSource(source string, allowDirs []string) bool {
+	if !strings.HasPrefix(source, "/") || hasDotComponent(source) {
+		return false
+	}
+
 	for _, dir := range allowDirs {
+		// Skip malformed allowDirs: they must never admit anything.
+		if !strings.HasPrefix(dir, "/") || hasDotComponent(dir) {
+			continue
+		}
+		// The root contains every absolute path (consistent with isSubpath).
+		if dir == "/" {
+			return true
+		}
+		dir = strings.TrimSuffix(dir, "/")
+
 		if source == dir || strings.HasPrefix(source, dir+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// hasDotComponent reports whether p contains a "." or ".." path component, the
+// markers of a non-canonicalized (ambiguous) path that the pure gate cannot
+// resolve without filesystem access. Mirrors domain/sandbox/sbpl/sbpl.go.
+func hasDotComponent(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == "." || seg == ".." {
 			return true
 		}
 	}
