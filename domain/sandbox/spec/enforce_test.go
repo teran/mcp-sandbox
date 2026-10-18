@@ -216,6 +216,19 @@ func TestEnforceHardening_InvalidNetworkMode(t *testing.T) {
 	}
 }
 
+// TestEnforceHardening_InvalidSeccompProfile pins R-3: an unknown seccomp profile
+// on the incoming spec is REJECTED (validate, not overwrite) — even though
+// EnforceHardening would otherwise re-assert Seccomp from pol. A builder/driver
+// that tried to set an invalid profile must fail closed rather than be silently
+// patched to the default.
+func TestEnforceHardening_InvalidSeccompProfile(t *testing.T) {
+	s := validSpec()
+	s.Isolation.Seccomp = SeccompProfile("unconfined")
+	if err := EnforceHardening(validIsolation(), s, []string{"/host"}); err == nil {
+		t.Fatal("expected error for invalid seccomp profile")
+	}
+}
+
 // TestEnforceHardening_UnboundedResources verifies bounded cgroups are validated
 // (not forced): PidsLimit/Memory/NanoCPUs must be > 0.
 func TestEnforceHardening_UnboundedResources(t *testing.T) {

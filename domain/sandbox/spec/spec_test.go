@@ -121,6 +121,47 @@ func TestHasCapDropAll_CaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestSeccompDefaultValid pins the happy path (R-3): SeccompDefault is the only
+// valid seccomp profile and a spec carrying it validates. The daemon's default
+// seccomp profile applies automatically; the field is an honest, non-decorative
+// marker, not a docker SecurityOpt.
+func TestSeccompDefaultValid(t *testing.T) {
+	if !IsValidSeccompProfile(SeccompDefault) {
+		t.Fatal("SeccompDefault must be a valid seccomp profile")
+	}
+	s := validSpec()
+	if err := s.Validate(); err != nil {
+		t.Fatalf("default seccomp spec must validate, got: %v", err)
+	}
+}
+
+// TestSandboxSpecValidate_InvalidSeccomp pins the fail-closed closed-enum (R-3):
+// an empty or unknown seccomp profile is REJECTED by Validate, never silently
+// defaulted and never mapped to a weakening option.
+func TestSandboxSpecValidate_InvalidSeccomp(t *testing.T) {
+	for _, p := range []SeccompProfile{"", "custom", "unconfined", "anything"} {
+		s := validSpec()
+		s.Isolation.Seccomp = p
+		if err := s.Validate(); err == nil {
+			t.Fatalf("seccomp profile %q must fail Validate (fail-closed)", p)
+		}
+	}
+}
+
+// TestIsValidSeccompProfile covers the closed-enum predicate directly — the
+// valid branch and every invalid branch — so the mutation gate has no unguarded
+// line in IsValidSeccompProfile.
+func TestIsValidSeccompProfile(t *testing.T) {
+	if !IsValidSeccompProfile(SeccompDefault) {
+		t.Fatal("SeccompDefault must be valid")
+	}
+	for _, p := range []SeccompProfile{"", "custom", "unconfined", "anything", "default "} {
+		if IsValidSeccompProfile(p) {
+			t.Fatalf("IsValidSeccompProfile(%q) = true, want false", p)
+		}
+	}
+}
+
 // TestNetworkHostIsValidMode pins Phase 7: with the network-allowlist removed,
 // host is a valid known network mode and a spec requesting it validates. The
 // fail-closed host default is enforced at the config/tool layer (operator

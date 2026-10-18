@@ -177,6 +177,15 @@ const (
 	SeccompDefault SeccompProfile = "default"
 )
 
+// IsValidSeccompProfile reports whether p is a known seccomp profile. For the
+// MVP SeccompDefault is the ONLY valid value (R-3): a custom/unconfined
+// profile is mandatory roadmap, so anything else — including the empty string —
+// is rejected fail-closed rather than silently defaulted or mapped to a
+// weakening docker option.
+func IsValidSeccompProfile(p SeccompProfile) bool {
+	return p == SeccompDefault
+}
+
 // SandboxSpec is the typed specification used to create a sandbox (§6.5). It
 // is never a free-form blob; every field has an explicit type.
 type SandboxSpec struct {
@@ -245,6 +254,9 @@ func (s *SandboxSpec) Validate() error {
 	}
 	if !IsValidNetworkMode(iso.NetworkMode) {
 		return fmt.Errorf("sandbox: Isolation.NetworkMode %q is not a valid network mode", iso.NetworkMode)
+	}
+	if !IsValidSeccompProfile(iso.Seccomp) {
+		return fmt.Errorf("sandbox: Isolation.Seccomp %q is not a valid seccomp profile", iso.Seccomp)
 	}
 	if iso.User.UID == 0 {
 		return fmt.Errorf("sandbox: Isolation.User must be non-root (server-enforced)")

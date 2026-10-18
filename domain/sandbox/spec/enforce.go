@@ -27,6 +27,17 @@ func EnforceHardening(pol Isolation, s *SandboxSpec, allowDirs []string) error {
 	if !IsValidNetworkMode(s.Isolation.NetworkMode) {
 		return fmt.Errorf("sandbox: Isolation.NetworkMode %q is not a valid network mode", s.Isolation.NetworkMode)
 	}
+	// R-3: reject an invalid seccomp profile BEFORE re-asserting Seccomp from
+	// pol (line 54 would otherwise overwrite it before the final Validate). A
+	// non-empty unknown profile ("unconfined", "custom", ...) is an explicit
+	// request that fails closed — never silently patched to the default. An
+	// EMPTY seccomp is a weak/unspecified value that is re-asserted from pol,
+	// exactly like the other immutable hardening fields (see
+	// TestEnforceHardening_ReassertsImmutableFields); Validate() alone still
+	// rejects empty via IsValidSeccompProfile.
+	if s.Isolation.Seccomp != "" && !IsValidSeccompProfile(s.Isolation.Seccomp) {
+		return fmt.Errorf("sandbox: Isolation.Seccomp %q is not a valid seccomp profile", s.Isolation.Seccomp)
+	}
 	if s.Isolation.PidsLimit <= 0 {
 		return fmt.Errorf("sandbox: Isolation.PidsLimit must be bounded (> 0)")
 	}
