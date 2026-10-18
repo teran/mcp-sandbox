@@ -316,6 +316,59 @@ tools**. This is independent of the (fixed) docker label bug above.
       `make e2e`, lint and mutation all pass (2026-10-17 conformance audit);
       tool-id routing is no longer blocked.
 
+### Security hardening — conformance & security audit (2026-10-18)
+
+Findings from the 2026-10-18 conformance (`qa`) + security (`security`) review.
+Approved for the backlog; implemented **TDD** (`@qa` tests first, `@developer`
+impl) with `@security` review first.
+
+- [ ] **Map `spec.Isolation.Seccomp` into the docker backend (R-3):**
+      `buildHostConfig` (`infrastructure/backend/docker/docker.go`) does not map
+      the seccomp field into any Docker `SecurityOpt` — only the daemon's default
+      seccomp profile applies, so the field is decorative. Wire
+      `iso.Seccomp` → `SecurityOpt: seccomp=<profile>` (or make the default
+      profile explicit) and fix `SPEC.md` §7 so the field is not misleading —
+      `@security` first, `S08 S05`, `C01 C08GO T01`
+- [ ] **seatbelt: SIGTERM grace before SIGKILL (R-6):** `Backend.Destroy` and the
+      exec-cancel path (`infrastructure/backend/darwin/darwin.go`) SIGKILL the
+      whole process group with no grace period. Add a short, configurable SIGTERM
+      phase before SIGKILL on destroy / timeout / cancel so children can flush/
+      clean up; update `SPEC.md` §7.12 and `README.md` — `@developer`/`@qa`,
+      `X05 C01 C04GO T01`
+- [ ] **Always-mask `command`/`env` in the `sandbox_exec` access-log (R-4,
+      stopgap):** owner decision 2026-10-18 — for now mask **ALL** env values and
+      the whole `command` string in the access-log (no name/value heuristics;
+      revisit value-based redaction against known session secrets later) —
+      `@developer`/`@qa`, `S02 L05 L08 T01 C01`
+- [ ] **Correct SPEC/README darwin "per-session 0700 secret dir" claims (R-2):**
+      `SPEC.md` §7.12/§7.13 (str. 1676/1801/1951) and `README.md` §seatbelt state
+      secrets are delivered as a `0600` file in a per-session `0700` dir on
+      darwin/seatbelt, but the backend delivers **no** file secrets (redaction
+      only). Fix the docs to state seatbelt does NOT deliver file secrets —
+      `@techwriter`, `D01 D02`
+
+- [ ] **govulncheck `ACCEPTED_IDS` — re-review trigger (R-5, verified 2026-10-18):**
+      osv.dev still lists **no** fixed version on the used
+      `github.com/docker/docker` path (latest `v28.5.2+incompatible`, 2025-11-05 —
+      same as pinned); the only fix is on `github.com/moby/moby/v2`, still
+      **pre-release** (latest `v2.0.0-beta.28`, 2026-10-14; no stable `v2.0.0`).
+      So the exception remains valid. Add a check that flags when
+      `moby/moby/v2 @latest` reaches a **stable `v2.0.0`**, then re-review and
+      (optionally) migrate the docker dependency to `moby/moby/v2` and drop the
+      accepted IDs — `@security`/`@devops`
+- [ ] **Close symlink-escape beyond `ALLOW_DIRS` in `verifyHostPath` (R-1,
+      MEDIUM):** `allowedSource` (`domain/sandbox/spec/enforce.go`) gates mount
+      sources by **lexical** path only, and `verifyHostPath`
+      (`infrastructure/backend/docker/docker.go`) resolves symlinks but does **not**
+      re-check the resolved path against `ALLOW_DIRS` (constructor no longer takes
+      allowDirs). A symlink inside an allowed dir pointing outside lets a docker
+      bind-mount follow it out of scope (darwin analog: file-read rule projected
+      without symlink resolution). Fix: when `allowSymlinks==false`, compare the
+      **resolved** path against the allowed roots in `verifyHostPath` (thread
+      allowDirs back into the backend, or resolve+re-gate at the Service level);
+      on seatbelt, don't project a subpath rule for an outward symlink — `@security`
+      first, `S04`, `C01 C08GO T01`
+
 ### Deferred / open questions (discuss later, non-blocking)
 
 - HITL client contract: exact confirmation semantics for destructive tools (opencode).
