@@ -964,6 +964,7 @@ func TestKillGroupWithGrace_ReapsAfterEscalation(t *testing.T) {
 			mu.Unlock()
 			if n == 1 {
 				<-ctx.Done() // first call blocks until the grace window expires
+
 				return nil, ctx.Err()
 			}
 
