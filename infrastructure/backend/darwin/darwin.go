@@ -51,6 +51,15 @@ const (
 	createSleepCmd = "sleep 2147483647"
 	// defaultShell is used when the spec requests no shell.
 	defaultShell = "bash"
+	// defaultKillGrace is the default SIGTERM→SIGKILL escalation grace window
+	// granted to a process group before the backend hard-kills it (TODO R-6).
+	// It bounds the DoS window a hostile process can hold the backend open.
+	defaultKillGrace = 1 * time.Second
+	// maxKillGrace is the hard upper bound on the configurable grace window
+	// (5s). A configured grace above this is clamped down at config time — the
+	// "never weaken" analogue of the immutable isolation block: the DoS window
+	// can never be widened beyond the hard bound.
+	maxKillGrace = 5 * time.Second
 )
 
 // runner is the boundary between the portable backend logic and the OS: it
@@ -69,6 +78,9 @@ type ProcessSpec struct {
 	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
+	// KillGrace is the SIGTERM→SIGKILL escalation grace window the runner's
+	// Wait applies on cancellation before hard-killing the process group (R-6).
+	KillGrace time.Duration
 }
 
 // Rlimit is a single setrlimit resource (soft/hard) applied to the child.
@@ -105,6 +117,13 @@ type session struct {
 	dir     string
 	env     []string
 	rlimits []Rlimit
+
+	// reapMu serializes the group-kill + single Wait/reap of the session's
+	// Create child across concurrent Destroys (X05). It guards the reap so that
+	// os/exec's cmd.Wait is called exactly once even when two Destroys race —
+	// the group-kill itself stays idempotent (ESRCH-tolerant), but the reap must
+	// not double-fire. Security condition #2 of TODO R-6.
+	reapMu sync.Mutex
 }
 
 // Backend implements the sandbox role interfaces (role.Backend, Lifecycle,
@@ -125,6 +144,9 @@ type config struct {
 	euid       func() int
 	allowDirs  []string
 	scratchDir string
+	// killGrace is the SIGTERM→SIGKILL escalation grace window applied to every
+	// process group the backend terminates (Destroy + Exec cancel, R-6).
+	killGrace time.Duration
 }
 
 // Option configures a darwin backend at construction.
@@ -155,6 +177,25 @@ func WithScratchDir(dir string) Option {
 	return func(c *config) { c.scratchDir = dir }
 }
 
+// WithKillGrace overrides the SIGTERM→SIGKILL escalation grace window applied
+// when terminating a process group (Destroy and Exec cancel, R-6). The value is
+// clamped fail-closed at config time: a non-positive value (which would mean an
+// immediate, ungraceful hard-kill — weakening the graceful shutdown) is reset
+// to defaultKillGrace, and a value above maxKillGrace is clamped to it so the
+// DoS window a hostile process can hold the backend open is hard-bounded.
+func WithKillGrace(d time.Duration) Option {
+	return func(c *config) {
+		switch {
+		case d <= 0:
+			c.killGrace = defaultKillGrace
+		case d > maxKillGrace:
+			c.killGrace = maxKillGrace
+		default:
+			c.killGrace = d
+		}
+	}
+}
+
 // New returns a darwin backend for the given server configuration and runner.
 // Allow dirs gate the host paths the Seatbelt profile may grant file access to
 // (S04). Optional Options (WithGOOS/WithFileExists/WithEUID/WithScratchDir)
@@ -165,6 +206,7 @@ func New(r runner, allowDirs []string, opts ...Option) *Backend {
 		fileExists: fileExistsReal,
 		euid:       os.Geteuid,
 		allowDirs:  allowDirs,
+		killGrace:  defaultKillGrace,
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -266,10 +308,11 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 
 	rlimits := toRlimits(s.Resources.Ulimits)
 	ps := ProcessSpec{
-		Argv:    argv,
-		Env:     toEnvSlice(s.Env),
-		Dir:     s.WorkingDir,
-		Rlimits: rlimits,
+		Argv:      argv,
+		Env:       toEnvSlice(s.Env),
+		Dir:       s.WorkingDir,
+		Rlimits:   rlimits,
+		KillGrace: b.cfg.killGrace,
 	}
 
 	proc, err := b.runner.Start(ctx, ps)
@@ -291,10 +334,14 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 	return id, nil
 }
 
-// Destroy kills the whole process group of the session's Create child with
-// SIGKILL and waits for it. It is idempotent (X02): an unknown session id is a
-// no-op, and a second kill on an already-dead child (ESRCH) is treated as a
-// no-op. The session record is retained so repeated destroys stay no-ops.
+// Destroy terminates the whole process group of the session's Create child,
+// gracefully: it first sends SIGTERM so the sandboxed tree can flush/clean up,
+// then waits up to the configured grace window, escalating to SIGKILL only if
+// the group ignores SIGTERM (TODO R-6). It is idempotent (X02): an unknown
+// session id is a no-op, and a kill on an already-dead group (ESRCH) is treated
+// as a no-op. The session record is retained so repeated destroys stay no-ops.
+// The per-session reapMu serializes the kill+reap so two racing Destroys never
+// double-call cmd.Wait (X05 / security condition #2 of R-6).
 func (b *Backend) Destroy(ctx context.Context, id string) error {
 	b.mu.Lock()
 	s, ok := b.sessions[stripSlug(id)]
@@ -303,9 +350,10 @@ func (b *Backend) Destroy(ctx context.Context, id string) error {
 		return nil
 	}
 
-	err := s.proc.KillGroup(syscall.SIGKILL)
-	_, _ = s.proc.Wait(ctx)
-	if err != nil && !errors.Is(err, syscall.ESRCH) {
+	s.reapMu.Lock()
+	defer s.reapMu.Unlock()
+
+	if err := killGroupWithGrace(ctx, s.proc, b.cfg.killGrace); err != nil {
 		return fmt.Errorf("darwin: destroy: %w", err)
 	}
 
@@ -351,12 +399,13 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 
 	var stdout, stderr bytes.Buffer
 	ps := ProcessSpec{
-		Argv:    argv,
-		Env:     env,
-		Dir:     dir,
-		Rlimits: s.rlimits,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
+		Argv:      argv,
+		Env:       env,
+		Dir:       dir,
+		Rlimits:   s.rlimits,
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+		KillGrace: b.cfg.killGrace,
 	}
 
 	proc, err := b.runner.Start(execCtx, ps)
@@ -366,9 +415,12 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 
 	res, err := proc.Wait(execCtx)
 	if err != nil {
-		// Cancellation (e.g. req.Timeout): SIGKILL the group and surface a
-		// terminal "cancelled" progress event before returning (SPEC §5.1/§6.10).
-		_ = proc.KillGroup(syscall.SIGKILL)
+		// Cancellation (e.g. req.Timeout): terminate the child's process group
+		// gracefully (SIGTERM, escalate to SIGKILL after the grace window) so it
+		// can flush/clean up, then emit a terminal "cancelled" progress event
+		// AFTER the group has been killed/reaped (SPEC §5.1/§6.10, R-6). The
+		// event ordering keeps the S02/S09 redaction contract intact.
+		_ = killGroupWithGrace(ctx, proc, b.cfg.killGrace)
 		progress.SinkFromContext(execCtx)(execCtx, progress.Event{Message: "cancelled"})
 
 		return nil, fmt.Errorf("darwin: exec: %w", err)
@@ -400,6 +452,45 @@ func (b *Backend) Stats(_ context.Context, _ string) (any, error) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// killGroupWithGrace terminates a process group gracefully (TODO R-6): it sends
+// SIGTERM first so the sandboxed tree can flush/clean up, waits up to `grace`
+// for a graceful exit, and escalates to SIGKILL only if the group ignores
+// SIGTERM. It always reaps (Waits) the group exactly once; a group that is
+// already dead (ESRCH on the SIGTERM) is a no-op, preserving Destroy
+// idempotency (X02). The grace window is derived from ctx via
+// context.WithoutCancel, so a cancelled caller context (e.g. the Exec cancel
+// path, where the ctx is already done) neither truncates the grace window —
+// forcing an unnecessary escalation — nor skips the reap. It is driven entirely
+// through the `Process` interface, so it is fully testable with fakeRunner; the
+// real osProcess.Wait is idempotent, so this cannot double-reap (security
+// condition #2 of R-6).
+func killGroupWithGrace(ctx context.Context, proc Process, grace time.Duration) error {
+	err := proc.KillGroup(syscall.SIGTERM)
+	if errors.Is(err, syscall.ESRCH) {
+		// Group already gone — idempotent no-op (X02).
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	graceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
+	defer cancel()
+	if _, werr := proc.Wait(graceCtx); werr == nil {
+		// Exited within the grace window — no escalation needed.
+		return nil
+	}
+
+	// The group ignored SIGTERM (or the wait errored): escalate to SIGKILL and
+	// reap exactly once. osProcess.Wait is idempotent, so this cannot double-reap.
+	if kerr := proc.KillGroup(syscall.SIGKILL); kerr != nil && !errors.Is(kerr, syscall.ESRCH) {
+		return kerr
+	}
+	_, _ = proc.Wait(ctx)
+
+	return nil
+}
 
 // toEnvSlice converts an env map to a KEY=VALUE slice, sorted by key for
 // determinism. Values are literal — never shell-evaluated.

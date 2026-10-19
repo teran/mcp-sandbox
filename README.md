@@ -576,9 +576,13 @@ and no image**:
 - **Every `sandbox_exec` spawns a fresh `sandbox-exec` child process**
   (`os/exec`, `CGO_ENABLED=0`) running `<shell> -c <command>` under the profile
   rules. There is no persistent container to enter.
-- `sandbox_destroy` / `sandbox_destroy_all` `SIGKILL` the whole process group
-  of live child processes (there is **no SIGTERM / grace period** — see
-  `SPEC.md` §7.12) and drop the in-memory session.
+- `sandbox_destroy` / `sandbox_destroy_all` tear down the whole process group
+  of live child processes **gracefully**: a group-wide `SIGTERM` lets children
+  flush/clean up, then escalates to group-wide `SIGKILL` after a short,
+  configurable grace (default 1s, hard-capped at 5s) — see `SPEC.md` §7.12 — and
+  drop the in-memory session. The grace does not weaken containment (still
+  sandboxed under SIGTERM; termination guaranteed by untrappable SIGKILL) and is
+  bounded so a hostile SIGTERM-ignoring child cannot delay teardown unboundedly.
 
 **When to use it**
 
