@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -333,10 +334,15 @@ func TestCreate_StartError(t *testing.T) {
 // Lifecycle.Destroy
 // ---------------------------------------------------------------------------
 
-func TestDestroy_KillGroupSIGKILLAndWait(t *testing.T) {
+// TestDestroy_GracefulTermAndWait pins the graceful Destroy contract (TODO
+// R-6): the long-lived Create child is first sent SIGTERM so it can flush/clean
+// up, and since it honours SIGTERM it exits within the grace window — so NO
+// SIGKILL is needed. Destroy still waits on the child.
+func TestDestroy_GracefulTermAndWait(t *testing.T) {
 	fake := newFakeRunner()
-	// The Create child's Wait returns a canned result.
+	// Create child: cooperative on SIGTERM (exits within grace), canned result.
 	fake.results = []*Result{{ExitCode: 0}}
+	fake.termExits = []bool{true}
 	b := newTestBackend(t, fake, []string{"/work"})
 
 	id, err := b.Create(context.Background(), baseSeatbeltSpec())
@@ -347,24 +353,33 @@ func TestDestroy_KillGroupSIGKILLAndWait(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 	p := fake.proc(1)
-	if !p.hasSignal(syscall.SIGKILL) {
-		t.Fatalf("Create child was not SIGKILLed; kills = %v", p.killSignals())
+	if !p.hasSignal(syscall.SIGTERM) {
+		t.Fatalf("Create child was not sent SIGTERM; kills = %v", p.killSignals())
+	}
+	if p.hasSignal(syscall.SIGKILL) {
+		t.Fatalf("Create child was SIGKILLed after a graceful SIGTERM exit; kills = %v", p.killSignals())
 	}
 	if p.waitCount() < 1 {
 		t.Fatal("Destroy did not Wait on the child")
 	}
 }
 
+// TestDestroy_IdempotentOnESRCH pins that Destroy stays idempotent (X02) under
+// the graceful signal sequence: a second destroy of an already-dead (cooperative)
+// child hits ESRCH on the SIGTERM and must be a no-op (nil).
 func TestDestroy_IdempotentOnESRCH(t *testing.T) {
 	fake := newFakeRunner()
+	// Create child: cooperative on SIGTERM so the first SIGTERM kills it; a
+	// second SIGTERM then returns ESRCH (already dead).
 	fake.results = []*Result{{ExitCode: 0}}
+	fake.termExits = []bool{true}
 	b := newTestBackend(t, fake, []string{"/work"})
 
 	id, err := b.Create(context.Background(), baseSeatbeltSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// First destroy kills the child.
+	// First destroy gracefully SIGTERMs the child.
 	if err := b.Destroy(context.Background(), id); err != nil {
 		t.Fatalf("first Destroy: %v", err)
 	}
@@ -378,8 +393,8 @@ func TestDestroy_IdempotentOnESRCH(t *testing.T) {
 		t.Fatalf("kills = %v, want 2 kill attempts", sigs)
 	}
 	for _, s := range sigs {
-		if s != syscall.SIGKILL {
-			t.Fatalf("kill signal = %v, want SIGKILL", s)
+		if s != syscall.SIGTERM {
+			t.Fatalf("kill signal = %v, want SIGTERM (graceful)", s)
 		}
 	}
 }
@@ -475,14 +490,20 @@ func TestExec_UnknownSession(t *testing.T) {
 	}
 }
 
-// TestExec_TimeoutKillsGroupAndEmitsCancelled pins the cancellation contract:
-// on ctx cancel (the req.Timeout path becomes a context deadline), the fresh
-// child is SIGKILLed as a process group and a terminal "cancelled" progress
-// event is emitted.
+// TestExec_TimeoutKillsGroupAndEmitsCancelled pins the cancellation contract
+// under the graceful signal sequence (TODO R-6): on ctx cancel (the req.Timeout
+// path becomes a context deadline), the fresh child's process group is first
+// sent SIGTERM so it can flush, then escalated to SIGKILL only if it ignores the
+// graceful signal, and a terminal "cancelled" progress event is emitted. The
+// exec child here is cooperative on SIGTERM, so it exits within the grace window
+// and NO SIGKILL is required — pinning that the graceful path is used rather than
+// an immediate SIGKILL.
 func TestExec_TimeoutKillsGroupAndEmitsCancelled(t *testing.T) {
 	fake := newFakeRunner()
-	// create child: block=false; exec child: block until ctx cancelled.
+	// create child: block=false; exec child: block until ctx cancelled, and
+	// cooperative on SIGTERM (exits within grace).
 	fake.blocks = []bool{false, true}
+	fake.termExits = []bool{false, true}
 	b := newTestBackend(t, fake, []string{"/work"})
 
 	id, err := b.Create(context.Background(), baseSeatbeltSpec())
@@ -514,8 +535,11 @@ func TestExec_TimeoutKillsGroupAndEmitsCancelled(t *testing.T) {
 	cancel()
 	<-done
 
-	if !p.hasSignal(syscall.SIGKILL) {
-		t.Fatalf("exec child was not SIGKILLed on cancel; kills = %v", p.killSignals())
+	if !p.hasSignal(syscall.SIGTERM) {
+		t.Fatalf("exec child was not sent SIGTERM on cancel; kills = %v", p.killSignals())
+	}
+	if p.hasSignal(syscall.SIGKILL) {
+		t.Fatalf("exec child was SIGKILLed despite a graceful SIGTERM exit; kills = %v", p.killSignals())
 	}
 	if !hasCancelledEvent(events) {
 		t.Fatalf("no cancelled progress event emitted; events = %+v", events)
@@ -627,10 +651,11 @@ func TestSlug(t *testing.T) {
 }
 
 // TestDestroy_StripsNamespacedID pins that Destroy strips the "seatbelt:" slug
-// and kills the child owned by the raw darwin session id.
+// and gracefully SIGTERMs the child owned by the raw darwin session id.
 func TestDestroy_StripsNamespacedID(t *testing.T) {
 	fake := newFakeRunner()
 	fake.results = []*Result{{ExitCode: 0}}
+	fake.termExits = []bool{true}
 	b := newTestBackend(t, fake, []string{"/work"})
 
 	id, err := b.Create(context.Background(), baseSeatbeltSpec())
@@ -640,10 +665,13 @@ func TestDestroy_StripsNamespacedID(t *testing.T) {
 	if err := b.Destroy(context.Background(), "seatbelt:"+id); err != nil {
 		t.Fatalf("Destroy(namespaced): %v", err)
 	}
-	// The slug was stripped and the raw session's Create child was SIGKILLed.
+	// The slug was stripped and the raw session's Create child was SIGTERMed.
 	p := fake.proc(1)
-	if !p.hasSignal(syscall.SIGKILL) {
-		t.Fatalf("Create child was not SIGKILLed; kills = %v", p.killSignals())
+	if !p.hasSignal(syscall.SIGTERM) {
+		t.Fatalf("Create child was not SIGTERMed; kills = %v", p.killSignals())
+	}
+	if p.hasSignal(syscall.SIGKILL) {
+		t.Fatalf("Create child was SIGKILLed on graceful exit; kills = %v", p.killSignals())
 	}
 }
 
@@ -669,5 +697,400 @@ func TestExec_StripsNamespacedID(t *testing.T) {
 	// 1 create child + 1 exec child => the slug-stripped id resolved the session.
 	if fake.startCount() != 2 {
 		t.Fatalf("Start called %d times, want 2 (1 create + 1 exec)", fake.startCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SIGTERM-grace (TODO R-6)
+// ---------------------------------------------------------------------------
+
+// TestDestroy_IgnoresSIGTERM_EscalatesToSIGKILL pins the escalation branch of the
+// graceful helper: when the child's process group ignores SIGTERM (a
+// non-cooperative process), the backend must wait out the configured grace window
+// and THEN escalate to SIGKILL. The kill sequence must be SIGTERM first, SIGKILL
+// second — an immediate SIGKILL (the current behaviour) fails this assertion.
+func TestDestroy_IgnoresSIGTERM_EscalatesToSIGKILL(t *testing.T) {
+	fake := newFakeRunner()
+	// Create child blocks its Wait and ignores SIGTERM (non-cooperative), so only
+	// an escalated SIGKILL can terminate it. A short grace keeps the test fast.
+	fake.blocks = []bool{true}
+	b := newTestBackend(t, fake, []string{"/work"}, WithKillGrace(20*time.Millisecond))
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Destroy(context.Background(), id); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	p := fake.proc(1)
+	sigs := p.killSignals()
+	if !slices.Equal(sigs, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) {
+		t.Fatalf("kills = %v, want [SIGTERM SIGKILL] (graceful then escalation)", sigs)
+	}
+}
+
+// TestDestroy_GraceSuccessNoSIGKILL pins the grace-success branch: a child that
+// blocks its Wait but exits cooperatively on SIGTERM (within the grace window)
+// must NOT be escalated to SIGKILL.
+func TestDestroy_GraceSuccessNoSIGKILL(t *testing.T) {
+	fake := newFakeRunner()
+	// Create child blocks its Wait (so the helper's Wait goroutine is what
+	// unblocks on SIGTERM) and is cooperative on SIGTERM (exits within grace).
+	fake.blocks = []bool{true}
+	fake.termExits = []bool{true}
+	b := newTestBackend(t, fake, []string{"/work"}, WithKillGrace(200*time.Millisecond))
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Destroy(context.Background(), id); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	p := fake.proc(1)
+	if !p.hasSignal(syscall.SIGTERM) {
+		t.Fatalf("Create child was not sent SIGTERM; kills = %v", p.killSignals())
+	}
+	if p.hasSignal(syscall.SIGKILL) {
+		t.Fatalf("Create child was SIGKILLed despite a graceful exit within grace; kills = %v", p.killSignals())
+	}
+}
+
+// TestWithKillGrace_ConfigDefaultAndOverride pins that the kill-grace is
+// configurable via the WithKillGrace Option and defaults to defaultKillGrace.
+func TestWithKillGrace_ConfigDefaultAndOverride(t *testing.T) {
+	b := newTestBackend(t, newFakeRunner(), nil)
+	if b.cfg.killGrace != defaultKillGrace {
+		t.Fatalf("default killGrace = %v, want %v", b.cfg.killGrace, defaultKillGrace)
+	}
+
+	override := 250 * time.Millisecond
+	b2 := newTestBackend(t, newFakeRunner(), nil, WithKillGrace(override))
+	if b2.cfg.killGrace != override {
+		t.Fatalf("killGrace = %v, want %v (WithKillGrace honored)", b2.cfg.killGrace, override)
+	}
+}
+
+// TestDestroy_ThreadsKillGraceToRunnerSpec pins that the backend threads the
+// configured kill-grace into the runner's ProcessSpec for the Create child, so
+// the real osProcess knows how long to wait before escalating to SIGKILL.
+func TestDestroy_ThreadsKillGraceToRunnerSpec(t *testing.T) {
+	fake := newFakeRunner()
+	want := 300 * time.Millisecond
+	b := newTestBackend(t, fake, []string{"/work"}, WithKillGrace(want))
+
+	if _, err := b.Create(context.Background(), baseSeatbeltSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	start := fake.recordedStarts()[0]
+	if start.KillGrace != want {
+		t.Fatalf("Create ProcessSpec.KillGrace = %v, want %v", start.KillGrace, want)
+	}
+}
+
+// TestExec_ThreadsKillGraceToRunnerSpec pins that the backend threads the
+// configured kill-grace into the runner's ProcessSpec for each Exec child too.
+func TestExec_ThreadsKillGraceToRunnerSpec(t *testing.T) {
+	fake := newFakeRunner()
+	fake.results = []*Result{nil, {ExitCode: 0}}
+	want := 350 * time.Millisecond
+	b := newTestBackend(t, fake, []string{"/work"}, WithKillGrace(want))
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := b.Exec(context.Background(), id, exec.Request{Argv: []string{"bash", "-c", "cmd"}}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	start := fake.recordedStarts()[1]
+	if start.KillGrace != want {
+		t.Fatalf("Exec ProcessSpec.KillGrace = %v, want %v", start.KillGrace, want)
+	}
+}
+
+// TestWithKillGrace_ClampsNonPositiveAndOversized pins the fail-closed clamping
+// of WithKillGrace (security condition #1 of R-6): a non-positive value (which
+// would mean an immediate, ungraceful hard-kill — weakening the graceful
+// shutdown) is reset to defaultKillGrace, and a value above maxKillGrace is
+// clamped to it so the DoS window a hostile process can hold the backend open is
+// hard-bounded.
+func TestWithKillGrace_ClampsNonPositiveAndOversized(t *testing.T) {
+	b := newTestBackend(t, newFakeRunner(), nil, WithKillGrace(0))
+	if b.cfg.killGrace != defaultKillGrace {
+		t.Fatalf("WithKillGrace(0) = %v, want default %v (non-positive weakens graceful shutdown)", b.cfg.killGrace, defaultKillGrace)
+	}
+	bneg := newTestBackend(t, newFakeRunner(), nil, WithKillGrace(-time.Second))
+	if bneg.cfg.killGrace != defaultKillGrace {
+		t.Fatalf("WithKillGrace(negative) = %v, want default %v", bneg.cfg.killGrace, defaultKillGrace)
+	}
+	bover := newTestBackend(t, newFakeRunner(), nil, WithKillGrace(10*time.Second))
+	if bover.cfg.killGrace != maxKillGrace {
+		t.Fatalf("WithKillGrace(10s) = %v, want max %v (hard-bounded DoS window)", bover.cfg.killGrace, maxKillGrace)
+	}
+}
+
+// scriptedProcess is a fully controllable Process used to unit-test
+// killGroupWithGrace's error/ESRCH branches directly (which the fakeRunner
+// scenarios cannot reach because its killErr applies uniformly to every signal).
+type scriptedProcess struct {
+	mu    sync.Mutex
+	pgid  int
+	kills []syscall.Signal
+	kill  func(sig syscall.Signal) error
+	wait  func(ctx context.Context) (*Result, error)
+}
+
+func (p *scriptedProcess) PGID() int { return p.pgid }
+func (p *scriptedProcess) KillGroup(sig syscall.Signal) error {
+	p.mu.Lock()
+	p.kills = append(p.kills, sig)
+	p.mu.Unlock()
+
+	return p.kill(sig)
+}
+func (p *scriptedProcess) Wait(ctx context.Context) (*Result, error) { return p.wait(ctx) }
+func (p *scriptedProcess) killSignals() []syscall.Signal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]syscall.Signal, len(p.kills))
+	copy(out, p.kills)
+
+	return out
+}
+
+// killGroupWithGraceWaitBlocks returns a wait func whose first call blocks until
+// ctx.Done (modelling a grace window expiry) and whose subsequent calls return a
+// clean result (modelling the post-escalation reap).
+func killGroupWithGraceWaitBlocks() func(ctx context.Context) (*Result, error) {
+	calls := 0
+
+	return func(ctx context.Context) (*Result, error) {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+
+			return nil, ctx.Err()
+		}
+
+		return &Result{ExitCode: 0, Signaled: true}, nil
+	}
+}
+
+// TestKillGroupWithGrace_SIGTERMReturnsError pins that a hard error from the
+// initial SIGTERM (non-ESRCH) is surfaced by the helper (no graceful window is
+// entered).
+func TestKillGroupWithGrace_SIGTERMReturnsError(t *testing.T) {
+	p := &scriptedProcess{
+		pgid: 1,
+		kill: func(syscall.Signal) error { return errors.New("sigterm failed") },
+		wait: func(context.Context) (*Result, error) { return &Result{}, nil },
+	}
+	err := killGroupWithGrace(context.Background(), p, 20*time.Millisecond)
+	if err == nil || err.Error() != "sigterm failed" {
+		t.Fatalf("killGroupWithGrace err = %v, want sigterm failed", err)
+	}
+	if got := p.killSignals(); !slices.Equal(got, []syscall.Signal{syscall.SIGTERM}) {
+		t.Fatalf("kills = %v, want [SIGTERM] only", got)
+	}
+}
+
+// TestKillGroupWithGrace_SIGKILLReturnsESRCH pins the escalation-ESRCH no-op
+// branch: after the grace window expires, an escalated SIGKILL that hits ESRCH
+// (the group vanished mid-grace) is treated as success — the helper still reaps
+// and returns nil (X02 idempotency preserved).
+func TestKillGroupWithGrace_SIGKILLReturnsESRCH(t *testing.T) {
+	p := &scriptedProcess{
+		pgid: 1,
+		kill: func(sig syscall.Signal) error {
+			if sig == syscall.SIGTERM {
+				return nil
+			}
+
+			return syscall.ESRCH // SIGKILL escalation hits ESRCH
+		},
+		wait: killGroupWithGraceWaitBlocks(),
+	}
+	if err := killGroupWithGrace(context.Background(), p, 20*time.Millisecond); err != nil {
+		t.Fatalf("killGroupWithGrace err = %v, want nil (ESRCH on escalation is no-op)", err)
+	}
+	if got := p.killSignals(); !slices.Equal(got, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) {
+		t.Fatalf("kills = %v, want [SIGTERM SIGKILL]", got)
+	}
+}
+
+// TestKillGroupWithGrace_SIGKILLReturnsError pins the escalation-error branch: a
+// non-ESRCH error from the escalated SIGKILL is surfaced.
+func TestKillGroupWithGrace_SIGKILLReturnsError(t *testing.T) {
+	p := &scriptedProcess{
+		pgid: 1,
+		kill: func(sig syscall.Signal) error {
+			if sig == syscall.SIGTERM {
+				return nil
+			}
+
+			return errors.New("kill failed")
+		},
+		wait: killGroupWithGraceWaitBlocks(),
+	}
+	err := killGroupWithGrace(context.Background(), p, 20*time.Millisecond)
+	if err == nil || err.Error() != "kill failed" {
+		t.Fatalf("killGroupWithGrace err = %v, want kill failed", err)
+	}
+	if got := p.killSignals(); !slices.Equal(got, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) {
+		t.Fatalf("kills = %v, want [SIGTERM SIGKILL]", got)
+	}
+}
+
+// TestKillGroupWithGrace_ReapsAfterEscalation pins that the helper ALWAYS reaps
+// (Waits) the process after an escalated SIGKILL: the final `proc.Wait(ctx)`
+// after the grace window must run, so a group that ignores SIGTERM is still
+// reaped exactly once per the kill+escalate+reap sequence. A mutation that drops
+// that final reap (leaving the child un-reaped) leaves waitCalls==1; the correct
+// sequence needs two Waits (the grace-window wait, then the post-escalation
+// reap). Deterministic: the scripted Wait's first call blocks until the grace
+// ctx expires, then returns; no real sleeps.
+func TestKillGroupWithGrace_ReapsAfterEscalation(t *testing.T) {
+	var mu sync.Mutex
+	waitCalls := 0
+	p := &scriptedProcess{
+		pgid: 1,
+		kill: func(syscall.Signal) error { return nil },
+		wait: func(ctx context.Context) (*Result, error) {
+			mu.Lock()
+			waitCalls++
+			n := waitCalls
+			mu.Unlock()
+			if n == 1 {
+				<-ctx.Done() // first call blocks until the grace window expires
+				return nil, ctx.Err()
+			}
+
+			return &Result{ExitCode: 0, Signaled: true}, nil
+		},
+	}
+	if err := killGroupWithGrace(context.Background(), p, 20*time.Millisecond); err != nil {
+		t.Fatalf("killGroupWithGrace err = %v, want nil", err)
+	}
+	if got := p.killSignals(); !slices.Equal(got, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) {
+		t.Fatalf("kills = %v, want [SIGTERM SIGKILL]", got)
+	}
+	mu.Lock()
+	n := waitCalls
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("Wait called %d times, want 2 (grace-window wait + post-escalation reap)", n)
+	}
+}
+
+// waitGroupTimeout waits for a WaitGroup to drain, failing the test if it does
+// not complete within the deadline. This keeps the concurrency tests fail-fast
+// under mutation: a mutated reaping path must FAIL (so the mutant is detected)
+// rather than hang and time out the whole suite.
+func waitGroupTimeout(t *testing.T, wg *sync.WaitGroup, d time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("timed out waiting for concurrent goroutines (possible hang under mutation)")
+	}
+}
+
+// TestDestroy_ConcurrentReapsOnce pins security condition #2 of R-6: two
+// concurrent Destroys on the same session must reap (Wait) the Create child
+// exactly once — never a double cmd.Wait ("Wait was already called" panic). The
+// per-session reapMu serializes the kill+reap; the second Destroy is an
+// idempotent ESRCH no-op.
+func TestDestroy_ConcurrentReapsOnce(t *testing.T) {
+	fake := newFakeRunner()
+	// Create child: blocking Wait, cooperative on SIGTERM (dies within grace).
+	fake.blocks = []bool{true}
+	fake.termExits = []bool{true}
+	b := newTestBackend(t, fake, []string{"/work"}, WithKillGrace(50*time.Millisecond))
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = b.Destroy(context.Background(), id)
+		}(i)
+	}
+	waitGroupTimeout(t, &wg, 5*time.Second)
+
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("concurrent Destroy #%d err = %v, want nil", i, e)
+		}
+	}
+	p := fake.proc(1)
+	if n := p.waitCount(); n != 1 {
+		t.Fatalf("Wait called %d times across concurrent Destroys, want exactly 1 (single reap)", n)
+	}
+	if !p.hasSignal(syscall.SIGTERM) {
+		t.Fatalf("Create child was not SIGTERMed; kills = %v", p.killSignals())
+	}
+}
+
+// TestDestroy_RacesWithExecCancel pins that a Destroy on the session's Create
+// child racing a concurrently-cancelled Exec (which kills a fresh child) neither
+// double-reaps a shared process nor panics: the two paths operate on independent
+// processes and both complete cleanly (X05 / security condition #2 & #7 of R-6).
+func TestDestroy_RacesWithExecCancel(t *testing.T) {
+	fake := newFakeRunner()
+	// create child: non-blocking, cooperative; exec child: blocking, cooperative.
+	fake.results = []*Result{{ExitCode: 0}}
+	fake.blocks = []bool{false, true}
+	fake.termExits = []bool{true, true}
+	b := newTestBackend(t, fake, []string{"/work"}, WithKillGrace(50*time.Millisecond))
+
+	id, err := b.Create(context.Background(), baseSeatbeltSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var mu sync.Mutex
+	var events []progress.Event
+	sink := func(_ context.Context, e progress.Event) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+	execCtx, cancel := context.WithCancel(progress.WithSink(context.Background(), sink))
+
+	var destroyErr, execErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); destroyErr = b.Destroy(context.Background(), id) }()
+	go func() {
+		defer wg.Done()
+		// Start Exec first so the exec child (start #2) is actually spawned.
+		_, execErr = b.Exec(execCtx, id, exec.Request{Argv: []string{"bash", "-c", "cmd"}})
+	}()
+
+	// Grab the exec child once it is spawned, wait until its Wait is blocking,
+	// then cancel — the graceful cancel path races the in-flight Destroy.
+	p := fake.waitForStart(t, 2)
+	<-p.started
+	cancel()
+	waitGroupTimeout(t, &wg, 5*time.Second)
+
+	if destroyErr != nil {
+		t.Fatalf("Destroy err = %v, want nil", destroyErr)
+	}
+	if execErr == nil {
+		t.Fatal("Exec on cancellation should return an error")
+	}
+	if !hasCancelledEvent(events) {
+		t.Fatalf("no cancelled progress event emitted; events = %+v", events)
 	}
 }

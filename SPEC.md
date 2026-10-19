@@ -580,10 +580,11 @@ create → use (exec/read/write/copy/install) → destroy
   **no supervisor wrapper and no `AutoRemove` equivalent**. The session id is
   the backend-generated **`darwin-N`** id (never the pid); the backend keeps an
   in-memory record mapping that id to its Create child, whose **process-group
-  pid** is the handle `Destroy` kills (`kill(-pgid, SIGKILL)`),
-  **idempotently** (`ESRCH` → no-op). A server exit
+  pid** is the handle `Destroy` tears down (group-wide `SIGTERM` → grace →
+  `SIGKILL`, R-6), **idempotently** (`ESRCH` → no-op). A server exit
   without explicit destroy leaves the sandboxed process tree as an **orphan**.
-  `req.Timeout` (§6.10) becomes a process-group `SIGKILL` cancellation.
+  `req.Timeout` (§6.10) becomes a process-group `SIGTERM` → `SIGKILL`
+  cancellation.
 - **State model (X01):** **stateful, per-session, in-memory.** State lives in
   the session manager (a process-local map); it is _not_ persisted to disk or a
   DB. Reasoning: sandboxes are ephemeral by design and tied to the lifetime of
@@ -1591,8 +1592,16 @@ immutable `Isolation` block is re-asserted on the result via `EnforceHardening`
   `execvp`s the child, which inherits the sandbox — so **no root and no
   privilege elevation** is needed and the "started but not yet sandboxed"
   window is closed. "Create" spawns the child (the `sleep 2147483647`
-  analogue — the BSD-portable form, not the GNU `sleep infinity`); "Destroy" is
-  `SIGKILL` + `Wait` (idempotent, **X02**).
+  analogue — the BSD-portable form, not the GNU `sleep infinity`); "Destroy"
+  terminates the whole process group **gracefully** — group-wide `SIGTERM`
+  (default grace `defaultKillGrace` = 1s, configurable via `WithKillGrace(d)`
+  and hard-capped at `maxKillGrace` = 5s, clamped fail-closed) → escalate to
+  group-wide `SIGKILL` only if the group ignores SIGTERM — **idempotent**
+  (`ESRCH` → no-op, **X02**), so the sandboxed tree can flush/clean up (R-6).
+  The grace phase does **not** weaken containment: the process stays sandboxed
+  while handling SIGTERM, and termination is still guaranteed (SIGKILL is
+  untrappable); the window is bounded (≤ 5s) so a hostile SIGTERM-ignoring
+  child cannot cause unbounded teardown delay.
 - **Pure Go, no cgo:** `sandbox-exec` is an external binary invoked via
   `os/exec`; there is no cgo and the server process is **never root**
   (`Available()` returns false when `euid == 0`). The package is split into a
@@ -1818,12 +1827,17 @@ no-shell-concat preserved.
 - **No container/daemon/image.** A session is an **in-memory record** (SBPL +
   env + cwd) in the session manager (**X01**); each `sandbox_exec` spawns a
   fresh `sandbox-exec` child. Cleanup is **explicit only** (§6.6): `Destroy`
-  kills the whole process group (`kill(-pgid, SIGKILL)`), **idempotently**
-  (`ESRCH` → no-op). There is **no `AutoRemove` equivalent**; a server exit
+  tears down the whole process group **gracefully** (group-wide `SIGTERM` →
+  configurable grace, default 1s / max 5s → group-wide `SIGKILL`), **idempotently**
+  (`ESRCH` → no-op). The grace lets the sandboxed tree flush/clean up before the
+  hard kill; it does **not** weaken containment (still sandboxed under SIGTERM,
+  termination guaranteed by untrappable SIGKILL) and is bounded (≤ 5s) so a
+  hostile SIGTERM-ignoring child cannot delay teardown unboundedly. There is
+  **no `AutoRemove` equivalent**; a server exit
   without explicit destroy leaves the sandboxed tree as an **orphan** (nothing
   is left but live processes and any host path the profile granted `rw`).
-  `req.Timeout` (§6.10) becomes a process-group `SIGKILL` cancellation
-  (SIGTERM is unreliable against sandboxed children).
+  `req.Timeout` (§6.10) becomes the same group-wide `SIGTERM` → `SIGKILL`
+  graceful cancellation.
 - **No live introspection** (`Introspectable` → `ErrCapabilityNotSupported`);
   resource observability uses `getrusage`/`task_info`/`ps` (no cgroup metrics).
 - **Policy-denial detection.** `sandbox-exec` does not log its own denials;
@@ -1963,7 +1977,7 @@ presented as equivalent.
 | Resource budgets?                                          | ⚠️ Soft `setrlimit` only; no cgroup quotas (T2).                                                                     |
 | Network isolation?                                         | ⚠️ `network-outbound` deny/allow only; no destination filtering, no namespaces (T6).                                 |
 | Deprecated runtime acknowledged?                           | ✅ `sandbox-exec`/`sandbox_init` deprecated, not guaranteed (see trust zones).                                       |
-| Cleanup explicit + idempotent?                             | ✅ Kill whole process group `SIGKILL`; idempotent (X02); explicit-only (orphan risk, §8).                            |
+| Cleanup explicit + idempotent?                             | ✅ Graceful group teardown `SIGTERM` → grace (≤5s) → `SIGKILL`; idempotent (X02); explicit-only (orphan risk, §8).  |
 
 **Verdict (S14):** the darwin backend is a **policy-based containment
 convenience**, strictly weaker than the Docker MVP. It is **not** a

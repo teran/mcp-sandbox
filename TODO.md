@@ -359,12 +359,23 @@ impl) with `@security` review first.
       `@qa`). The **only remaining** seccomp backlog item is the **custom
       seccomp profile** ("mandatory roadmap", `SPEC.md` §7.7) — not yet
       implemented.
-- [ ] **seatbelt: SIGTERM grace before SIGKILL (R-6):** `Backend.Destroy` and the
+- [x] **seatbelt: SIGTERM grace before SIGKILL (R-6):** `Backend.Destroy` and the
       exec-cancel path (`infrastructure/backend/darwin/darwin.go`) SIGKILL the
       whole process group with no grace period. Add a short, configurable SIGTERM
       phase before SIGKILL on destroy / timeout / cancel so children can flush/
       clean up; update `SPEC.md` §7.12 and `README.md` — `@developer`/`@qa`,
       `X05 C01 C04GO T01`
+      **Status: implemented & CI-verified (2026-10-19).** Both `Backend.Destroy`
+      and the exec cancel/timeout path now do group-wide `SIGTERM` → grace →
+      group-wide `SIGKILL`, reaping exactly once. Grace is configurable via
+      `WithKillGrace(d)` (default `defaultKillGrace` = 1s, hard-capped at
+      `maxKillGrace` = 5s, clamped fail-closed: ≤0 → default, >max → max); it
+      does **not** weaken containment (still sandboxed under SIGTERM; SIGKILL is
+      untrappable) and is bounded (≤ 5s) so a hostile SIGTERM-ignoring child
+      cannot cause unbounded teardown delay. Also fixes the pre-existing **X05
+      double-`Wait`** panic via a per-session `reapMu` + a `sync.Once` in
+      `osProcess` (concurrent Destroy / Destroy-vs-Exec-cancel safe). `SPEC.md`
+      §7.12/§7.13 and `README.md` updated.
 - [ ] **Always-mask `command`/`summary` in the `sandbox_exec` access-log (R-4,
       stopgap):** owner decision 2026-10-18 — for now mask the whole `command`
       string in the access-log (no name/value heuristics; revisit value-based

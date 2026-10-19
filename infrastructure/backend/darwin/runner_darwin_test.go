@@ -18,7 +18,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -265,5 +268,105 @@ func TestRealRunnerStart_MissingBinary(t *testing.T) {
 	}
 	if p != nil {
 		t.Fatalf("Start(missing binary) returned non-nil process %T", p)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SIGTERM-grace (TODO R-6) — real os/exec children
+// ---------------------------------------------------------------------------
+
+// TestOSProcessWait_GracefulSendsSIGTERM pins that osProcess.Wait, on ctx
+// cancellation, sends SIGTERM (the graceful signal) rather than jumping straight
+// to SIGKILL. The child traps SIGTERM and records it to a marker file before
+// exiting; if Wait had SIGKILLed first (the current behaviour), the trap would
+// never run and the marker would be absent. The context is cancelled before Wait
+// so the cancellation is deterministic (no timing dependency). A child that
+// honours SIGTERM must be reaped within the grace window — no escalation needed.
+//
+// The child first signals readiness (a `touch` of the ready marker) after it
+// has installed its TERM trap, and the test waits for that before cancelling.
+// This removes a genuine OS-level race: a SIGTERM sent too early — before
+// /bin/sh has installed the trap — terminates the child by the signal's default
+// action without ever running the trap, which would make the marker assertion
+// non-deterministic on a real host. The readiness gate and the exit-on-trap busy
+// loop keep every assertion below intact while making the test deterministic.
+func TestOSProcessWait_GracefulSendsSIGTERM(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gotterm")
+	ready := marker + ".ready"
+	// The trap is installed first; `touch <ready>` then signals that the child
+	// is ready to observe SIGTERM. The trap writes the marker AND exits the
+	// shell, and the body is a builtin busy loop (no child wait), so sh
+	// processes the SIGTERM promptly and deterministically — a `sleep <n>` body
+	// would defer the trap while sh is blocked in waitpid, making the marker
+	// write racy on a real host.
+	script := fmt.Sprintf("trap 'echo gotterm > %s; exit 0' TERM; touch %s; while :; do :; done", marker, ready)
+	r := realRunner{}
+	p, err := r.Start(context.Background(), ProcessSpec{
+		Argv:      []string{"/bin/sh", "-c", script},
+		KillGrace: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait (bounded) until the child has installed its TERM trap and signalled
+	// readiness, so the SIGTERM below is observed by the trap rather than racing
+	// its installation.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := os.Stat(ready); err != nil {
+		t.Fatalf("child never signalled TERM trap readiness: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // deterministic: cancel before Wait.
+
+	if _, err := p.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait err = %v, want context.Canceled", err)
+	}
+
+	// The SIGTERM trap ran => graceful signal was used, not an immediate SIGKILL.
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("SIGTERM marker %q not written (child was not gracefully SIGTERMed): %v", marker, err)
+	}
+	// The group was reaped within the grace window (no lingering child).
+	if err := syscall.Kill(-p.PGID(), 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("child process group still alive after graceful cancel (kill err = %v)", err)
+	}
+}
+
+// TestOSProcessWait_GracefulEscalatesToSIGKILL pins that when the child ignores
+// SIGTERM (`trap ” TERM`), the graceful path must escalate to SIGKILL after the
+// grace window so the group is still reaped. The child is non-cooperative, so
+// only an escalated SIGKILL can terminate it; a short KillGrace keeps the test
+// fast and deterministic (the context is cancelled before Wait).
+func TestOSProcessWait_GracefulEscalatesToSIGKILL(t *testing.T) {
+	r := realRunner{}
+	// `trap '' TERM` makes both sh and the inherited sleep ignore SIGTERM, so
+	// the group survives SIGTERM and must be SIGKILLed to be reaped.
+	p, err := r.Start(context.Background(), ProcessSpec{
+		Argv:      []string{"/bin/sh", "-c", `trap "" TERM; sleep 30`},
+		KillGrace: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // deterministic: cancel before Wait.
+
+	if _, err := p.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait err = %v, want context.Canceled", err)
+	}
+
+	// The group ignored SIGTERM; only SIGKILL escalation could have reaped it.
+	// A non-ESRCH result means the child is still alive — escalation failed.
+	if err := syscall.Kill(-p.PGID(), 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("child process group still alive after escalation (kill err = %v)", err)
 	}
 }

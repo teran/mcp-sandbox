@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // realRunner spawns /usr/bin/sandbox-exec children on macOS via os/exec. Each
@@ -73,7 +75,13 @@ func (realRunner) Start(_ context.Context, ps ProcessSpec) (Process, error) {
 		return nil, fmt.Errorf("darwin: start %q: %w", ps.Argv[0], err)
 	}
 
-	return &osProcess{cmd: cmd, pgid: cmd.Process.Pid, stdout: &stdout, stderr: &stderr}, nil
+	return &osProcess{
+		cmd:    cmd,
+		pgid:   cmd.Process.Pid,
+		stdout: &stdout,
+		stderr: &stderr,
+		grace:  ps.KillGrace,
+	}, nil
 }
 
 // realOps implements rlimitOps over the syscall package on darwin, providing
@@ -99,6 +107,22 @@ type osProcess struct {
 	cmd            *exec.Cmd
 	pgid           int
 	stdout, stderr *bytes.Buffer
+	// grace is the SIGTERM→SIGKILL escalation window Wait applies on
+	// cancellation before hard-killing the group (R-6). Zero means an immediate
+	// hard-kill (the pre-R-6 behaviour).
+	grace time.Duration
+
+	// waitOnce ensures the single cmd.Wait goroutine is started exactly once,
+	// and `done`/`waitErr`/`result` are shared across all Wait callers. This is
+	// the fix for the pre-existing X05 double-Wait bug: os/exec panics with
+	// "Wait was already called" if cmd.Wait runs twice, and the backend can call
+	// Wait from both Destroy and the Exec-cancel path. `done` closes only after
+	// the goroutine has written waitErr/result, establishing the happens-before
+	// needed to read them race-free (security condition #2 of R-6).
+	waitOnce sync.Once
+	done     chan struct{}
+	waitErr  error
+	result   *Result
 }
 
 // PGID returns the process group id (the leader pid).
@@ -111,47 +135,61 @@ func (p *osProcess) KillGroup(sig syscall.Signal) error {
 }
 
 // Wait blocks until the child exits or ctx is cancelled. On cancellation it
-// SIGKILLs the group and returns ctx.Err(). On a normal exit it returns the
-// exit code and captured output.
+// sends SIGTERM to the group, waits up to the configured grace for a graceful
+// exit, escalates to SIGKILL if the group ignores SIGTERM, and returns
+// ctx.Err(). On a normal exit it returns the exit code and captured output.
+// Wait is safe to call concurrently: cmd.Wait runs exactly once, shared by all
+// callers (security condition #2 of R-6).
 func (p *osProcess) Wait(ctx context.Context) (*Result, error) {
-	// done is closed when cmd.Wait returns; waitErr is written before close,
-	// so receiving from done establishes happens-before and makes the read of
-	// waitErr race-free.
-	done := make(chan struct{})
-	var waitErr error
-	go func() {
-		waitErr = p.cmd.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-ctx.Done():
-		_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
-		// Reap the child (block until cmd.Wait returns). waitErr is expected
-		// to be a non-nil signal error here (the group was SIGKILLed on
-		// cancellation) and is deliberately ignored — the caller receives
-		// ctx.Err(), not the exit error.
-		<-done
-
-		return nil, ctx.Err()
-	case <-done:
-		err := waitErr
-		if err != nil {
-			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+	// Start the single cmd.Wait goroutine exactly once. Later Wait callers
+	// reuse the shared done/waitErr/result (happens-before via close(done)).
+	p.waitOnce.Do(func() {
+		p.done = make(chan struct{})
+		go func() {
+			err := p.cmd.Wait()
+			p.waitErr = err
+			if err == nil {
+				p.result = &Result{ExitCode: 0, Stdout: p.stdout.Bytes(), Stderr: p.stderr.Bytes()}
+			} else if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-					return &Result{
+					p.result = &Result{
 						ExitCode: ws.ExitStatus(),
 						Stdout:   p.stdout.Bytes(),
 						Stderr:   p.stderr.Bytes(),
 						Signaled: ws.Signaled(),
-					}, nil
+					}
 				}
 			}
+			close(p.done)
+		}()
+	})
 
-			return nil, err
+	select {
+	case <-p.done:
+		if p.waitErr != nil && p.result == nil {
+			return nil, p.waitErr
 		}
 
-		return &Result{ExitCode: 0, Stdout: p.stdout.Bytes(), Stderr: p.stderr.Bytes()}, nil
+		return p.result, nil
+	case <-ctx.Done():
+		// Graceful termination: SIGTERM the whole group so it can flush/clean
+		// up, wait up to the grace window for a graceful exit, then escalate to
+		// SIGKILL only if the group ignores SIGTERM. All terminating branches
+		// end with <-done, reaping exactly once (cmd.Wait runs once).
+		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+		if p.grace > 0 {
+			select {
+			case <-p.done:
+			case <-time.After(p.grace):
+				_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
+				<-p.done
+			}
+		} else {
+			_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
+			<-p.done
+		}
+
+		return nil, ctx.Err()
 	}
 }
 
