@@ -8,10 +8,10 @@
 ![MCP-Server](https://img.shields.io/badge/MCP-Server-000000?logo=modelcontextprotocol)
 [![Go Reference](https://pkg.go.dev/badge/github.com/teran/mcp-sandbox.svg)](https://pkg.go.dev/github.com/teran/mcp-sandbox)
 ![Go Version](https://img.shields.io/github/go-mod/go-version/teran/mcp-sandbox)
-![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
-![gosec](https://img.shields.io/badge/gosec-passing-brightgreen)
-![govulncheck](https://img.shields.io/badge/govulncheck-passing-brightgreen)
-![gremlins](https://img.shields.io/badge/mutation-%E2%89%A580%25-brightgreen)
+
+> **CI gates** — enforced by the live **CI** badge above (green only when *every*
+> job passes): unit tests with **coverage ≥ 95%** · **gosec** · **govulncheck** ·
+> **go-arch-lint** · **gremlins** mutation ≥ 80% · **gitleaks** secret scan.
 
 > **Platforms:** **Linux** (Docker) · **macOS** (Docker, or Seatbelt `sandbox-exec` without a daemon)
 
@@ -110,8 +110,8 @@ Highlights:
   shared handler pipeline (validate → access-log → dispatch → redact →
   structured output).
 - **Session lifecycle**: `create → use → destroy`, immutable mounts. Cleanup is
-  **explicit only** — see [Sandbox lifecycle](#sandbox-lifecycle). Automatic
-  idle-reaping and orphan cleanup are **future work** (not implemented today).
+  **explicit only** — see [Sandbox lifecycle](#sandbox-lifecycle); there is no
+  automatic GC.
 
 ### Driver architecture
 
@@ -201,7 +201,7 @@ auth via environment, no HTTP headers).
 | `LOG_LEVEL`            | _(unset ⇒ logging disabled)_  | Enable + level. stdio logging is **on only when set**.                                                                                                                                                                                                                                  |
 | `LOG_FILENAME`         | —                             | stdio log file path, `chmod 600`.                                                                                                                                                                                                                                                       |
 | `LOG_FORMAT`           | `text`                        | `text` or `json`.                                                                                                                                                                                                                                                                       |
-| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Accepted but **not yet effective** — the idle reaper is not wired into the running server, so this has no effect today (future work).                                                                                                                                                   |
+| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Accepted for compatibility but **has no effect** — cleanup is explicit only, there is no idle reaper.                                                                                                                        |
 | `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles`  | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). Read **on demand** on each profile lookup — edits take effect without restarting the server. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
 
 > **Removed in Phase 7:** `SANDBOX_CWD_MODE` (→ profile `cwd.mode`),
@@ -519,9 +519,7 @@ Sandboxes follow `create → use → destroy`:
 
 **Cleanup is explicit only — there is no automatic GC.** A sandbox is removed
 **only** when the model-host calls `sandbox_destroy` / `sandbox_destroy_all`;
-otherwise it persists until then. There is no idle reaper and no orphan
-reclamation. An automatic idle reaper and orphan cleanup are **future work**
-(see `TODO.md`).
+otherwise it persists until then.
 
 ## macOS driver (`sandbox-exec` backend)
 
@@ -660,8 +658,9 @@ The darwin profile's `spec:` blob also accepts an optional **`env:`** map of
 session environment variables, mirroring the Docker profile's `spec.env:`
 (SPEC §7.12). As with Docker profile env, the values are collected into the
 redaction set and **masked from output and logs (S02)** — do **not** put
-secrets here; use tmpfs `0600` secret files instead (see
-`examples/profiles/seatbelt.yml`).
+secrets here. Note: the seatbelt backend delivers **no file secrets** — unlike
+Docker there is no tmpfs `/run/sandbox`; secrets never leave the server process
+as files, only **redaction** is applied (SPEC §7.12).
 
 **Generation order.** `sbpl.Generate` emits sections in a fixed order — imports
 → `(deny default)` → network → mach → sysctl → file → **your `seatbelt.sbpl`
@@ -883,6 +882,10 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
 - Single **redaction layer** hides `secret:true` fields from all output and
   logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never
   command-line/image.
+- **`command` is intentionally NOT masked in the access-log (S02 disclaimer):**
+  the `sandbox_exec` access-log records `command` as passed, **not** secret-
+  redacted — no masking is applied. `command` is **not** a channel for secrets;
+  use tmpfs `0600` secret files instead (§7.3).
 - **No shell-string concatenation/interpolation (S11/N21):** `sandbox_exec`
   takes a scalar `command` passed as **one element** of a **fixed**
   `[<shell>,"-c",command]` wrapper (shell from the profile, default `bash`,

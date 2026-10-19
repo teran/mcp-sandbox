@@ -376,7 +376,7 @@ application/               use-case orchestration
                            create/update/delete)
   sandbox/                 sandbox service: create/use/destroy, Backend select
   session/                 session manager: registry, lifecycle (explicit
-                           destroy; idle reaper is future work)
+                           destroy)
   tools/                   declarative tool framework
     def/                   ToolDef (Name/Title/Description/Annotations/
                            Instructions/InputSchema/OutputSchema/
@@ -564,17 +564,13 @@ create → use (exec/read/write/copy/install) → destroy
   **empty** id falls back to a generated opaque 64-hex (`crypto/rand`) id. The
   post-create duplicate check enforces uniqueness on the full namespaced id
   (X02; see §7.8).
-- **Cleanup is explicit only — idle reaper & orphan-GC are future work.**
-  Sandboxes are removed **only** by explicit `sandbox_destroy` /
-  `sandbox_destroy_all`; there is **no automatic GC** today. An in-process idle
-  reaper (`Manager.Reap` / `Session.Touch`) and an orphan-reclamation sweep are
-  **designed but not wired** — no production code path calls them (see `TODO.md`).
-  `SANDBOX_IDLE_TIMEOUT` is parsed but has no effect until the reaper is wired.
-- **Shutdown-teardown (intended, not automatically wired):** the design intends
-  graceful shutdown to call `DestroyAll()` of the process's own sessions.
-  **Today `DestroyAll` runs only via the `sandbox_destroy_all` tool** — there is
-  no automatic teardown on server exit, so a process that dies without explicit
-  destroy leaves orphaned containers (to be reclaimed by the future orphan-GC).
+- **Cleanup is explicit only — there is no automatic GC.** Sandboxes are
+  removed **only** by explicit `sandbox_destroy` / `sandbox_destroy_all`; a
+  sandbox persists until explicitly destroyed.
+- **Shutdown-teardown (not automatically wired):** `DestroyAll` runs only via
+  the `sandbox_destroy_all` tool — there is no automatic teardown on server
+  exit, so a process that dies without explicit destroy leaves orphaned
+  containers (no automatic reclamation).
 - **darwin/`sandbox-exec` driver (§7.12):** `sandbox-exec` applies a
   sandbox scheme and **execs** the command into the **same process** — there is
   **no supervisor wrapper and no `AutoRemove` equivalent**. The session id is
@@ -593,9 +589,8 @@ create → use (exec/read/write/copy/install) → destroy
   stateful-but-in-memory).
   - **Per-process / multi-copy model:** each `mcp-sandbox` process tracks **only
     its own** sessions in its own in-memory map. Concurrent copies of the server
-    do **not** coordinate. In-memory state dies with the process; the idle-reaper
-    and orphan-GC (both future work) are the intended mechanisms for reclaiming
-    sessions after a process exits.
+    do **not** coordinate. In-memory state dies with the process; there is no
+    automatic reclamation after a process exits (cleanup is explicit only).
 - **Idempotency (X02):** mutating tools have a data-level idempotency
   mechanism — `sandbox_create` does **search-before-create** (a duplicate
   creation — a session with the same id — is surfaced as an **error** rather
@@ -637,7 +632,7 @@ startup (local wiring only):
 | `LOG_LEVEL`            | _(unset ⇒ logging disabled)_  | Enable + level; stdio logging is on **only when set** (**L02**).                                                                                                                                                                                                                                                                                             |
 | `LOG_FILENAME`         | —                             | stdio log file path, `chmod 600` (**L01/L03**).                                                                                                                                                                                                                                                                                                              |
 | `LOG_FORMAT`           | `text`                        | `text` or `json` (**L04**).                                                                                                                                                                                                                                                                                                                                  |
-| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Idle reaper window (**not yet wired** — the reaper is designed but not running; see §6.6).                                                                                                                                                                                                                                                                   |
+| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Accepted for compatibility but **has no effect** — cleanup is explicit only, there is no idle reaper (§6.6).                                                                                                                                                                                                                                                   |
 | `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles`  | Directory of **operator-authored, READ-ONLY** YAML sandbox profiles — one `<name>.yml` per profile (**Phase 7**, §7.11). Read **on demand** on each `Get`/`List` (§7.11) — edits take effect without a restart. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. There is **no** profile create/update/delete mechanism. |
 
 > **Removed configuration (Phase 7).** The following env vars were **removed**;
@@ -720,7 +715,7 @@ sandbox**. Its responsibilities map 1:1 onto the existing ISP role interfaces
 | (via `Factory`)         | `Available()` | is this driver usable right now (lazy, A02/N35)                 |
 
 - **`List` is NOT a single-sandbox primitive (QA P1).** It is an **optional
-  reconciliation seam** — for the future orphan-GC (§6.6) — and is **not part of
+  reconciliation seam** — and is **not part of
   the core "one sandbox" role set**. The server's session manager already owns
   `List`/`DestroyAll` aggregation (§6.3); a driver does not need `List` to be
   usable.
@@ -1080,11 +1075,13 @@ itself can **never** be weakened (by profile or caller).
   to the `notifications/progress` chunks emitted while a command runs, so no
   secret leaks through the live-streaming channel.
 
-> **⚠ `command` and `summary` are logged as-is (S02 disclaimer).** The
+> **⚠ `command` and `summary` are logged as-is and are intentionally NOT
+> masked (S02 disclaimer).** The
 > access-log line (L08) records the `sandbox_exec` `command` and `summary`
 > **as passed**, hoisted to **top-level** `command`/`summary` fields via the
 > tool's `AccessLogHoist` contract (§6.4) — the access-log path is **not** run
-> through secret-value redaction. This is a **deliberate design choice**: the
+> through secret-value redaction, so **no masking is applied** to `command`/
+> `summary`. This is a **deliberate design choice**: the
 > secret model is struct-annotation-based, and `command`/`summary` are free-form
 > for which **no** secret values are known in advance, so they **cannot** be
 > reliably masked if one ever appeared there. The per-exec `env` override map (a
@@ -1691,7 +1688,7 @@ imports → `(deny default)` → network → mach → sysctl → file → operat
 | `Isolation.NoNewPrivileges`           | **not enforced on darwin** — validated by `spec.Validate`, but there is no mechanism (`SysProcAttr` is `Setpgid` only, `runner_darwin.go:45-49`) |
 | `Isolation.ReadOnlyRootfs`            | **not enforced on darwin** — no container rootfs; the process runs on the host filesystem under SBPL file rules                                  |
 | `Isolation.CapDrop`                   | **not enforced on darwin** — no capability model; the process is a plain host process                                                            |
-| `Isolation.TmpfsWorkdir`              | **not enforced on darwin** — no tmpfs; the secret dir is a per-session `0700` directory on the host                                              |
+| `Isolation.TmpfsWorkdir`              | **not enforced on darwin** — no tmpfs; seatbelt delivers **no file secrets** (secrets are redacted in-process only, never written as files)                                             |
 | `Isolation.AutoRemove`                | **not applicable on darwin** — no container; cleanup is explicit kill (§7.12)                                                                    |
 | mach                                  | `(deny mach-lookup)` + allow-list                                                                                                                |
 | sysctl                                | `(deny sysctl*)` + allow-list                                                                                                                    |
@@ -1816,8 +1813,9 @@ Docker/gVisor isolation:
   self-sandbox-then-exec logic.
 
 **Invariants preserved:** `ALLOW_DIRS` as the single host-path gate (**S04**);
-no secret leakage (**S02/N02**) — secrets delivered as a `0600` file in a
-per-session `0700` directory (macOS has no tmpfs; the analog of `/run/sandbox`),
+no secret leakage (**S02/N02**) — the seatbelt backend delivers **no file
+secrets** at all: secrets never leave the server process as files, only
+**redaction** is applied (macOS has no tmpfs `/run/sandbox`), and secrets are
 **never** in argv and **never** in SBPL (the literal validator is what prevents
 a secret from entering SBPL); non-root self-sandbox (§7.6-analog); **S11**
 no-shell-concat preserved.
@@ -1909,7 +1907,7 @@ model is distributed across §7.1–§7.11; this block consolidates it.
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Confidentiality** | Stronger: container isolation + read-only rootfs + non-root; host filesystem visible only within `ALLOW_DIRS` (read-only default). Secrets delivered as tmpfs `0600` files, never argv/image/env (§7.3).                                                     |
 | **Integrity**       | Container-internal writes only into writable tmpfs `/tmp` (+ `cwd` when `mode=rw`); host-visible state is protected by read-only mounts and the immutable `Isolation` block.                                                                                |
-| **Availability**    | cgroup resource quotas bound the container; explicit-only cleanup means orphaned containers are possible on server exit without destroy (§6.6, future orphan-GC).                                                                                         |
+| **Availability**    | cgroup resource quotas bound the container; explicit-only cleanup means orphaned containers are possible on server exit without destroy (§6.6).                                                                                         |
 
 ##### Auditor checklist (Docker, filled)
 
@@ -1971,7 +1969,7 @@ presented as equivalent.
 | Operator SBPL validated?                                   | ⚠️ **Verbatim append — only NUL rejected.** Operator is trusted (§7.11); metachar validators do not run on the tail. |
 | SBPL injection on typed paths?                             | ✅ `ValidatePath`/`ValidateMachName`/`ValidateSysctlName` fail-closed, `errors.Is(..., ErrSBPLMetachar)` (§7.12).    |
 | Single host-path gate (`ALLOW_DIRS`, S04)?                 | ✅ Gates every mount source + cwd; paths outside are silently skipped.                                               |
-| Secrets out of argv/SBPL (S02)?                            | ✅ Redaction + per-session `0700` secret dir (no tmpfs).                                                             |
+| Secrets out of argv/SBPL (S02)?                            | ✅ Redaction only — seatbelt delivers **no file secrets** (no tmpfs).                                                 |
 | Non-root / no root (S07-analog)?                           | ✅ `euid != 0` refused; but **no uid change** (host-user identity).                                                  |
 | `no-new-privileges` / cap-drop / read-only-rootfs / tmpfs? | ❌ **Not enforced on darwin** (no mechanism; see T3).                                                                |
 | Resource budgets?                                          | ⚠️ Soft `setrlimit` only; no cgroup quotas (T2).                                                                     |
@@ -2274,6 +2272,24 @@ release` on every `v*` tag to publish binary release artifacts via goreleaser
 **Mutation gate (C02/C08GO):** gremlins hard gate at 80/80.
 **Secret scan (C03):** gitleaks over full git history; findings fixed, not
 suppressed.
+
+**Pinned CI tooling versions** (as used in `.github/workflows/ci.yml` — every
+job installs/pins these exact versions, never `latest`):
+
+| Tool / action                 | Version                       |
+| ----------------------------- | ----------------------------- |
+| `actions/checkout`            | `@v4`                         |
+| `actions/setup-go`            | `@v5`                         |
+| Go (`GO_VERSION`)             | `1.27.2`                      |
+| `golangci-lint`               | `v2.15.0`                     |
+| `gosec`                       | `v2.29.0`                     |
+| `govulncheck`                 | `v1.9.0`                      |
+| `go-arch-lint`                | `v1.19.0`                     |
+| `gofumpt`                     | `v0.12.0`                     |
+| `gremlins`                    | `v0.6.0`                      |
+| `gitleaks` (action)           | `gitleaks/gitleaks-action@v2` |
+| `goreleaser`                  | `v2.18.3`                     |
+
 
 **CI never mutates repository state (N36):** CI is **read-only** over the
 working tree — no auto-commits, no pushing commits/tags back, no writing to
