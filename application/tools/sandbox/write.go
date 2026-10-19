@@ -84,10 +84,10 @@ func sandboxCreateDef(b builder) *def.ToolDef {
 			"never in argv or image. Creating a duplicate is surfaced as an error.\n\n"+
 			guidance.RedirectNote+"\n\nSee "+guidance.URIRedirect+" and "+guidance.URICreate+" for details.",
 		obj(map[string]*jsonschema.Schema{
-			"profile": strP("Operator-authored profile name (see profile_list); determines image, " +
+			"profile": strP("Operator-authored profile name (required; see profile_list); determines image, " +
 				"env, mounts, network, resources, user and sudo"),
-			"cwd": strP("Session working directory, mounted 1:1 at the same absolute path"),
-			"session_id": strP("OpenCode client session id that created this sandbox; recorded as a " +
+			"cwd": strP("Session working directory (required), mounted 1:1 at the same absolute path"),
+			"session_id": strP("OpenCode client session id (required) that created this sandbox; recorded as a " +
 				"container label for traceability. Distinct from the sandbox session id returned as `id`."),
 			"secrets": arrP("Secrets delivered as tmpfs 0600 files", obj(map[string]*jsonschema.Schema{
 				"name": strP("Secret name"), "value": strP("Secret value"),
@@ -202,10 +202,12 @@ func sandboxExecDef(b builder) *def.ToolDef {
 			"fixed shell wrapper). Fill `summary` with a short human-readable description of the "+
 			"command (one or two words). Do not put secrets in the command or env. Output is "+
 			"ANSI-sanitized before returning.\n\n"+
+			"Required parameters: `id` (the sandbox session id) and `command`. All other parameters "+
+			"(`env`, `summary`, `working_dir`, `timeout`, `user`) are optional.\n\n"+
 			guidance.RedirectNote+"\n\nSee "+guidance.URIExec+" for details.",
 		obj(map[string]*jsonschema.Schema{
-			"id":          strP("Sandbox session id"),
-			"command":     strP("The command to run, executed via the sandbox's configured shell"),
+			"id":          strP("Sandbox session id (required)"),
+			"command":     strP("The command to run, executed via the sandbox's configured shell (required)"),
 			"env":         envP("Optional per-exec environment overrides (string key/value pairs)"),
 			"summary":     strP("Short human-readable description of the command (e.g. \"run unit tests\")"),
 			"working_dir": strP("Optional working directory"),

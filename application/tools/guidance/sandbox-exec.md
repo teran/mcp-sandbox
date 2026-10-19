@@ -3,6 +3,20 @@
 `sandbox_exec` runs a command inside an existing sandbox via its configured
 shell.
 
+## Parameters
+
+Quick reference — full details in the sections below:
+
+| Parameter     | Type              | Required | Notes                                                |
+| ------------- | ----------------- | -------- | ---------------------------------------------------- |
+| `id`          | string            | **REQUIRED** | Sandbox session id (from `sandbox_create`/`sandbox_list`). |
+| `command`     | string            | **REQUIRED** | Scalar command run via the fixed shell wrapper.      |
+| `env`         | object            | optional | Key/value overrides (see [Environment](#environment)). |
+| `summary`     | string            | optional | Short human-readable description (see [Summary](#summary)). |
+| `working_dir` | string            | optional | Working directory for the command.                   |
+| `timeout`     | integer (seconds) | optional | Deadline; `0` = no deadline (see [Timeout](#timeout)). |
+| `user`        | enum `"default"` \| `"root"` | optional | `root` requires the profile's sudo policy = `require` (see [User](#user)). |
+
 ## Passing the command
 
 Pass the command as a single **scalar string**. It is executed through a fixed

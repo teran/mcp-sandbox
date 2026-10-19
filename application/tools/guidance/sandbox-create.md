@@ -5,15 +5,15 @@
 
 ## Inputs
 
-- **profile** — the operator-authored profile name (see `profile_list`). This
-  is the trusted source for the image, environment, mounts, network, resource
-  limits, user and sudo policy.
-- **cwd** — the session working directory, mounted 1:1 at the same absolute
-  path inside the container (read-only unless the profile sets
+- **profile** (**REQUIRED**) — the operator-authored profile name (see
+  `profile_list`). This is the trusted source for the image, environment,
+  mounts, network, resource limits, user and sudo policy.
+- **cwd** (**REQUIRED**) — the session working directory, mounted 1:1 at the
+  same absolute path inside the container (read-only unless the profile sets
   `cwd.mode=rw`).
-- **session_id** — the OpenCode client session id that created this sandbox,
-  recorded as a container label for traceability.
-- **secrets** — optional name/value pairs delivered as tmpfs `0600` files, so
+- **session_id** (**REQUIRED**) — the OpenCode client session id that created
+  this sandbox, recorded as a container label for traceability.
+- **secrets** (OPTIONAL) — name/value pairs delivered as tmpfs `0600` files, so
   their values never appear in argv, image, or environment.
 
 ## What the profile owns

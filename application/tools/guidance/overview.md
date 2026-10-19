@@ -24,6 +24,10 @@ effect before calling them.
 - **Delete** (destructive, irreversible): `sandbox_destroy`,
   `sandbox_destroy_all`.
 
+> **Required parameters.** `sandbox_create` requires `profile`, `cwd` and
+> `session_id` (optional `secrets`); `sandbox_exec` requires `id` and `command`
+> (everything else optional). See the per-tool guidance for details.
+
 ## Annotations
 
 Every tool carries closed-world annotations describing how it behaves:
