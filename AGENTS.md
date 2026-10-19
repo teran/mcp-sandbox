@@ -127,9 +127,13 @@ See `SPEC.md` §7.
   > set, L02) and the file is `chmod 600` (L01).
 - **Filesystem scope (S04/N03):** host access only via `ALLOW_DIRS`, empty by
   default. `ALLOW_SYMLINKS=false` by default — canonicalize with
-  `EvalSymlinks`, open-then-verify; reject anything escaping the
-  allowed roots. Hardlinks are an OS-level concern, not the path check's.
-  Write only into tmpfs.
+  `EvalSymlinks`, open-then-verify (identity-only, TOCTOU); **no** resolved-path
+  re-gate against `ALLOW_DIRS`. A symlink physically inside an allowed dir that
+  points outward is **operator-authored and trusted** (the sandbox can't create
+  host-side symlinks outside its mounts, mounts are fixed at create, and
+  in-container symlinks resolve in the container namespace) — not a sandbox
+  escape, by design (§7.2). Hardlinks are an OS-level concern, not the path
+  check's. Write only into tmpfs.
 - **No shell/SQL/URL concatenation (S11/N21):** **no shell-string
   concatenation/interpolation** — `sandbox_exec` takes a scalar `command`
   through a **fixed** `[<shell>,"-c",command]` wrapper (shell from the profile,
