@@ -109,9 +109,16 @@ earlier namespaced-id work). Summary and next steps:
   - [x] **Push `docs/driver-options-design` and open PR** — **DONE: merged as
         PR #15 (2026-10-18)** after the darwin e2e passed on macOS CI
         (`make e2e`; Docker-in-Docker e2e remains N/A).
-  - [ ] **Live-test in a real seatbelt sandbox** (the `sandbox` MCP is available
-    again): verify `/usr/bin/sandbox-exec` on the macOS host and run
-    `make lint test build` inside a seatbelt sandbox.
+  - [x] **Live-test in a real seatbelt sandbox — DONE (2026-10-20):** verified
+    `/usr/bin/sandbox-exec` on the macOS host (`-rwxr-xr-x`, root:wheel) and ran
+    `make lint`, `make test`, `make build` inside a live seatbelt sandbox
+    (sandbox MCP profile `seatbelt`, session `seatbelt:darwin-2`). All three
+    gates **PASS** (exit 0): lint clean (golangci 0 issues, vet, gosec,
+    go-arch-lint OK; govulncheck only accepted no-fix `GO-2026-4883/4887`),
+    `make test` green with coverage ≥ 95%, `make build` produced 4 goreleaser
+    targets. Note: a nested `/usr/bin/sandbox-exec` inside a seatbelt sandbox
+    returns `Operation not permitted` — expected macOS sandbox-nesting
+    limitation, not a backend defect. Sandbox destroyed after the test.
   - **External drivers:** Phase 1 = in-process Go plugins
     (`driver.Builder` / `Register` already the ABI); Phase 2 (later) =
     out-of-process IPC (STDIO child + protobuf-like) + `SANDBOX_DRIVERS_DIR`
