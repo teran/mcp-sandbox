@@ -196,7 +196,7 @@ auth via environment, no HTTP headers).
 | Env                    | Default                       | Description                                                                                                                                                                                                                                                                             |
 | ---------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ALLOW_DIRS`           | `[]` (none)                   | Permitted host directories for mounts — gates the session `cwd` **and** every profile mount `source`. Empty ⇒ deny all. **Still required** (Phase 7).                                                                                                                                   |
-| `ALLOW_SYMLINKS`       | `false`                       | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off).                                                                                                                                                                                                                    |
+| `ALLOW_SYMLINKS`       | `false`                       | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off). Note: `verifyHostPath` does identity-only `EvalSymlinks` + open-then-verify, **no** resolved-path re-gate; a symlink inside an allowed dir pointing outward is operator-authored/trusted, not an escape (§7.2). |
 | `DOCKER_HOST`          | `unix:///var/run/docker.sock` | Docker daemon socket (unix).                                                                                                                                                                                                                                                            |
 | `LOG_LEVEL`            | _(unset ⇒ logging disabled)_  | Enable + level. stdio logging is **on only when set**.                                                                                                                                                                                                                                  |
 | `LOG_FILENAME`         | —                             | stdio log file path, `chmod 600`.                                                                                                                                                                                                                                                       |
@@ -876,7 +876,8 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   implicitly.
 - tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, writable; some daemons like Docker Desktop force `noexec` on tmpfs, so runtime compilation uses the writable bind-mounted `cwd`); `AutoRemove=true`.
 - Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
-  symlink-safe (EvalSymlinks + open-then-verify); this gates the
+  canonicalized with `EvalSymlinks` + identity-only open-then-verify (TOCTOU);
+  this gates the
   session `cwd` **and** every profile mount `source`; the session `cwd` is the
   sanctioned bind-mount (read-only default).
 - Single **redaction layer** hides `secret:true` fields from all output and

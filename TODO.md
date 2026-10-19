@@ -415,18 +415,24 @@ impl) with `@security` review first.
       `moby/moby/v2 @latest` reaches a **stable `v2.0.0`**, then re-review and
       (optionally) migrate the docker dependency to `moby/moby/v2` and drop the
       accepted IDs — `@security`/`@devops`
-- [ ] **Close symlink-escape beyond `ALLOW_DIRS` in `verifyHostPath` (R-1,
-      MEDIUM):** `allowedSource` (`domain/sandbox/spec/enforce.go`) gates mount
-      sources by **lexical** path only, and `verifyHostPath`
-      (`infrastructure/backend/docker/docker.go`) resolves symlinks but does **not**
-      re-check the resolved path against `ALLOW_DIRS` (constructor no longer takes
-      allowDirs). A symlink inside an allowed dir pointing outside lets a docker
-      bind-mount follow it out of scope (darwin analog: file-read rule projected
-      without symlink resolution). Fix: when `allowSymlinks==false`, compare the
-      **resolved** path against the allowed roots in `verifyHostPath` (thread
-      allowDirs back into the backend, or resolve+re-gate at the Service level);
-      on seatbelt, don't project a subpath rule for an outward symlink — `@security`
-      first, `S04`, `C01 C08GO T01`
+- [x] **RESOLVED — by design (2026-10-20): symlink inside an allowed dir pointing
+      outside is NOT a sandbox escape (R-1, wontfix).** A symlink physically
+      located inside an `ALLOW_DIRS` tree that points to a path outside it is an
+      **operator-authored** host-side directory entry, not a containment breach:
+      the sandbox **cannot** create host-side symlinks outside its mounted roots
+      (the host filesystem is not writable beyond the mounts), bind-mounts are
+      fixed at `ContainerCreate` time (a running sandbox cannot add/redirect
+      mounts), and a symlink created inside a mounted tree resolves **within the
+      container's namespace** (in-container `/etc` is the container rootfs, not
+      the host). So reaching e.g. `/Users/teran/secret` via
+      `/Users/teran/work/link -> /Users/teran/secret` requires the operator to
+      have ALREADY placed that pointer in the allowed tree AND referenced it in a
+      profile — operator trust/misconfiguration, not an escape. `verifyHostPath`
+      (`infrastructure/backend/docker/docker.go`) therefore does **identity-only**
+      `EvalSymlinks` + open-then-verify (TOCTOU), with **no** resolved-path
+      re-gate against `ALLOW_DIRS` — and by this decision it intentionally stays
+      that way. **No code change; docs updated** (`SPEC.md` §7.2/§7.13,
+      `README.md`, `AGENTS.md`). — `@security`, `S04`
 
 ### Deferred / open questions (discuss later, non-blocking)
 

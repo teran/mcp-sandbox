@@ -1015,9 +1015,25 @@ itself can **never** be weakened (by profile or caller).
 - **`ALLOW_SYMLINKS bool`** — default `false`.
   - `false` (safe default): every host path is canonicalized with
     `filepath.EvalSymlinks`, then **open-then-verify** (open the fd, `fstat`,
-    compare the resolved real path against the allowed roots); reject if it
-    escapes `ALLOW_DIRS`.
+    compare the opened fd's identity against the canonicalized path) to close
+    the **TOCTOU** window. This is **identity-only** verification — it does **not**
+    re-gate the resolved target against `ALLOW_DIRS`.
   - `true`: following symlinks is accepted (operator explicitly opts in).
+  - **By-design note (symlink inside an allowed dir):** a symlink physically
+    located **inside** an allowed tree that points to a path **outside** it is
+    **operator-authored** and is **not** a sandbox escape. The sandbox **cannot**
+    create host-side symlinks outside its mounted roots (the host filesystem is
+    not writable beyond the mounts), bind-mounts are fixed at `ContainerCreate`
+    time (a running sandbox cannot add/redirect mounts), and a symlink created
+    inside a mounted tree resolves **within the container's namespace** (e.g.
+    in-container `/etc` is the container rootfs, not the host). Reaching
+    `/Users/teran/secret` via `/Users/teran/work/link -> /Users/teran/secret`
+    therefore requires the operator to have ALREADY placed that pointer inside
+    the allowed tree and referenced it in a profile — operator trust /
+    misconfiguration, not a containment breach. `ALLOW_DIRS` gates which host
+    tree may be mounted; the operator is trusted with the contents of that tree
+    (analogous to an operator `chmod`-ing a file world-writable in their own
+    home).
   - **Path-shape gate (pure `EnforceHardening`, Service-level):** independent of
     the symlink step, the `ALLOW_DIRS` containment gate **fail-closes** on path
     shape — it rejects **non-absolute** mount sources, and rejects **any**
@@ -1895,7 +1911,7 @@ model is distributed across §7.1–§7.11; this block consolidates it.
 | ID     | Threat                                                                   | Docker exposure                                                                                                                                                                                                                                        |
 | ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **D1** | **Container escape (kernel-escape)**                                     | **MED-HIGH.** No gVisor/runsc yet (roadmap §7.7); a kernel/container-runtime vulnerability could escape to the host at operator privilege. Mitigated by hardened defaults (seccomp, cap-drop ALL, no-new-privileges, non-root, read-only rootfs).       |
-| **D2** | **Host-path access via mounts**                                          | **LOW-MED.** Host access only via `ALLOW_DIRS` (S04), read-only by default; the pure `EnforceHardening` gate rejects non-absolute paths and any `.`/`..` traversal (fail-closed), and `EvalSymlinks` + open-then-verify + `O_NOFOLLOW` reject escapes; hardlinks mitigated at OS level (§7.2). A `cwd.mode=rw` mount widens the host-write surface.             |
+| **D2** | **Host-path access via mounts**                                          | **LOW-MED.** Host access only via `ALLOW_DIRS` (S04), read-only by default; the pure `EnforceHardening` gate rejects non-absolute paths and any `.`/`..` traversal (fail-closed), and `verifyHostPath` does identity-only `EvalSymlinks` + open-then-verify + `O_NOFOLLOW` (TOCTOU) — **no** resolved-path re-gate against `ALLOW_DIRS`; a symlink inside an allowed dir pointing outward is **operator-authored and trusted**, not an escape (by design, §7.2); hardlinks mitigated at OS level (§7.2). A `cwd.mode=rw` mount widens the host-write surface.             |
 | **D3** | **Privilege escalation inside the container**                            | **MED.** Commands run unprivileged by default; scoped `exec -u 0` gives container-internal uid 0 still bounded by cap-drop ALL + no-new-privileges + read-only rootfs — never `--privileged`, never host root (§7.10).                                  |
 | **D4** | **Resource exhaustion (DoS)**                                            | **LOW-MED.** cgroup quotas (`Memory`/`MemorySwap`/`NanoCPUs`/`PidsLimit`/`Ulimits`) bound the container (§7.1). A runaway container cannot degrade the whole host beyond its quota.                                                                       |
 | **D5** | **Supply chain / image**                                                 | **MED (operator-managed).** Image comes from the operator profile; **digest-pinning is the recommended convention** (§7.9). No registry allowlist — the operator is the trust boundary for the image source.                                             |
@@ -1914,7 +1930,7 @@ model is distributed across §7.1–§7.11; this block consolidates it.
 | Check                                                      | Result                                                                                                               |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Immutable `Isolation` hardening (read-only rootfs, cap-drop ALL, no-new-privileges, seccomp, non-root)? | ✅ Enforced by the server, cannot be weakened by caller or profile (§7.1). `Seccomp: default` = the daemon's default profile applied **automatically** (not server-applied); the closed enum excludes `unconfined` (R-3). |
-| Host-path gate (`ALLOW_DIRS`, S04) + symlink safety?       | ✅ `EnforceHardening` rejects non-absolute paths and any `.`/`..` traversal (fail-closed) at the Service (§6.5/§6.11 G); `EvalSymlinks` + open-then-verify + `O_NOFOLLOW`; `ALLOW_SYMLINKS` default `false` (§7.2).                        |
+| Host-path gate (`ALLOW_DIRS`, S04) + symlink safety?       | ✅ `EnforceHardening` rejects non-absolute paths and any `.`/`..` traversal (fail-closed) at the Service (§6.5/§6.11 G); `verifyHostPath` does identity-only `EvalSymlinks` + open-then-verify + `O_NOFOLLOW` (no resolved-path re-gate — by design); `ALLOW_SYMLINKS` default `false` (§7.2).                        |
 | No shell/SQL/URL concatenation (S11)?                      | ✅ Fixed `[<shell>,"-c",command]` wrapper; no user string interpolated into a shell string (§7.5).                  |
 | Secrets out of argv/env/image (S02)?                       | ✅ Redaction + tmpfs `0600` secret files (§7.3); `command`/`env`/`summary` disclaimer recorded.                     |
 | Resource budgets?                                          | ✅ cgroup quotas (`Memory`/`NanoCPUs`/`PidsLimit`/`Ulimits`), profile-overridable but never below hardening (§7.1).  |
