@@ -65,6 +65,12 @@ documented in `SPEC.md` / `README.md` / `AGENTS.md`. Summary:
   `options:` + top-level `cwd`/`shell` still works but deprecated (warning at the
   tool boundary) — documented in README / SPEC / AGENTS. Phase B (remove the
   legacy form) remains future / owner decision.
+- **Docs consistency pass (2026-10-19):** R-4 (explicitly document `command` is
+  NOT masked, reversing the stopgap), R-2 (seatbelt delivers no file secrets),
+  fake static badges removed + live CI gates note + CI tool versions pinned in
+  SPEC §11, and GC "future work" callouts trimmed (accurate "explicit-only
+  cleanup, no automatic GC" retained) — across SPEC / README / AGENTS / TODO.
+  GC (reaper + orphan-GC) itself remains **not implemented**.
 
 ---
 
@@ -114,8 +120,12 @@ earlier namespaced-id work). Summary and next steps:
     an orphan sweep via the driver `List` reconciliation seam.
   - **govulncheck:** re-review accepted IDs `GO-2026-4883` / `GO-2026-4887`
     (docker plugin-authz) when a fix lands upstream.
-  - **Docs polish (low):** wire live badges (coverage/gosec/govulncheck/gremlins)
-    to real sources; pin CI tool versions in SPEC.
+  - [x] **Docs polish (2026-10-19):** fake always-green static badges
+        (coverage/gosec/govulncheck/gremlins) **removed** from `README.md` —
+        there is no per-job live source on shields.io (no `job` param on the
+        workflow-status endpoint), so they are replaced by a single live **CI**
+        badge + an explicit "CI gates" note. CI tool versions pinned in
+        `SPEC.md` §11 ("Pinned CI tooling versions") — `@devops`, `D01 D02`.
 
 ### Profile schema → envelope `apiVersion` + `spec` (Phase A done; Phase B future)
 
@@ -160,8 +170,15 @@ Sandboxes are currently removed **only** by explicit
       id is not among the live sessions of this process — `X01`
 - [ ] **Tests for GC:** unit (reaper skip-busy, `Touch`/`Expired`, orphan sweep)
       + e2e (idle reaping, orphan reclamation) — `C01 C04GO T01 T02 C09GO`
-- [ ] **Docs:** once wired, remove the "future work" callouts in `SPEC.md` §6.6,
-      `README.md` "Sandbox lifecycle", `AGENTS.md` — `D01 D02`
+- [ ] **Docs (pending GC wiring):** once GC is actually wired, remove the "future
+      work" callouts in `SPEC.md` §6.6, `README.md` "Sandbox lifecycle",
+      `AGENTS.md` — `D01 D02`
+      **Note (2026-10-19):** the "future work" framing for the reaper/orphan-GC
+      callouts in `SPEC.md` §6.6, `README.md`, `AGENTS.md` was **trimmed** per
+      owner decision (docs no longer advertise reaper/orphan-GC as a feature),
+      while keeping the accurate "explicit-only cleanup, no automatic GC"
+      statement. GC is **still NOT implemented** — this TODO (wire reaper +
+      orphan-GC) remains open.
 
 ### Default GOCACHE/GOTMPDIR — apply to the `golang` profile (operator action)
 
@@ -376,21 +393,18 @@ impl) with `@security` review first.
       double-`Wait`** panic via a per-session `reapMu` + a `sync.Once` in
       `osProcess` (concurrent Destroy / Destroy-vs-Exec-cancel safe). `SPEC.md`
       §7.12/§7.13 and `README.md` updated.
-- [ ] **Always-mask `command`/`summary` in the `sandbox_exec` access-log (R-4,
-      stopgap):** owner decision 2026-10-18 — for now mask the whole `command`
-      string in the access-log (no name/value heuristics; revisit value-based
-      redaction against known session secrets later). Since the `AccessLogHoist`
-      change `command`/`summary` are logged as **top-level** fields and the whole
-      `args` map — including the per-exec `env` — is **dropped** for
-      `sandbox_exec` (L08), so masking now targets the top-level
-      `command`/`summary` fields (env is no longer logged at all). —
-      `@developer`/`@qa`, `S02 L05 L08 T01 C01`
-- [ ] **Correct SPEC/README darwin "per-session 0700 secret dir" claims (R-2):**
-      `SPEC.md` §7.12/§7.13 (str. 1676/1801/1951) and `README.md` §seatbelt state
-      secrets are delivered as a `0600` file in a per-session `0700` dir on
-      darwin/seatbelt, but the backend delivers **no** file secrets (redaction
-      only). Fix the docs to state seatbelt does NOT deliver file secrets —
-      `@techwriter`, `D01 D02`
+- [x] **R-4 RESOLVED — explicitly document that `command` is NOT masked**
+      (owner decision 2026-10-19, reversing the earlier stopgap): instead of
+      masking `command`/`summary`, the docs now state explicitly that the
+      `sandbox_exec` access-log records `command` **as-is and intentionally
+      NOT masked** (S02 disclaimer; no masking applied; `command` is not a
+      channel for secrets — secrets go into tmpfs `0600` files). Applied to
+      `SPEC.md` §7, `README.md` Security, `AGENTS.md`. — `@techwriter`, `D01 D02`
+- [x] **Correct SPEC/README darwin "per-session 0700 secret dir" claims (R-2):**
+      `SPEC.md` §7.12/§7.13 (str. 1691/1819/1972) and `README.md` seatbelt state
+      now state clearly that seatbelt delivers **no file secrets** (redaction
+      only; secrets never leave the server process as files). — `@techwriter`,
+      `D01 D02`
 
 - [ ] **govulncheck `ACCEPTED_IDS` — re-review trigger (R-5, verified 2026-10-18):**
       osv.dev still lists **no** fixed version on the used

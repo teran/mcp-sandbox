@@ -119,9 +119,10 @@ See `SPEC.md` §7.
   structs; sensitive fields annotated `secret:true`. The single redaction
   helper hides them from **all output and logs**. Secrets go into tmpfs `0600`
   files under `/run/sandbox`, **never** argv/image.
-  > **command is logged as-is (S02 disclaimer):** the `sandbox_exec` access-log
-  > records `command` as passed and is **not** secret-value-redacted. `command`
-  > is **not** a channel for secrets — never place a secret in a command line;
+  > **`command` is intentionally NOT masked (S02 disclaimer):** the
+  > `sandbox_exec` access-log records `command` as passed and is deliberately
+  > **not** secret-value-redacted — **no masking is applied**. `command` is
+  > **not** a channel for secrets — never place a secret in a command line;
   > use tmpfs `0600` secret files. Logging is opt-in (only when `LOG_LEVEL` is
   > set, L02) and the file is `chmod 600` (L01).
 - **Filesystem scope (S04/N03):** host access only via `ALLOW_DIRS`, empty by
@@ -218,12 +219,9 @@ connectivity pings, no eager data fetches. Backend `Available()` is evaluated
   no `sessionDriver` map). The docker
   `dev.teran.sandbox.session` label is therefore **redundant** (the internal id
   _is_ the container id); the `dev.teran.sandbox.owner` label remains.
-- **Session cleanup (explicit only; reaper/orphan-GC are future work):**
-  sandboxes are removed **only** by explicit `sandbox_destroy` /
-  `sandbox_destroy_all`. There is **no automatic GC** — the idle reaper
-  (`Manager.Reap` / `Session.Touch` / `SANDBOX_IDLE_TIMEOUT`) and the orphan-GC
-  are **designed but not wired**: no production code path calls `Reap` or
-  `Touch`. Treat wiring them as open work (see `SPEC.md` §6.6 and `TODO.md`).
+- **Session cleanup (explicit only):** sandboxes are removed **only** by
+  explicit `sandbox_destroy` / `sandbox_destroy_all`. There is **no automatic
+  GC** — a sandbox persists until explicitly destroyed.
 - **Idempotency (X02):** `sandbox_create` = search-before-create;
   `sandbox_destroy`/`destroy_all` = naturally idempotent (no-op on missing).
   Declare `idempotentHint:true` only where a real mechanism exists (N25).
@@ -302,7 +300,7 @@ IPC**. The loader/manifest/IPC content below is the Phase-2 realization.
   work with **ONE** sandbox, mapping onto the existing roles (§6.2):
   `Create`/`Destroy` (Lifecycle), `Exec` (Executable), `Info`/`Stats`
   (Introspectable), `Available` (Factory). **`List` is NOT a single-sandbox
-  primitive** — it is an optional reconciliation seam for the future orphan-GC;
+  primitive** — it is an optional reconciliation seam;
   **`Delete` is renamed `Destroy`** (QA P1, §6.11). **Orchestration** of many
   sandboxes (session manager, routing, lifecycle, HITL, streaming/redaction,
   `sandbox_list`) stays with the MCP server. In the implemented shape the

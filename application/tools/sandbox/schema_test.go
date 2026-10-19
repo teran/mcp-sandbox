@@ -124,6 +124,31 @@ func TestSandboxExec_SchemaRequiresCommand(t *testing.T) {
 	}
 }
 
+// TestSandboxExec_SchemaRequiresID pins the schema contract: `id` (the sandbox
+// session id) is a required scalar string on sandbox_exec, so a caller cannot
+// omit it (a missing `id` used to surface as "Missing key: id").
+func TestSandboxExec_SchemaRequiresID(t *testing.T) {
+	d := toolByName(t, newFake(), "sandbox_exec")
+
+	// id: declared, scalar string, in required list.
+	idProp, ok := d.InputSchema.Properties["id"]
+	if !ok {
+		t.Fatal("sandbox_exec input schema must declare an \"id\" property")
+	}
+	if idProp.Type != "string" {
+		t.Fatalf("id type = %q, want \"string\"", idProp.Type)
+	}
+	foundID := false
+	for _, r := range d.InputSchema.Required {
+		if r == "id" {
+			foundID = true
+		}
+	}
+	if !foundID {
+		t.Fatalf("sandbox_exec required list %v must include \"id\"", d.InputSchema.Required)
+	}
+}
+
 // TestSandboxExec_SchemaSummaryOptional pins that `summary` is no longer in the
 // required list (it remains an optional presentation-only scalar).
 func TestSandboxExec_SchemaSummaryOptional(t *testing.T) {
