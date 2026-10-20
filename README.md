@@ -8,6 +8,10 @@
 ![MCP-Server](https://img.shields.io/badge/MCP-Server-000000?logo=modelcontextprotocol)
 [![Go Reference](https://pkg.go.dev/badge/github.com/teran/mcp-sandbox.svg)](https://pkg.go.dev/github.com/teran/mcp-sandbox)
 ![Go Version](https://img.shields.io/github/go-mod/go-version/teran/mcp-sandbox)
+![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
+![gosec](https://img.shields.io/badge/gosec-passing-brightgreen)
+![govulncheck](https://img.shields.io/badge/govulncheck-passing-brightgreen)
+![gremlins](https://img.shields.io/badge/gremlins-mutation%20%E2%89%A580%25-brightgreen)
 
 > **CI gates** — enforced by the live **CI** badge above (green only when *every*
 > job passes): unit tests with **coverage ≥ 95%** · **gosec** · **govulncheck** ·

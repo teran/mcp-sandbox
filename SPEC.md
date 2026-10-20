@@ -1,6 +1,6 @@
 # SPEC — mcp-sandbox
 
-> Status: **draft v1** — first pass for user review.
+> Status: **implemented / v1** — conformance-reviewed against the mcp-server-spec skill (S01–S14 audit present).
 >
 > This document is **strictly English** (D02). It is the application-level
 > architecture and conformance reference for the **mcp-sandbox** MCP server.
@@ -374,7 +374,6 @@ application/               use-case orchestration
                            SANDBOX_PROFILES_DIR, parses + validates each
                            <name>.yml, Get/List (read-only — no
                            create/update/delete)
-  sandbox/                 sandbox service: create/use/destroy, Backend select
   session/                 session manager: registry, lifecycle (explicit
                            destroy)
   tools/                   declarative tool framework
@@ -385,14 +384,31 @@ application/               use-case orchestration
     handler/               shared handler-wrapper: validate → access-log →
                            dispatch → redact → structured output
     profile/               read-only profile_list tool (ToolDef, Phase 7)
+    sandbox/               sandbox tools (ToolDefs): create/exec/list/info/
+                           stats/destroy/destroy_all — schema, types, builder,
+                           and per-driver runtime orchestration (service.go)
+    guidance/              server-level Instructions + sandbox://guidance/*
+                           resources (self-describing, M08/M09)
 infrastructure/            adapters
   backend/
-    registry/              backend factory registry (constructor-register)
-    select/                capability-based backend selection
     docker/                Docker backend (official docker SDK, unix socket)
-  mcp/                     MCP server wiring (go-sdk), SDK slog→logrus logger
+    darwin/                macOS Seatbelt (sandbox-exec) backend (§7.12)
+    registry.go            backend factory registry + capability-based selection
+  mcp/                     MCP server wiring (go-sdk), SDK slog→logrus logger,
+                           access log, resources; Service (sandbox service:
+                           per-driver runtime orchestration, create/use/destroy,
+                           Backend select, resolveSessionID) — see §6.3
   logging/                 logrus setup, channel routing, redaction
 ```
+
+> **Layer edge — `infrastructure → application` (deliberate, acyclic).** The
+> go-arch-lint layer rule permits an **`infrastructure → application`** edge for
+> the protocol adapter `infrastructure/mcp`: it registers **application-layer
+> `ToolDef`s** into the go-sdk and implements the **application-layer `Service`
+> port** (per-driver runtime orchestration, §6.3). This is a deliberate
+> deviation from the canonical **`infrastructure → domain`** edge; it stays
+> **acyclic** because neither `application/` nor `domain/` import
+> `infrastructure/` (application/domain depend only on domain).
 
 ### 6.2 Role interfaces (ISP) — capability dispatch
 
