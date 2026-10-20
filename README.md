@@ -161,7 +161,7 @@ requirements and the testability seams.
 
 ## Requirements
 
-- **Go 1.27.2+**
+- **Go 1.27.3+**
 - A **Docker daemon** (see [Security note](#security) on socket access). On
   **macOS**, sandboxing can alternatively use the **`sandbox-exec` (Seatbelt)
   backend** without Docker — see

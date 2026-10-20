@@ -19,12 +19,12 @@
 apiVersion: docker.profiles.sandbox.teran.dev/v1
 name: golang
 description: >-
-  Go 1.27.2 toolchain sandbox: compiles host sources with a writable cwd, a
+  Go 1.27.3 toolchain sandbox: compiles host sources with a writable cwd, a
   shared writable Go module cache at /go/pkg/mod, read-only access to the
   opencode data directory, and GOCACHE/GOTMPDIR defaulted to the executable
   /tmp tmpfs; bridge network, 4 CPU / 8 GiB / 2048 pids, non-root, no sudo.
 spec:
-  image: golang:1.27.2
+  image: golang:1.27.3
   env:
     GOMODCACHE: /go/pkg/mod      # shared writable mount (below)
     GOCACHE: /tmp/gocache        # writable; tmpfs avoids mmap-SIGBUS

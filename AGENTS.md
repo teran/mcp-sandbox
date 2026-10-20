@@ -11,7 +11,7 @@ Guidance for AI agents working in this repository. `AGENTS.md`, like
   host shell** — per-session, isolated containers. Cleanup is **explicit**: a
   container is removed only by `sandbox_destroy` / `sandbox_destroy_all` (no
   automatic GC; see `SPEC.md` §6.6).
-- Implementation language: **Go 1.27.2** (see `go.mod` / `GO_VERSION` in CI)
+- Implementation language: **Go 1.27.3** (see `go.mod` / `GO_VERSION` in CI)
   (**C02GO/C01GO**).
 - See **[`SPEC.md`](SPEC.md)** for the application-level architecture and the
   security / data / logging contracts that **every change must respect**.

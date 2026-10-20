@@ -46,7 +46,7 @@ encoded in an **immutable `Isolation` block** that a caller cannot weaken.
 The rationale for Docker-first: _"Docker is everywhere"_ — it is the most
 widely available container runtime and the fastest path to a safe MVP.
 
-**Language:** Go (**C02GO**), pinned to the latest stable **Go 1.27.2**
+**Language:** Go (**C02GO**), pinned to the latest stable **Go 1.27.3**
 (**C01GO**; pinned version from the external `mcp-server-spec` skill).
 Official MCP SDK: **go-sdk v1.8.0** (**M01**).
 
@@ -2296,7 +2296,7 @@ job installs/pins these exact versions, never `latest`):
 | ----------------------------- | ----------------------------- |
 | `actions/checkout`            | `@v4`                         |
 | `actions/setup-go`            | `@v5`                         |
-| Go (`GO_VERSION`)             | `1.27.2`                      |
+| Go (`GO_VERSION`)             | `1.27.3`                      |
 | `golangci-lint`               | `v2.15.0`                     |
 | `gosec`                       | `v2.29.0`                     |
 | `govulncheck`                 | `v1.9.0`                      |
@@ -2313,7 +2313,7 @@ tracked files. Write-side effects are **external publications only** (release
 binaries on GitHub Release). For this Local server there are no registry image
 publications.
 
-**Go / dependency currency (C05/N33):** pinned to latest stable — **Go 1.27.2**,
+**Go / dependency currency (C05/N33):** pinned to latest stable — **Go 1.27.3**,
 **go-sdk v1.8.0**, **logrus v1.10.2** (pinned versions come from the external
 `mcp-server-spec` skill's `reference/versions.md` — not a repo file).
 **resty.dev/v3** is **not** a current dependency: the server performs no

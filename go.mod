@@ -1,6 +1,6 @@
 module github.com/teran/mcp-sandbox
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/distribution/reference v0.6.0
