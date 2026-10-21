@@ -413,7 +413,8 @@ infrastructure/            adapters
 ### 6.2 Role interfaces (ISP) — capability dispatch
 
 The backend contract is split into **small, role-specific interfaces** (ISP).
-The base role is **`Backend`**:
+The base role is **`Backend`** (abridged below — for brevity the snippet omits
+`Driver()` and `Slug()`, which the full `Backend` also exposes; see §6.11/§7.8):
 
 ```go
 type Backend interface {
@@ -2262,6 +2263,9 @@ exposes:
 | `test`            | Unit tests (`go test -race`, **C04GO**) + **coverage ≥ 95% gate** (**C01**).                                                                                                                                             |
 | `e2e`             | **darwin e2e smoke tests** (`go test -tags e2e ./...`, **C04/T02/C09GO**) — runs on a dedicated macOS CI `e2e` job; excluded by the `darwin` build tag on Linux. There is **no separate `e2e-darwin` target** by design. |
 | `lint`            | golangci-lint (`golangci-lint run ./...`, **C03GO**), gosec (**C05GO**), govulncheck (**C06GO**), go-arch-lint (**C07GO**).                                                                                              |
+| `arch`            | Dedicated layer-boundary gate — `go-arch-lint check` (**C07GO**). Called by the CI `arch` job via `make` (R07).                                                                                                          |
+| `security-scan`   | Dedicated SAST/vuln gate — `gosec` + govulncheck (**C05GO/C06GO**). Called by the CI `security` job via `make` (R07) so it binds to the interface (N31).                                                                 |
+| `mutate`          | **gremlins** mutation testing hard gate 80/80 (`gremlins unleash --threshold-efficacy=80 --threshold-mcover=80`, **C02/C08GO**). Called by the CI `mutation` job via `make` (R07).                                         |
 | `container-image` | **NOT declared** — Local stdio-only server produces no image (**B03/R01/N31/N17**).                                                                                                                                      |
 
 The pipeline shape (linters → build → tests → release artifacts) is
@@ -2270,10 +2274,13 @@ provider-agnostic; here it is realized in GitHub Actions:
 - **linters** stage: `make lint` (golangci-lint, gofmt/gofumpt, gosec,
   govulncheck, go-arch-lint).
 - **tests** stage: `make test` (race + coverage ≥ 95%), plus the **hard-gate**
-  jobs: **gremlins** mutation testing `--threshold-efficacy=80
---threshold-mcover=80` (C02/C08GO) and **gitleaks** secret scan over git
-  history (C03/N28). These are dedicated hard-gate jobs, not part of the make
-  interface.
+  jobs: **gremlins** mutation testing via `make mutate`
+  (`--threshold-efficacy=80 --threshold-mcover=80`, C02/C08GO) and the
+  **`arch`** / **`security`** jobs via `make arch` / `make security-scan` —
+  dedicated gates that bind to the make interface (R07/N31). **gitleaks**
+  secret scan over git history (C03/N28) is the one hard-gate job **not** part
+  of the make interface — it runs as a standalone `gitleaks/gitleaks-action@v2`
+  action job.
 - **e2e** stage: a **dedicated macOS CI `e2e` job** runs `make e2e` (`go test
 -tags e2e ./...`) — the **darwin e2e smoke suite** (`//go:build e2e && darwin`)
   spawns a live `/usr/bin/sandbox-exec` and tails the unified log on a real

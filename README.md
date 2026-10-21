@@ -117,7 +117,8 @@ sandboxed container:
    ```bash
    mkdir -p ~/.config/sandbox/profiles
    cp examples/profiles/golang.yml ~/.config/sandbox/profiles/golang.yml
-   # edit golang.yml: set GIT_NAME/GIT_EMAIL and the <HOST_*> mount paths
+   # edit golang.yml: replace the <GIT_NAME>/<GIT_EMAIL> placeholders inside
+   # the GIT_AUTHOR_* / GIT_COMMITTER_* env keys and the <HOST_*> mount paths
    ```
 
    Profiles are operator-authored, read-only YAML — see
@@ -877,15 +878,15 @@ legacy form and how to convert to the current one. New profiles should use the
 > This subsection documents the earlier (completed) Phase-7 migration from the
 > typed `docker:` / `seatbelt:` blocks.
 
-The move from the typed `docker:` / `seatbelt:` blocks to the **final
-implemented** `driver:` + `options:` form is a **one-shot breaking schema change**
-(no compat shim): `driver` is **required** and `auto`/empty is **removed**, and
-every typed block key moves under `options:`. The migration is **done** — the
-old `docker:` / `seatbelt:` blocks are **no longer read** by the server, so any
-still-typed profile must be converted to the new form. Canonical converted
-examples are bundled at **`examples/profiles/golang.yml`** (docker) and
-**`examples/profiles/seatbelt.yml`** (seatbelt) — both use `driver:` +
-`options:`.
+The move from the typed `docker:` / `seatbelt:` blocks to the (now-**deprecated**
+Phase-A legacy) `driver:` + `options:` form was a **one-shot breaking schema
+change** (no compat shim): `driver` is **required** and `auto`/empty is
+**removed**, and every typed block key moves under `options:`. The migration is
+**done** — the old `docker:` / `seatbelt:` blocks are **no longer read** by the
+server, so any still-typed profile must be converted to the current form.
+Canonical converted examples are bundled at **`examples/profiles/golang.yml`**
+(docker) and **`examples/profiles/seatbelt.yml`** (seatbelt) — both now use the
+**envelope** form (`apiVersion` + `spec:`).
 
 **Key mapping — `docker:` block → `options:`:**
 
