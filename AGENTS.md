@@ -64,9 +64,10 @@ raw language-specific commands. Interface targets:
 > exist only under the `e2e && darwin` tag and are run only on macOS runners
 > where applicable.
 
-Additional hard-gate jobs (not part of the make interface): **gremlins**
-mutation testing at **80/80** (C08GO) and **gitleaks** secret scan over git
-history (C03/N28).
+Additional hard-gate jobs: **gremlins** mutation testing at **80/80** (C08GO)
+runs via the `make mutate` interface target, and **gitleaks** secret scan over
+git history (C03/N28) runs as a standalone `gitleaks/gitleaks-action` — the one
+hard gate **not** part of the make interface.
 
 - **Coverage ≥ 95%** — `make test` **fails** below the threshold. Never ship a
   change that lowers coverage; add tests with the code.

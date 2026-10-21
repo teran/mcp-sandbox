@@ -11,7 +11,8 @@ produce artifacts or need scratch space.
   be executable even though it is writable.
 - **`/run`** — a tmpfs mount owned by the sandbox user, used for secret files.
 - **`cwd`** — the session working directory, mounted 1:1 at the same absolute
-  path via virtiofs. It is read-only unless the profile sets `cwd.mode=rw`.
+  path (bind-mount; no separate virtiofs). It is read-only unless the profile
+  sets `cwd.mode=rw`.
 
 ## Where to write
 
