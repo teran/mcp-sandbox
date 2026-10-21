@@ -221,10 +221,10 @@ Delivery roadmap:
 flowchart LR
   C[sandbox_create profile=name]
   P[profile apiVersion + spec]
-  R[driver registry docker | seatbelt]
+  R[driver registry: docker or seatbelt]
   S[SandboxSpec]
   H[EnforceHardening + ALLOW_DIRS gate]
-  B[backend container | sandbox-exec]
+  B[backend: container or sandbox-exec]
   C --> P --> R --> S --> H --> B
 ```
 
