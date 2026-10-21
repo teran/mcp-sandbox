@@ -26,7 +26,7 @@ A **Local (stdio-only) MCP server** that gives a model-host client (such as
 Instead of letting the model use the host shell directly, the model drives
 **mcp-sandbox**: for each session it provisions a **per-session, isolated Docker
 container** with the required directories mounted in, executes arbitrary
-commands **inside** that container, and destroys it via explicit
+commands inside that container, and destroys it via explicit
 `sandbox_destroy` / `sandbox_destroy_all` (per-session and ephemeral, but
 **cleanup is explicit** — there is no automatic GC). **Security is the top
 priority** — the sandbox is _more_ restrictive than the host, never less.
@@ -38,6 +38,29 @@ priority** — the sandbox is _more_ restrictive than the host, never less.
   other backends are designed for but not yet implemented.
 - **Deployment:** Local / **stdio-only**. No HTTP, no
   observability endpoint, no container image.
+
+## Table of contents
+
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Security model](#security-model)
+- [Architecture & design](#architecture--design)
+  - [Driver architecture](#driver-architecture)
+- [Requirements](#requirements)
+- [Supported platforms](#supported-platforms)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Profiles (operator-authored)](#profiles-operator-authored)
+- [Sandbox lifecycle](#sandbox-lifecycle)
+- [macOS driver (`sandbox-exec` backend)](#macos-driver-sandbox-exec-backend)
+- [OpenCode setup](#opencode-setup)
+- [Tool surface](#tool-surface)
+- [Self-describing MCP server](#self-describing-mcp-server)
+- [Security](#security)
+- [Migrations & compatibility](#migrations--compatibility)
+- [Terminology](#terminology)
+- [Development](#development)
+- [License](#license)
 
 ## Features
 
@@ -70,6 +93,63 @@ priority** — the sandbox is _more_ restrictive than the host, never less.
   both the Docker API calls and the streaming progress channel (`timeout == 0`
   means no deadline, `SPEC.md` §6.10).
 - Human-in-the-loop confirmation for destructive tools (client-side, see below).
+
+## Quick start
+
+A minimal end-to-end path, from a fresh clone to a `go test` run inside a
+sandboxed container:
+
+1. **Build or install the server.**
+
+   ```bash
+   # build from source (produces binaries in dist/):
+   git clone https://github.com/teran/mcp-sandbox.git && cd mcp-sandbox
+   make build
+   # …or install the latest release binary:
+   #   go install github.com/teran/mcp-sandbox@latest
+   ```
+
+   Prebuilt binaries are also published on GitHub tags (goreleaser).
+
+2. **Author a profile.** Copy the bundled Go toolchain profile into the
+   profiles directory and fill in the `<PLACEHOLDER>` values:
+
+   ```bash
+   mkdir -p ~/.config/sandbox/profiles
+   cp examples/profiles/golang.yml ~/.config/sandbox/profiles/golang.yml
+   # edit golang.yml: set GIT_NAME/GIT_EMAIL and the <HOST_*> mount paths
+   ```
+
+   Profiles are operator-authored, read-only YAML — see
+   [Profiles](#profiles-operator-authored).
+
+3. **Scope the host and start the server.**
+
+   ```bash
+   export ALLOW_DIRS="/path/to/your/project"   # gates cwd + every mount source
+   ./dist/mcp-sandbox
+   ```
+
+4. **Wire it up in opencode** — deny the host `shell` tool and register
+   mcp-sandbox as a local MCP server (see [OpenCode setup](#opencode-setup)).
+
+5. **Create a sandbox and run a test inside it.**
+
+   ```
+   sandbox_create { profile: "golang", session_id: "<opencode session id>", cwd: "/path/to/your/project" }
+   sandbox_exec   { id: "<returned session id>", command: "go test ./..." }
+   ```
+
+6. **Clean up explicitly** — there is no automatic GC:
+
+   ```
+   sandbox_destroy { id: "<returned session id>" }   # or sandbox_destroy_all
+   ```
+
+> ℹ️ **Note — cleanup is explicit, there is no automatic GC.** A sandbox lives
+> until you call `sandbox_destroy` / `sandbox_destroy_all`. Full mechanics in
+> [Sandbox lifecycle](#sandbox-lifecycle); every tool in
+> [Tool surface](#tool-surface).
 
 ## Security model
 
@@ -119,20 +199,34 @@ Highlights:
 
 ### Driver architecture
 
-> **Status: implemented (in-process driver registry; profile envelope
-> `apiVersion` + `spec`).** The profile schema now prefers the **envelope** form
-> `apiVersion` + `spec` (`SPEC.md` §7.11) — `spec` is the **driver-owned** blob
-> that replaces the legacy opaque **`options:`**; the legacy `driver:` +
-> `options:` + top-level `cwd`/`shell` form **still works but is deprecated**
-> (Phase A is additive; see the
-> [envelope migration](#migration-to-the-envelope-form-apiversion--spec)). The
-> `docker` / `seatbelt` builders are registered in-process in a driver registry
-> (`domain/sandbox/driver`), with the immutable hardening re-asserted by
-> `EnforceHardening` at the Service level (`SPEC.md` §6.11, §7.11). **Delivery
-> roadmap:** Phase 1 = in-process Go plugins (the implemented part); Phase 2
-> (later, **future work**) = out-of-process IPC (STDIO child + protobuf-like)
-> plus the `SANDBOX_DRIVERS_DIR` loader — opening other languages (not
-> implemented).
+**Status: implemented** (in-process driver registry; profile envelope
+`apiVersion` + `spec`). The profile schema now prefers the **envelope** form
+`apiVersion` + `spec` (`SPEC.md` §7.11) — `spec` is the **driver-owned** blob
+that replaces the legacy opaque **`options:`**; the legacy `driver:` +
+`options:` + top-level `cwd`/`shell` form **still works but is deprecated**
+(Phase A is additive; see the
+[envelope migration](#migration-to-the-envelope-form-apiversion--spec)). The
+`docker` / `seatbelt` builders are registered in-process in a driver registry
+(`domain/sandbox/driver`), with the immutable hardening re-asserted by
+`EnforceHardening` at the Service level (`SPEC.md` §6.11, §7.11).
+
+Delivery roadmap:
+
+- **Phase 1 = in-process Go plugins** (the implemented part).
+- **Phase 2 (later, future work)** = out-of-process IPC (STDIO child +
+  protobuf-like) plus the `SANDBOX_DRIVERS_DIR` loader — opening other
+  languages (not implemented).
+
+```mermaid
+flowchart LR
+  C[sandbox_create profile=name]
+  P[profile apiVersion + spec]
+  R[driver registry: docker or seatbelt]
+  S[SandboxSpec]
+  H[EnforceHardening + ALLOW_DIRS gate]
+  B[backend: container or sandbox-exec]
+  C --> P --> R --> S --> H --> B
+```
 
 A **driver** is a single-sandbox primitive — it implements working with **one**
 sandbox (`Create` / `Destroy` / `Exec` / `Info` / `Stats` / `Available`),
@@ -197,16 +291,16 @@ Binary releases are published on GitHub tags (goreleaser).
 The server is configured via **environment variables** (Local / stdio server —
 auth via environment, no HTTP headers).
 
-| Env                    | Default                       | Description                                                                                                                                                                                                                                                                             |
-| ---------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ALLOW_DIRS`           | `[]` (none)                   | Permitted host directories for mounts — gates the session `cwd` **and** every profile mount `source`. Empty ⇒ deny all. **Still required** (Phase 7).                                                                                                                                   |
-| `ALLOW_SYMLINKS`       | `false`                       | Allow following symlinks outside `ALLOW_DIRS` (unsafe; default off). Note: `verifyHostPath` does identity-only `EvalSymlinks` + open-then-verify, **no** resolved-path re-gate; a symlink inside an allowed dir pointing outward is operator-authored/trusted, not an escape (§7.2). |
-| `DOCKER_HOST`          | `unix:///var/run/docker.sock` | Docker daemon socket (unix).                                                                                                                                                                                                                                                            |
-| `LOG_LEVEL`            | _(unset ⇒ logging disabled)_  | Enable + level. stdio logging is **on only when set**.                                                                                                                                                                                                                                  |
-| `LOG_FILENAME`         | —                             | stdio log file path, `chmod 600`.                                                                                                                                                                                                                                                       |
-| `LOG_FORMAT`           | `text`                        | `text` or `json`.                                                                                                                                                                                                                                                                       |
-| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Accepted for compatibility but **has no effect** — cleanup is explicit only, there is no idle reaper.                                                                                                                        |
-| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles`  | Directory of **operator-authored, read-only** YAML profiles — one `<name>.yml` per profile (Phase 7). Read **on demand** on each profile lookup — edits take effect without restarting the server. The source of `image`, `env`, `mounts`, `cwd`, `network`, `cgroups`, `user`, `sudo`. |
+| Env                    | Default                       | Description                                                                                                                     |
+| ---------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `ALLOW_DIRS`           | `[]` (none)                   | Permitted host dirs for mounts — gates the session `cwd` **and** every profile mount `source`; empty ⇒ deny all. Still required (§7.2). |
+| `ALLOW_SYMLINKS`       | `false`                       | Allow following symlinks outside `ALLOW_DIRS` (unsafe, default off). Identity-only `EvalSymlinks` + open-then-verify, **no** resolved-path re-gate (§7.2). |
+| `DOCKER_HOST`          | `unix:///var/run/docker.sock` | Docker daemon socket (unix).                                                                                                    |
+| `LOG_LEVEL`            | _(unset ⇒ logging disabled)_  | Enable + level. stdio logging is **on only when set**.                                                                          |
+| `LOG_FILENAME`         | —                             | stdio log file path, `chmod 600`.                                                                                               |
+| `LOG_FORMAT`           | `text`                        | `text` or `json`.                                                                                                               |
+| `SANDBOX_IDLE_TIMEOUT` | `15m`                         | Accepted for compatibility but **has no effect** — cleanup is explicit only, there is no idle reaper.                            |
+| `SANDBOX_PROFILES_DIR` | `~/.config/sandbox/profiles`  | Operator-authored, read-only YAML profiles — one `<name>.yml` each (§7.11); source of image/env/mounts/network/cgroups/user/sudo. |
 
 > **Removed in Phase 7:** `SANDBOX_CWD_MODE` (→ profile `cwd.mode`),
 > `SANDBOX_CGROUP_CPU_LIMIT_CORES` / `SANDBOX_CGROUP_MEMORY_LIMIT_GB`
@@ -302,6 +396,476 @@ spec:          # driver-owned; replaces the legacy options: — interpreted ONLY
 > [envelope migration](#migration-to-the-envelope-form-apiversion--spec),
 > [Migration to `driver` + `options:`](#migration-to-driver--options),
 > [Driver architecture](#driver-architecture) and `SPEC.md` §7.11.
+
+Migrating from an older schema? See [Migrations & compatibility](#migrations--compatibility).
+
+### Transport, auth & TLS notes
+
+- **Transport:** STDIO only. The server is spawned as a local child process by
+  the model-host; it opens no network listener.
+- **Auth:** environment variables only. **No OAuth2** — there is no upstream
+  HTTP API to authorize against (see `SPEC.md` §3.3).
+- **TLS:** **never implemented in-server** (S01). The server has no HTTP
+  listener, so there is no in-server TLS surface. If the server is ever placed
+  behind a network-facing gateway, TLS termination is the reverse proxy's job.
+
+## Sandbox lifecycle
+
+Sandboxes follow `create → use → destroy`:
+
+```mermaid
+flowchart LR
+  C[sandbox_create] --> S[per-session container / session]
+  S --> E[sandbox_exec + read tools]
+  E --> D[sandbox_destroy / sandbox_destroy_all]
+  D --> X[cleanup explicit — no automatic GC]
+```
+
+- `sandbox_create` provisions a per-session container.
+- `sandbox_exec` and the read tools operate on it.
+- `sandbox_destroy` destroys one sandbox; `sandbox_destroy_all` destroys every
+  sandbox.
+
+**Cleanup is explicit only — there is no automatic GC.** A sandbox is removed
+**only** when the model-host calls `sandbox_destroy` / `sandbox_destroy_all`;
+otherwise it persists until then.
+
+## macOS driver (`sandbox-exec` backend)
+
+An **alternative backend** that isolates commands with Apple's **seatbelt
+sandbox** via the `/usr/bin/sandbox-exec` external binary, **without Docker**.
+It is a pure-Go implementation (no cgo) that spawns `sandbox-exec` as a child
+process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
+
+**Status: implemented** (portable core + darwin `log stream` tailer);
+real-macOS verification via the darwin e2e. The Docker backend remains the
+default. The darwin backend lives in `infrastructure/backend/darwin` (portable
+core + build-tag `os/exec` runner + policy-denial detection + the
+macOS-specific unified-log `log stream` tailer wrapper behind the `darwin`
+build tag), wired via the `seatbelt` driver (registered in the driver
+registry), `spec.DriverSeatbelt` and the SBPL generator
+(`domain/sandbox/sbpl`). Its logic is covered by unit tests (mock
+runner/tailer, coverage ≥ 95%) on any GOOS. **Real-macOS verification** — a
+live `/usr/bin/sandbox-exec` spawn and its exit-code / `IsPolicyDenial`
+signals (which cannot run inside a Docker/CI sandbox) — is exercised by the
+**darwin e2e smoke tests** (`//go:build e2e && darwin`) under `make e2e` on a
+dedicated macOS CI `e2e` job (see Development). The unified-log `log stream`
+**tailer is not** exercised by the e2e — it is covered by `darwin`-tagged unit
+tests only, not a live log stream (see `SPEC.md` §7.12).
+
+> ⚠️ **Warning — darwin exec: the operator tail must grant exec.** The
+> **server-rendered SBPL baseline is deny-default and does NOT emit
+> `process-exec*`** — `sbpl.Generate` emits imports → `(deny default)` →
+> network → mach → sysctl → file → the operator `seatbelt.sbpl` (last,
+> verbatim), but no `process-exec*`. Without it, `sandbox-exec` fails at
+> `execvp()` of the shell. To actually run a command, the **operator-authored
+> `seatbelt.sbpl` in the darwin profile must grant exec** — either with
+> `(allow process-exec*)` (plus the file-read/mach/sysctl allowances the shell
+> and its runtime need — `/bin`, `/usr/bin`, `/usr/lib`, dyld), or with
+> `(allow default)` for non-file operations plus a narrowed file scope. Both
+> forms work. A working, verified file-deny-all profile is bundled at
+> `examples/profiles/seatbelt.yml` (validated live against a real macOS host)
+> — see the SBPL guide below. The darwin e2e drives `sandbox-exec` with an
+> `(allow default)` SBPL directly, so it does **not** validate exec under the
+> server-generated baseline (see `SPEC.md` §7.12).
+
+**What it is**
+
+Unlike the Docker backend — which provisions a per-session container and
+executes inside it — the `sandbox-exec` driver has **no container, no daemon
+and no image**:
+
+- A **session is an in-memory record** (the SBPL profile + `env` + `cwd`) held
+  by the session manager; `sandbox_create` stores state in-process only.
+- **Every `sandbox_exec` spawns a fresh `sandbox-exec` child process**
+  (`os/exec`, `CGO_ENABLED=0`) running `<shell> -c <command>` under the profile
+  rules. There is no persistent container to enter.
+- `sandbox_destroy` / `sandbox_destroy_all` tear down the whole process group
+  of live child processes **gracefully**: a group-wide `SIGTERM` lets children
+  flush/clean up, then escalates to group-wide `SIGKILL` after a short,
+  configurable grace (default 1s, hard-capped at 5s) — see `SPEC.md` §7.12 — and
+  drop the in-memory session. The grace does not weaken containment (still
+  sandboxed under SIGTERM; termination guaranteed by untrappable SIGKILL) and is
+  bounded so a hostile SIGTERM-ignoring child cannot delay teardown unboundedly.
+
+**When to use it**
+
+- You are on **macOS** and want sandboxing **without running a Docker daemon**
+  (or a rootless one).
+- Commands need only **file/network restrictions at the process level** — not
+  full container isolation (no separate mount/net namespaces, no cgroups).
+- CI/runners where a Docker daemon is unavailable but the host is macOS.
+
+**Prerequisites**
+
+- **macOS** with `/usr/bin/sandbox-exec` present (default on modern macOS).
+- **No root required** — the sandboxed process runs under the invoking user's
+  credentials, confined by the seatbelt profile. The server refuses to run at
+  `uid 0`.
+
+**Differences from the Docker backend**
+
+| Aspect          | Docker backend                                             | `sandbox-exec` backend                                                 |
+| --------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Isolation       | container (namespaces, cgroups, read-only rootfs, seccomp) | seatbelt/MAC profile on a plain process (policy-based)                 |
+| Runtime         | image + mounts + tmpfs `/run`,`/tmp`                       | SBPL profile rules; `cwd`/`ALLOW_DIRS` as `(allow\|deny file-*)` rules |
+| Session         | provisioned container                                      | in-memory record (SBPL + env + cwd)                                    |
+| Exec            | exec into existing container                               | new `sandbox-exec` child per call                                      |
+| Cleanup         | explicit destroy; `AutoRemove`                             | explicit destroy; kill children on destroy/timeout                     |
+| `sandbox_stats` | cgroup resource usage                                      | **not supported** (no cgroups) → `ErrCapabilityNotSupported`           |
+| Resource limits | cgroup quotas                                              | soft `setrlimit` only (`Memory`/`NanoCPUs`/`PidsLimit` not mappable)   |
+| Root inside     | scoped `exec -u 0`                                         | subject to seatbelt policy / current user                              |
+| Portability     | Linux/macOS (with daemon)                                  | **macOS only**                                                         |
+
+**Example configuration**
+
+```bash
+export ALLOW_DIRS="/Users/me/projects/myapp"
+export LOG_LEVEL=info
+./mcp-sandbox
+```
+
+The backend is chosen **lazily** on the first `sandbox_create` (no outbound
+calls at startup): on macOS with `/usr/bin/sandbox-exec` present the
+`sandbox-exec` backend is selected; on Linux it is unavailable and the Docker
+backend (or an error) is used instead.
+
+> ℹ️ **Note — multi-backend.** The server is **not** limited to one backend per
+> process. It keeps a separate runtime (backend + session manager) **per
+> concrete driver** and routes each session to the backend that owns it, so a
+> single `mcp-sandbox` process can hold **docker and seatbelt sandboxes
+> simultaneously** (`SPEC.md` §6.3). The `driver` itself always comes from the
+> profile — **required** (the envelope `apiVersion` group, or the legacy
+> `driver:` token); `auto`/empty was **removed** for stored profiles, and an
+> internal auto-resolve exists only for built-in compatibility.
+
+> ℹ️ **Note — portability.** The `sandbox-exec` backend is **macOS-only**. On
+> Linux there is **no `sandbox-exec`**; to sandbox there, use the Docker backend
+> or a Linux seatbelt equivalent such as **bubblewrap (`bwrap`)**. Backends are
+> **non-interchangeable isolation mechanisms**, not a portable abstraction
+> layer.
+
+> ⚠️ **Warning — lifecycle & leaks (documented contract).** Cleanup is
+> **explicit only** — there is no automatic GC. If the server process exits
+> without an explicit `sandbox_destroy`, any in-flight `sandbox-exec` child
+> processes may be left running. A `destroy` while an `exec` is active must
+> signal the child before dropping the session.
+
+### Writing a Seatbelt (SBPL) profile
+
+The darwin backend runs commands under Apple's **Seatbelt** sandbox, whose rules
+are expressed in **SBPL**. The server renders the profile automatically from
+the typed `SandboxSpec`; the operator supplies the permissive tail via the
+profile's `spec.sbpl` (under `apiVersion: seatbelt.profiles.sandbox.teran.dev/v1`
+— the legacy `options.sbpl` under `driver: seatbelt` also still works, see
+[Profiles](#profiles-operator-authored)). A working, verified example lives at
+**`examples/profiles/seatbelt.yml`** — a file-deny-all profile validated live
+against a real macOS host.
+
+The darwin profile's `spec:` blob also accepts an optional **`env:`** map of
+session environment variables, mirroring the Docker profile's `spec.env:`
+(SPEC §7.12). As with Docker profile env, the values are collected into the
+redaction set and **masked from output and logs (S02)** — do **not** put
+secrets here. Note: the seatbelt backend delivers **no file secrets** — unlike
+Docker there is no tmpfs `/run/sandbox`; secrets never leave the server process
+as files, only **redaction** is applied (SPEC §7.12).
+
+**Generation order.** `sbpl.Generate` emits sections in a fixed order — imports
+→ `(deny default)` → network → mach → sysctl → file → **your `seatbelt.sbpl`
+last, verbatim**. Because the last matching rule wins in Seatbelt, the operator
+tail is where you selectively re-open surfaces the server baseline closed. In
+detail:
+
+1. `(import "system.sb")`, then `(deny default)` — the deny-everything baseline.
+2. **Network**: `(deny network*)` for `none` (default); `(allow network-outbound)`
+   for `bridge`/`host`.
+3. **Mach**: `(deny mach-lookup)` plus an `(allow mach-lookup (global-name …))`
+   per `mach_lookups` entry.
+4. **Sysctl**: `(deny sysctl*)` plus an `(allow sysctl-read …)` per `sysctls`
+   entry.
+5. **File**: `(allow file-read* …)` for every mount source / working dir inside
+   `ALLOW_DIRS` (or the scratch dir); `(allow file-write* …)` only for read-write
+   mounts, a `cwd.mode=rw` working dir and the scratch dir. Paths **outside
+   `ALLOW_DIRS` are silently skipped** — deny-by-default (S04).
+6. Your operator `seatbelt.sbpl`, appended **last** and verbatim.
+
+**Minimal recipe to actually run a command.** The server baseline does **not**
+emit `(allow process-exec*)`, so `sandbox-exec` fails at `execvp()` of the shell
+unless the operator tail grants exec. Either form works:
+
+- **`(allow process-exec*)`** plus the file/mach/sysctl grants the shell and
+  dyld need; or
+- **`(allow default)`** for non-file operations (process/mach/syscall/iokit/ipc)
+  and narrow the **file** surface with explicit `(deny file-read*)` /
+  `(deny file-write*)` + allow-lists — the model used by the working
+  `examples/profiles/seatbelt.yml`.
+
+In both cases remember:
+
+- `shell` **must be an absolute path** (`/bin/bash`) — `sandbox-exec` runs
+  `execvp(shell)` against the **server** process `PATH`, not the per-exec env.
+- The **dyld chain must be readable**: keep `/usr/lib`, `/System/Library`,
+  `/usr/bin`, `/bin` in file-read scope — macOS cannot start any binary without
+  it.
+- Grant `(allow file-read-metadata)` **globally**: it exposes only
+  `stat`/`readlink` (never contents) and lets `go`, `golangci-lint`, `make`,
+  `git` resolve path components without whitelisting every directory.
+- Add `(allow network-outbound)` only if the command needs the network
+  (curl/git fetch).
+
+**Debugging denials.** `(debug deny)` does **not** work on macOS 26 — the
+`debug` macro is absent from `system.sb` (SBPL v3), so it fails with
+`unbound variable: debug`. Diagnose instead with:
+`log stream --predicate 'subsystem == "com.apple.sandbox"'`.
+
+> ⚠️ **Warning — `(allow default)` weakens the boundary — know the
+> trade-off.** In the
+> file-deny-all model, `(allow default)` is _required_ for non-file operations
+> (the shell needs dozens of them and cannot start under a hand-listed
+> deny-all), but it **re-opens** mach-lookup, sysctl, iokit, IPC, network and
+> syscall. Because your `seatbelt.sbpl` is appended last, it **overrides** the
+> server's `(deny default)`, `(deny network*)`, `(deny mach-lookup)` and
+> `(deny sysctl*)`. What actually isolates the example is the **file** scope —
+> and `(allow network-outbound)` cannot be restricted by destination on macOS,
+> so a compromised process could exfiltrate or reach internal services. Treat
+> this backend as a file/network confinement convenience, never as container
+> isolation (see the security posture below).
+
+## OpenCode setup
+
+Use mcp-sandbox as the execution environment for **opencode** instead of the
+host shell.
+
+### 1. Disable the host shell
+
+In your opencode config (`opencode.jsonc`), deny the built-in `shell` tool:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [{ "action": "shell", "resource": "*", "effect": "deny" }],
+}
+```
+
+This removes the host `bash`/shell tool; the model then uses the sandbox MCP
+for command execution.
+
+### 2. Register the mcp-sandbox MCP server
+
+`mcp-sandbox` is a **Local / stdio** server, so register it as a **local** MCP
+server:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "mcp-sandbox": {
+        "type": "local",
+        "command": ["mcp-sandbox"],
+        "environment": {
+          "ALLOW_DIRS": "{env:PWD}",
+          "LOG_LEVEL": "info",
+        },
+      },
+    },
+  },
+}
+```
+
+- `command` launches the `mcp-sandbox` binary (put it on `PATH` or use an
+  absolute path).
+- `ALLOW_DIRS` scopes which host directories the sandbox may reach; it gates the
+  session working directory (mounted **1:1** at the same absolute path) and
+  every profile mount source (see `SPEC.md` §7.2).
+- opencode passes its session id as a **required** `session_id` parameter to
+  `sandbox_create`; the server records it as an `opencode_session` container
+  label so each sandbox is traceable to the OpenCode session that created it.
+  The sandbox's own `id` returned by `sandbox_create` is a **namespaced session
+  id `slug:internalID`** (`SPEC.md` §7.8): `docker:<container id>` for the Docker
+  backend (so a sandbox is directly traceable via `docker ps`) and
+  `seatbelt:darwin-N` for the darwin backend. `sandbox_create`
+  also takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
+  **required** `cwd`. The session `cwd` is mounted 1:1 read-only by default (see
+  `SPEC.md` §7.2, §7.11).
+- **Breaking id schema (v0.9+):** sandbox session ids changed from a **bare
+  backend id** to a **namespaced `slug:internalID`** pair. The `id` every tool
+  returns/accepts now carries a `docker:` / `seatbelt:` prefix; a bare
+  (non-namespaced) or unknown-slug id is rejected (`ErrSessionNotFound`) on all
+  ops, and `sandbox_destroy` by an unknown slug is an **error, not a no-op**.
+  Clients that persisted or echoed old bare ids must re-resolve them from a
+  fresh `sandbox_create`/`sandbox_list`. The short display id keeps the slug
+  (`docker:deadbeef1234`).
+- Use `opencode mcp list` / `/mcps` to check the server is connected.
+
+> ⚠️ **Warning — HITL note.** Because mcp-sandbox is Local/stdio (no HTTP UI), destructive
+> tools (`sandbox_destroy`, `sandbox_destroy_all`) require confirmation
+> **client-side** by the operator — see `SPEC.md` §4.4.
+
+## Tool surface
+
+Grouped **read → write → delete** (S03):
+
+| Tool | Class | Purpose | Required params |
+| ---- | ----- | ------- | --------------- |
+| `sandbox_list` | read | List sandboxes | — |
+| `sandbox_info` | read | Sandbox details | `id` |
+| `sandbox_stats` | read | Resource usage (docker); `ErrCapabilityNotSupported` on darwin | `id` |
+| `profile_list` | read | List operator profiles (`name`/`description`, no leakage) | — |
+| `sandbox_create` | write | Create a sandbox from an operator profile | `profile`, `session_id`, `cwd` |
+| `sandbox_exec` | write | Run a command inside a sandbox | `id`, `command` |
+| `sandbox_destroy` | delete | Destroy one sandbox (HITL) | `id` |
+| `sandbox_destroy_all` | delete | Destroy every sandbox (HITL) | — |
+
+Nuances that don't fit the table:
+
+- `sandbox_create`: optional `secrets` (tmpfs `0600` files); the session `cwd`
+  is mounted 1:1, read-only by default per the profile's `cwd.mode`.
+- `sandbox_exec`: `command` is a scalar string run via the profile-configured
+  shell as a **fixed** `[<shell>,"-c",command]` wrapper — no shell-string
+  concatenation (S11). Optional `env` (`map[string]string`, literal, no shell
+  evaluation), `summary` (a presentational label, not executed), `working_dir`,
+  `timeout` (seconds, `context.WithTimeout`, §6.10) and `user`. Output is
+  ANSI-sanitized, the command is redacted, and live output streams via
+  `notifications/progress` when a progress token is passed (§5.1).
+
+> ℹ️ **Note — files come from the image, the host, or the runtime — never via
+> MCP file-write tools.** The session `cwd` is mounted 1:1, so the model-host
+> writes files on the **host** and the container reads/executes them at the same
+> path; runtime artifacts live in the writable tmpfs `/tmp` (executable where
+> the daemon honours `exec`; on daemons that force `noexec` — e.g. Docker
+> Desktop — compilation goes into the writable bind-mounted `cwd` per the
+> profile's `cwd.mode`). There are **no**
+> `sandbox_read_file` / `sandbox_write_file` / `sandbox_copy_in` /
+> `sandbox_copy_out` / `sandbox_install_package` tools — **mount + exec is the
+> core mechanism** (`SPEC.md` §4.2, §7.2).
+
+All tools are `openWorldHint: false` and carry per-tool annotations +
+instructions (`SPEC.md` §4).
+
+> ⚠️ **Warning — HITL for destructive tools.** Because this is a
+> **Local / stdio-only** server with no HTTP UI (S12), destructive confirmation
+> is implemented **client-side** — the model-host (opencode) obtains human
+> confirmation before invoking `sandbox_destroy` / `sandbox_destroy_all`.
+
+## Self-describing MCP server
+
+mcp-sandbox is **self-describing** over the MCP protocol: a model-host client
+can discover everything it needs without any external file (`SPEC.md` §5.2).
+
+- **Server-level `Instructions`** — a short paragraph carrying the redirect
+  invariant ("The host shell is restricted — route commands through this
+  sandbox server."), tool grouping (read → write → delete), a secrets warning
+  (never put secrets in a command or env — use tmpfs `0600` secret files on
+  `sandbox_create`), and an index of the guidance resources.
+- **`resources` capability** — six read-only **markdown** playbooks are
+  registered under `sandbox://guidance/*` and appear in the MCP catalog:
+  `overview`, `shell-restricted-redirect`, `sandbox-create`, `sandbox-exec`,
+  `filesystem-mounts` (incl. the **GOCACHE/GOTMPDIR** recipe for compile-in-
+  sandbox), and `security`. This is the **only** use of `resources` — file I/O
+  still never goes through MCP resources (files come from the image, the host,
+  or the runtime via `mount + exec`).
+- **Enriched tool descriptions** — `sandbox_create` / `sandbox_exec` carry a
+  redirect note and a pointer to the relevant guidance resource, directing the
+  model away from the host shell exactly where those tools are invoked.
+
+There is **no standalone skill file** and **no AGENTS.md pointer** — the
+self-description travels with the server over the protocol, so it stays in sync
+with the implementation automatically.
+
+## Security
+
+The sandbox **replaces the host shell**, so security is enforced by the server
+and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
+
+- Read-only rootfs; **drop-all capabilities** (minimal re-add); no-new-
+  privileges; **seccomp** (default MVP profile; custom profile is mandatory
+  roadmap); **non-root** user inside.
+- Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits` (from the
+  profile's `cgroups`, §7.11).
+- **Network comes from the operator profile** — `bridge` (default) or `none`;
+  `host` is permitted **only when the operator authors it** into a profile, never
+  implicitly.
+- tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, writable; some daemons like Docker Desktop force `noexec` on tmpfs, so runtime compilation uses the writable bind-mounted `cwd`); `AutoRemove=true`.
+- Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
+  canonicalized with `EvalSymlinks` + identity-only open-then-verify (TOCTOU);
+  this gates the
+  session `cwd` **and** every profile mount `source`; the session `cwd` is the
+  sanctioned bind-mount (read-only default).
+- Single **redaction layer** hides `secret:true` fields from all output and
+  logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never
+  command-line/image.
+- **`command` is intentionally NOT masked in the access-log (S02 disclaimer):**
+  the `sandbox_exec` access-log records `command` as passed, **not** secret-
+  redacted — no masking is applied. `command` is **not** a channel for secrets;
+  use tmpfs `0600` secret files instead (§7.3).
+- **No shell-string concatenation/interpolation (S11/N21):** `sandbox_exec`
+  takes a scalar `command` passed as **one element** of a **fixed**
+  `[<shell>,"-c",command]` wrapper (shell from the profile, default `bash`,
+  §7.11) — no user string is interpolated into a shell string; the only other
+  `sh -c` is the server-authored fixed secret-writer script.
+- **Session ids are namespaced `slug:internalID`** (§7.8), not server-generated
+  opaque ids: the session manager calls the backend **first** and uses its
+  returned id as the internal part — for the Docker backend that is the
+  **container id** (a sandbox is directly traceable to its container via
+  `docker ps`), for darwin it is `darwin-N`. An opaque `crypto/rand` 64-hex id
+  is only a **fallback** when a backend returns an empty id. Ownership is also
+  labelled on the container (`dev.teran.sandbox.owner` / the OpenCode session
+  label).
+- **Operator-authored profiles** (Phase 7): the image, env, mounts, network,
+  limits, user and sudo are declared in **read-only** YAML files the model
+  references by name; a profile can never weaken the immutable `Isolation`
+  block (§7.11).
+- Supply chain: sandbox images come from the operator profile with **parse-only
+  validation**; **digest-pinning is the recommended operator convention**
+  (§7.9), and dependencies are pinned to latest stable, signed packages.
+
+### Docker socket access (known limitation)
+
+The Docker socket (`/var/run/docker.sock`) is effectively **root on the host**.
+The server mitigates this by preferring a **rootless Docker** daemon or running
+in an isolated environment with socket access confined to the server process.
+Review and choose the socket access model appropriate to your host. See
+`SPEC.md` §7.6.
+
+### macOS driver (security posture)
+
+The `sandbox-exec` backend (`SPEC.md` §7.12) is **policy-based containment,
+not kernel/container isolation** and is strictly **weaker** than the Docker
+backend:
+
+- **Shared host kernel** — no namespaces; an SBPL bypass or kernel bug is a
+  full host compromise at the operator's privilege, not a root boundary.
+- **No cgroup resource quotas** — only soft per-process `setrlimit`
+  (`nofile`/`cpu`/`as`/`nproc`/`fsize`/`stack`/`core`); a runaway process can
+  degrade the whole host (DoS). `sandbox_stats` → `ErrCapabilityNotSupported`.
+- **No network isolation** — macOS has no network namespaces, so only
+  `network-outbound` is enforceable and it cannot be restricted by destination.
+- **No uid change** — the sandbox runs as the **current host user** (`UIDGID`
+  is not applied; only `euid != 0` is refused), sharing the host user's identity.
+- **No `no-new-privileges` / read-only-rootfs / cap-drop / tmpfs-workdir
+  enforcement** — those immutable `Isolation` fields are validated by
+  `spec.Validate`, but the darwin backend has **no mechanism** to enforce them
+  (`runner_darwin.go` applies only `Setpgid`). See `SPEC.md` §7.12.
+- **No image / digest supply-chain boundary** — there is no image; SBPL runs on
+  host libraries against the operator-authored profile.
+- **Deprecated Apple API** — `/usr/bin/sandbox-exec(1)` and `sandbox_init(3)`
+  are deprecated and **not guaranteed** by Apple as a security boundary.
+- **`(allow default)` boundary reduction** — where the operator profile uses
+  `(allow default)` for non-file operations, it re-opens mach-lookup/sysctl/
+  iokit/ipc/network/syscall; the real isolation is then the **file** scope only.
+
+It blocks direct access to disallowed paths (e.g. `cat ~/.secret`) at the
+kernel level via a deny-by-default SBPL profile, with **SBPL-injection
+validation** on every typed path (each path is rejected if it contains any SBPL
+metacharacter). It is a convenience for macOS hosts — treat it as a
+lower-security alternative to the Docker backend, never as an equivalent. Full
+threat model: `SPEC.md` §7.13.
+
+## Migrations & compatibility
+
+Schema has evolved through several forms; the sections below document each
+legacy form and how to convert to the current one. New profiles should use the
+**envelope** form (`apiVersion` + `spec`).
 
 ### Migration to `driver` + `options:`
 
@@ -502,450 +1066,27 @@ both **required** (with `session_id`). To migrate:
 3. Any un-migrated caller that passes the old parameters is rejected with
    `InvalidParams`.
 
-### Transport, auth & TLS notes
-
-- **Transport:** STDIO only. The server is spawned as a local child process by
-  the model-host; it opens no network listener.
-- **Auth:** environment variables only. **No OAuth2** — there is no upstream
-  HTTP API to authorize against (see `SPEC.md` §3.3).
-- **TLS:** **never implemented in-server** (S01). The server has no HTTP
-  listener, so there is no in-server TLS surface. If the server is ever placed
-  behind a network-facing gateway, TLS termination is the reverse proxy's job.
-
-## Sandbox lifecycle
-
-Sandboxes follow `create → use → destroy`:
-
-- `sandbox_create` provisions a per-session container.
-- `sandbox_exec` and the read tools operate on it.
-- `sandbox_destroy` destroys one sandbox; `sandbox_destroy_all` destroys every
-  sandbox.
-
-**Cleanup is explicit only — there is no automatic GC.** A sandbox is removed
-**only** when the model-host calls `sandbox_destroy` / `sandbox_destroy_all`;
-otherwise it persists until then.
-
-## macOS driver (`sandbox-exec` backend)
-
-An **alternative backend** that isolates commands with Apple's **seatbelt
-sandbox** via the `/usr/bin/sandbox-exec` external binary, **without Docker**.
-It is a pure-Go implementation (no cgo) that spawns `sandbox-exec` as a child
-process, applying a deny-by-default **SBPL** profile. See `SPEC.md` §7.12.
-
-> **Status: implemented (portable core + darwin `log stream` tailer);
-> real-macOS verification via the darwin e2e.** The Docker backend remains the
-> default. The darwin backend is implemented in
-> `infrastructure/backend/darwin` (portable core + build-tag `os/exec` runner +
-> policy-denial detection + the macOS-specific unified-log `log stream` tailer
-> wrapper behind the `darwin` build tag) and wired via the `seatbelt` driver
-> (registered in the driver registry), `spec.DriverSeatbelt` and the SBPL
-> generator
-> (`domain/sandbox/sbpl`); its logic is covered by unit tests (mock
-> runner/tailer, coverage ≥ 95%) on any GOOS. **Real-macOS verification** — a
-> live `/usr/bin/sandbox-exec` spawn and its exit-code / `IsPolicyDenial`
-> signals (which cannot run inside a Docker/CI sandbox) — is exercised by the
-> **darwin e2e smoke tests** (`//go:build e2e && darwin`) under `make e2e` on a
-> dedicated macOS CI `e2e` job (see Development). The unified-log `log stream`
-> **tailer is not** exercised by the e2e — it is covered by `darwin`-tagged unit
-> tests only, not a live log stream (see `SPEC.md` §7.12). The darwin backend is
-> **macOS-only** and
-> provides **policy-based containment, not kernel/container isolation** — it is
-> strictly weaker than the Docker backend.
-
-> **Darwin exec — the operator tail must grant exec.** The **server-rendered SBPL
-> baseline is deny-default and does NOT emit `process-exec*`** — `sbpl.Generate`
-> emits imports → `(deny default)` → network → mach → sysctl → file → the
-> operator `seatbelt.sbpl` (last, verbatim), but no `process-exec*`. Without it,
-> `sandbox-exec` fails at `execvp()` of the shell. To actually run a command,
-> the **operator-authored `seatbelt.sbpl` in the darwin profile must grant exec
-> — either with `(allow process-exec*)` (plus the file-read/mach/sysctl
-> allowances the shell and its runtime need — `/bin`, `/usr/bin`, `/usr/lib`,
-> dyld), or with `(allow default)`** for non-file operations plus a narrowed
-> file scope. Both forms work. **A working, verified file-deny-all profile is
-> bundled at `examples/profiles/seatbelt.yml`** (validated live against a real
-> macOS host) — see the SBPL guide below. The darwin e2e drives `sandbox-exec`
-> with an `(allow default)` SBPL directly, so it does **not** validate exec
-> under the server-generated baseline (see `SPEC.md` §7.12).
-
-**What it is**
-
-Unlike the Docker backend — which provisions a per-session container and
-executes inside it — the `sandbox-exec` driver has **no container, no daemon
-and no image**:
-
-- A **session is an in-memory record** (the SBPL profile + `env` + `cwd`) held
-  by the session manager; `sandbox_create` stores state in-process only.
-- **Every `sandbox_exec` spawns a fresh `sandbox-exec` child process**
-  (`os/exec`, `CGO_ENABLED=0`) running `<shell> -c <command>` under the profile
-  rules. There is no persistent container to enter.
-- `sandbox_destroy` / `sandbox_destroy_all` tear down the whole process group
-  of live child processes **gracefully**: a group-wide `SIGTERM` lets children
-  flush/clean up, then escalates to group-wide `SIGKILL` after a short,
-  configurable grace (default 1s, hard-capped at 5s) — see `SPEC.md` §7.12 — and
-  drop the in-memory session. The grace does not weaken containment (still
-  sandboxed under SIGTERM; termination guaranteed by untrappable SIGKILL) and is
-  bounded so a hostile SIGTERM-ignoring child cannot delay teardown unboundedly.
-
-**When to use it**
-
-- You are on **macOS** and want sandboxing **without running a Docker daemon**
-  (or a rootless one).
-- Commands need only **file/network restrictions at the process level** — not
-  full container isolation (no separate mount/net namespaces, no cgroups).
-- CI/runners where a Docker daemon is unavailable but the host is macOS.
-
-**Prerequisites**
-
-- **macOS** with `/usr/bin/sandbox-exec` present (default on modern macOS).
-- **No root required** — the sandboxed process runs under the invoking user's
-  credentials, confined by the seatbelt profile. The server refuses to run at
-  `uid 0`.
-
-**Differences from the Docker backend**
-
-| Aspect          | Docker backend                                             | `sandbox-exec` backend                                                 |
-| --------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Isolation       | container (namespaces, cgroups, read-only rootfs, seccomp) | seatbelt/MAC profile on a plain process (policy-based)                 |
-| Runtime         | image + mounts + tmpfs `/run`,`/tmp`                       | SBPL profile rules; `cwd`/`ALLOW_DIRS` as `(allow\|deny file-*)` rules |
-| Session         | provisioned container                                      | in-memory record (SBPL + env + cwd)                                    |
-| Exec            | exec into existing container                               | new `sandbox-exec` child per call                                      |
-| Cleanup         | explicit destroy; `AutoRemove`                             | explicit destroy; kill children on destroy/timeout                     |
-| `sandbox_stats` | cgroup resource usage                                      | **not supported** (no cgroups) → `ErrCapabilityNotSupported`           |
-| Resource limits | cgroup quotas                                              | soft `setrlimit` only (`Memory`/`NanoCPUs`/`PidsLimit` not mappable)   |
-| Root inside     | scoped `exec -u 0`                                         | subject to seatbelt policy / current user                              |
-| Portability     | Linux/macOS (with daemon)                                  | **macOS only**                                                         |
-
-**Example configuration**
-
-```bash
-export ALLOW_DIRS="/Users/me/projects/myapp"
-export LOG_LEVEL=info
-./mcp-sandbox
-```
-
-The backend is chosen **lazily** on the first `sandbox_create` (no outbound
-calls at startup): on macOS with `/usr/bin/sandbox-exec` present the
-`sandbox-exec` backend is selected; on Linux it is unavailable and the Docker
-backend (or an error) is used instead.
-
-> **Multi-backend:** the server is **not** limited to one backend per process.
-> It keeps a separate runtime (backend + session manager) **per concrete
-> driver** and routes each session to the backend that owns it, so a single
-> `mcp-sandbox` process can hold **docker and seatbelt sandboxes
-> simultaneously** (`SPEC.md` §6.3). Auto/empty driver selection resolves to a
-> concrete driver per `sandbox_create` (docker preferred when available).
-
-> **Portability note:** the `sandbox-exec` backend is **macOS-only**. On Linux
-> there is **no `sandbox-exec`**; to sandbox there, use the Docker backend or a
-> Linux seatbelt equivalent such as **bubblewrap (`bwrap`)**. Backends are
-> **non-interchangeable isolation mechanisms**, not a portable abstraction
-> layer.
-
-> **Lifecycle & leaks (documented contract):** cleanup is **explicit only** —
-> there is no automatic GC. If the server process exits without an explicit
-> `sandbox_destroy`, any in-flight `sandbox-exec` child processes may be left
-> running. A `destroy` while an `exec` is active must signal the child before
-> dropping the session.
-
-### Writing a Seatbelt (SBPL) profile
-
-The darwin backend runs commands under Apple's **Seatbelt** sandbox, whose rules
-are expressed in **SBPL**. The server renders the profile automatically from
-the typed `SandboxSpec`; the operator supplies the permissive tail via the
-profile's `spec.sbpl` (under `apiVersion: seatbelt.profiles.sandbox.teran.dev/v1`
-— the legacy `options.sbpl` under `driver: seatbelt` also still works, see
-[Profiles](#profiles-operator-authored)). A working, verified example lives at
-**`examples/profiles/seatbelt.yml`** — a file-deny-all profile validated live
-against a real macOS host.
-
-The darwin profile's `spec:` blob also accepts an optional **`env:`** map of
-session environment variables, mirroring the Docker profile's `spec.env:`
-(SPEC §7.12). As with Docker profile env, the values are collected into the
-redaction set and **masked from output and logs (S02)** — do **not** put
-secrets here. Note: the seatbelt backend delivers **no file secrets** — unlike
-Docker there is no tmpfs `/run/sandbox`; secrets never leave the server process
-as files, only **redaction** is applied (SPEC §7.12).
-
-**Generation order.** `sbpl.Generate` emits sections in a fixed order — imports
-→ `(deny default)` → network → mach → sysctl → file → **your `seatbelt.sbpl`
-last, verbatim**. Because the last matching rule wins in Seatbelt, the operator
-tail is where you selectively re-open surfaces the server baseline closed. In
-detail:
-
-1. `(import "system.sb")`, then `(deny default)` — the deny-everything baseline.
-2. **Network**: `(deny network*)` for `none` (default); `(allow network-outbound)`
-   for `bridge`/`host`.
-3. **Mach**: `(deny mach-lookup)` plus an `(allow mach-lookup (global-name …))`
-   per `mach_lookups` entry.
-4. **Sysctl**: `(deny sysctl*)` plus an `(allow sysctl-read …)` per `sysctls`
-   entry.
-5. **File**: `(allow file-read* …)` for every mount source / working dir inside
-   `ALLOW_DIRS` (or the scratch dir); `(allow file-write* …)` only for read-write
-   mounts, a `cwd.mode=rw` working dir and the scratch dir. Paths **outside
-   `ALLOW_DIRS` are silently skipped** — deny-by-default (S04).
-6. Your operator `seatbelt.sbpl`, appended **last** and verbatim.
-
-**Minimal recipe to actually run a command.** The server baseline does **not**
-emit `(allow process-exec*)`, so `sandbox-exec` fails at `execvp()` of the shell
-unless the operator tail grants exec. Either form works:
-
-- **`(allow process-exec*)`** plus the file/mach/sysctl grants the shell and
-  dyld need; or
-- **`(allow default)`** for non-file operations (process/mach/syscall/iokit/ipc)
-  and narrow the **file** surface with explicit `(deny file-read*)` /
-  `(deny file-write*)` + allow-lists — the model used by the working
-  `examples/profiles/seatbelt.yml`.
-
-In both cases remember:
-
-- `shell` **must be an absolute path** (`/bin/bash`) — `sandbox-exec` runs
-  `execvp(shell)` against the **server** process `PATH`, not the per-exec env.
-- The **dyld chain must be readable**: keep `/usr/lib`, `/System/Library`,
-  `/usr/bin`, `/bin` in file-read scope — macOS cannot start any binary without
-  it.
-- Grant `(allow file-read-metadata)` **globally**: it exposes only
-  `stat`/`readlink` (never contents) and lets `go`, `golangci-lint`, `make`,
-  `git` resolve path components without whitelisting every directory.
-- Add `(allow network-outbound)` only if the command needs the network
-  (curl/git fetch).
-
-**Debugging denials.** `(debug deny)` does **not** work on macOS 26 — the
-`debug` macro is absent from `system.sb` (SBPL v3), so it fails with
-`unbound variable: debug`. Diagnose instead with:
-`log stream --predicate 'subsystem == "com.apple.sandbox"'`.
-
-> **`(allow default)` weakens the boundary — know the trade-off.** In the
-> file-deny-all model, `(allow default)` is _required_ for non-file operations
-> (the shell needs dozens of them and cannot start under a hand-listed
-> deny-all), but it **re-opens** mach-lookup, sysctl, iokit, IPC, network and
-> syscall. Because your `seatbelt.sbpl` is appended last, it **overrides** the
-> server's `(deny default)`, `(deny network*)`, `(deny mach-lookup)` and
-> `(deny sysctl*)`. What actually isolates the example is the **file** scope —
-> and `(allow network-outbound)` cannot be restricted by destination on macOS,
-> so a compromised process could exfiltrate or reach internal services. Treat
-> this backend as a file/network confinement convenience, never as container
-> isolation (see the security posture below).
-
-## OpenCode setup
-
-Use mcp-sandbox as the execution environment for **opencode** instead of the
-host shell.
-
-### 1. Disable the host shell
-
-In your opencode config (`opencode.jsonc`), deny the built-in `shell` tool:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "permissions": [{ "action": "shell", "resource": "*", "effect": "deny" }],
-}
-```
-
-This removes the host `bash`/shell tool; the model then uses the sandbox MCP
-for command execution.
-
-### 2. Register the mcp-sandbox MCP server
-
-`mcp-sandbox` is a **Local / stdio** server, so register it as a **local** MCP
-server:
-
-```jsonc
-{
-  "mcp": {
-    "servers": {
-      "mcp-sandbox": {
-        "type": "local",
-        "command": ["mcp-sandbox"],
-        "environment": {
-          "ALLOW_DIRS": "{env:PWD}",
-          "LOG_LEVEL": "info",
-        },
-      },
-    },
-  },
-}
-```
-
-- `command` launches the `mcp-sandbox` binary (put it on `PATH` or use an
-  absolute path).
-- `ALLOW_DIRS` scopes which host directories the sandbox may reach; it gates the
-  session working directory (mounted **1:1** at the same absolute path) and
-  every profile mount source (see `SPEC.md` §7.2).
-- opencode passes its session id as a **required** `session_id` parameter to
-  `sandbox_create`; the server records it as an `opencode_session` container
-  label so each sandbox is traceable to the OpenCode session that created it.
-  The sandbox's own `id` returned by `sandbox_create` is a **namespaced session
-  id `slug:internalID`** (`SPEC.md` §7.8): `docker:<container id>` for the Docker
-  backend (so a sandbox is directly traceable via `docker ps`) and
-  `seatbelt:darwin-N` for the darwin backend. `sandbox_create`
-  also takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
-  **required** `cwd`. The session `cwd` is mounted 1:1 read-only by default (see
-  `SPEC.md` §7.2, §7.11).
-- **Breaking id schema (v0.9+):** sandbox session ids changed from a **bare
-  backend id** to a **namespaced `slug:internalID`** pair. The `id` every tool
-  returns/accepts now carries a `docker:` / `seatbelt:` prefix; a bare
-  (non-namespaced) or unknown-slug id is rejected (`ErrSessionNotFound`) on all
-  ops, and `sandbox_destroy` by an unknown slug is an **error, not a no-op**.
-  Clients that persisted or echoed old bare ids must re-resolve them from a
-  fresh `sandbox_create`/`sandbox_list`. The short display id keeps the slug
-  (`docker:deadbeef1234`).
-- Use `opencode mcp list` / `/mcps` to check the server is connected.
-
-> **HITL note:** because mcp-sandbox is Local/stdio (no HTTP UI), destructive
-> tools (`sandbox_destroy`, `sandbox_destroy_all`) require confirmation
-> **client-side** by the operator — see `SPEC.md` §4.4.
-
-## Tool surface
-
-Grouped **read → write → delete** (S03):
-
-- **Read** (`readOnlyHint: true`): `sandbox_list`, `sandbox_info`,
-  `sandbox_stats`, `profile_list` (lists operator-authored profiles as
-  `name`/`description` — read-only, no leakage).
-- **Write/update** (`readOnlyHint: false`, `destructiveHint: false`):
-  `sandbox_create` (requires `profile` — the profile name from
-  `SANDBOX_PROFILES_DIR`, `session_id` — the OpenCode client session id recorded
-  as a container label for traceability, and `cwd`; optional `secrets`; session
-  `cwd` mounted 1:1 read-only by default per the profile's `cwd.mode`),
-  `sandbox_exec` (requires `id` and `command` — a scalar string with the full
-  command line, executed via the profile-configured shell as a **fixed**
-  `[<shell>,"-c",command]` wrapper; optional `env` — a `map[string]string` of
-  per-exec `KEY=VALUE` environment entries, literal, no shell evaluation —
-  and optional `summary` — a short human-readable description of the command,
-  e.g. "run unit tests", used to display the command in the tool-call header by
-  MCP clients; purely presentational and not passed to execution; also optional
-  `working_dir`, `timeout` and `user`; write-classified; ANSI-sanitized;
-  redacted command; streams live output via `notifications/progress` when a
-  progress token is passed, §5.1; optional `timeout` in seconds applied as a
-  `context.WithTimeout` cancellation, §6.10).
-- **Delete** (`destructiveHint: true`): `sandbox_destroy`, `sandbox_destroy_all`.
-
-> **Files come from the image, the host, or the runtime — never via MCP
-> file-write tools.** The session `cwd` is mounted 1:1, so the model-host writes
-> files on the **host** and the container reads/executes them at the same path;
-> runtime artifacts live in the writable tmpfs `/tmp` (executable where the
-> daemon honours `exec`; on daemons that force `noexec` — e.g. Docker Desktop —
-> compilation goes into the writable bind-mounted `cwd` per the profile's
-> `cwd.mode`). There are **no**
-> `sandbox_read_file` / `sandbox_write_file` / `sandbox_copy_in` /
-> `sandbox_copy_out` / `sandbox_install_package` tools — **mount + exec is the
-> core mechanism** (`SPEC.md` §4.2, §7.2).
-
-All tools are `openWorldHint: false` and carry per-tool annotations +
-instructions (`SPEC.md` §4).
-
-> **Human-in-the-loop (HITL) for destructive tools:** because this is a
-> **Local / stdio-only** server with no HTTP UI (S12), destructive confirmation
-> is implemented **client-side** — the model-host (opencode) obtains human
-> confirmation before invoking `sandbox_destroy` / `sandbox_destroy_all`.
-
-## Self-describing MCP server
-
-mcp-sandbox is **self-describing** over the MCP protocol: a model-host client
-can discover everything it needs without any external file (`SPEC.md` §5.2).
-
-- **Server-level `Instructions`** — a short paragraph carrying the redirect
-  invariant ("The host shell is restricted — route commands through this
-  sandbox server."), tool grouping (read → write → delete), a secrets warning
-  (never put secrets in a command or env — use tmpfs `0600` secret files on
-  `sandbox_create`), and an index of the guidance resources.
-- **`resources` capability** — six read-only **markdown** playbooks are
-  registered under `sandbox://guidance/*` and appear in the MCP catalog:
-  `overview`, `shell-restricted-redirect`, `sandbox-create`, `sandbox-exec`,
-  `filesystem-mounts` (incl. the **GOCACHE/GOTMPDIR** recipe for compile-in-
-  sandbox), and `security`. This is the **only** use of `resources` — file I/O
-  still never goes through MCP resources (files come from the image, the host,
-  or the runtime via `mount + exec`).
-- **Enriched tool descriptions** — `sandbox_create` / `sandbox_exec` carry a
-  redirect note and a pointer to the relevant guidance resource, directing the
-  model away from the host shell exactly where those tools are invoked.
-
-There is **no standalone skill file** and **no AGENTS.md pointer** — the
-self-description travels with the server over the protocol, so it stays in sync
-with the implementation automatically.
-
-## Security
-
-The sandbox **replaces the host shell**, so security is enforced by the server
-and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
-
-- Read-only rootfs; **drop-all capabilities** (minimal re-add); no-new-
-  privileges; **seccomp** (default MVP profile; custom profile is mandatory
-  roadmap); **non-root** user inside.
-- Bounded `PidsLimit`, `Memory`/`MemorySwap`, `NanoCPUs`, `Ulimits` (from the
-  profile's `cgroups`, §7.11).
-- **Network comes from the operator profile** — `bridge` (default) or `none`;
-  `host` is permitted **only when the operator authors it** into a profile, never
-  implicitly.
-- tmpfs mounts: **`/run`** (`rw,noexec,nosuid,nodev`, sandbox-user-owned, holds the `/run/sandbox` secrets dir) and **`/tmp`** (`rw,nosuid,nodev`, writable; some daemons like Docker Desktop force `noexec` on tmpfs, so runtime compilation uses the writable bind-mounted `cwd`); `AutoRemove=true`.
-- Host filesystem access **only** via `ALLOW_DIRS`, read-only by default,
-  canonicalized with `EvalSymlinks` + identity-only open-then-verify (TOCTOU);
-  this gates the
-  session `cwd` **and** every profile mount `source`; the session `cwd` is the
-  sanctioned bind-mount (read-only default).
-- Single **redaction layer** hides `secret:true` fields from all output and
-  logs; secrets delivered as tmpfs `0600` files under `/run/sandbox`, never
-  command-line/image.
-- **`command` is intentionally NOT masked in the access-log (S02 disclaimer):**
-  the `sandbox_exec` access-log records `command` as passed, **not** secret-
-  redacted — no masking is applied. `command` is **not** a channel for secrets;
-  use tmpfs `0600` secret files instead (§7.3).
-- **No shell-string concatenation/interpolation (S11/N21):** `sandbox_exec`
-  takes a scalar `command` passed as **one element** of a **fixed**
-  `[<shell>,"-c",command]` wrapper (shell from the profile, default `bash`,
-  §7.11) — no user string is interpolated into a shell string; the only other
-  `sh -c` is the server-authored fixed secret-writer script.
-- Sessions use opaque `crypto/rand` ids with label-based Docker ownership.
-- **Operator-authored profiles** (Phase 7): the image, env, mounts, network,
-  limits, user and sudo are declared in **read-only** YAML files the model
-  references by name; a profile can never weaken the immutable `Isolation`
-  block (§7.11).
-- Supply chain: sandbox images come from the operator profile with **parse-only
-  validation**; **digest-pinning is the recommended operator convention**
-  (§7.9), and dependencies are pinned to latest stable, signed packages.
-
-### Docker socket access (known limitation)
-
-The Docker socket (`/var/run/docker.sock`) is effectively **root on the host**.
-The server mitigates this by preferring a **rootless Docker** daemon or running
-in an isolated environment with socket access confined to the server process.
-Review and choose the socket access model appropriate to your host. See
-`SPEC.md` §7.6.
-
-### macOS driver (security posture)
-
-The `sandbox-exec` backend (`SPEC.md` §7.12) is **policy-based containment,
-not kernel/container isolation** and is strictly **weaker** than the Docker
-backend:
-
-- **Shared host kernel** — no namespaces; an SBPL bypass or kernel bug is a
-  full host compromise at the operator's privilege, not a root boundary.
-- **No cgroup resource quotas** — only soft per-process `setrlimit`
-  (`nofile`/`cpu`/`as`/`nproc`/`fsize`/`stack`/`core`); a runaway process can
-  degrade the whole host (DoS). `sandbox_stats` → `ErrCapabilityNotSupported`.
-- **No network isolation** — macOS has no network namespaces, so only
-  `network-outbound` is enforceable and it cannot be restricted by destination.
-- **No uid change** — the sandbox runs as the **current host user** (`UIDGID`
-  is not applied; only `euid != 0` is refused), sharing the host user's identity.
-- **No `no-new-privileges` / read-only-rootfs / cap-drop / tmpfs-workdir
-  enforcement** — those immutable `Isolation` fields are validated by
-  `spec.Validate`, but the darwin backend has **no mechanism** to enforce them
-  (`runner_darwin.go` applies only `Setpgid`). See `SPEC.md` §7.12.
-- **No image / digest supply-chain boundary** — there is no image; SBPL runs on
-  host libraries against the operator-authored profile.
-- **Deprecated Apple API** — `/usr/bin/sandbox-exec(1)` and `sandbox_init(3)`
-  are deprecated and **not guaranteed** by Apple as a security boundary.
-- **`(allow default)` boundary reduction** — where the operator profile uses
-  `(allow default)` for non-file operations, it re-opens mach-lookup/sysctl/
-  iokit/ipc/network/syscall; the real isolation is then the **file** scope only.
-
-It blocks direct access to disallowed paths (e.g. `cat ~/.secret`) at the
-kernel level via a deny-by-default SBPL profile, with **SBPL-injection
-validation** on every typed path (each path is rejected if it contains any SBPL
-metacharacter). It is a convenience for macOS hosts — treat it as a
-lower-security alternative to the Docker backend, never as an equivalent. Full
-threat model: `SPEC.md` §7.13.
+## Terminology
+
+A short glossary of terms used throughout this document and `SPEC.md`:
+
+- **Phase 7 / Phase A / Phase B** — roadmap phases for the profile schema.
+  Phase 7 introduced operator-authored profiles; **Phase A** made the envelope
+  form additive (legacy still works); a future **Phase B** will make `spec` the
+  only accepted form.
+- **Driver** — a single-sandbox primitive (one sandbox: create/destroy/exec/
+  info/stats) selected by the profile (`docker` / `seatbelt`).
+- **Envelope** — the preferred profile form: `apiVersion` (`«<driver>.
+  profiles.sandbox.teran.dev/vN»`) + a driver-owned `spec` blob.
+- **`options:`** — the legacy driver-owned profile blob, replaced by `spec:`.
+- **`ALLOW_DIRS`** — the server env var gating which host directories the
+  sandbox may reach (session `cwd` and every profile mount `source`).
+- **SBPL / seatbelt** — Apple's Sandbox Profile Language; the rule syntax for
+  the macOS `sandbox-exec` backend.
+- **HITL** — human-in-the-loop confirmation, required client-side for
+  destructive tools.
+- **`§7.x`** — references into `SPEC.md` (e.g. §7.11 profiles, §7.12 darwin,
+  §7.8 session ids).
 
 ## Development
 
