@@ -684,7 +684,10 @@ server:
   The sandbox's own `id` returned by `sandbox_create` is a **namespaced session
   id `slug:internalID`** (`SPEC.md` §7.8): `docker:<container id>` for the Docker
   backend (so a sandbox is directly traceable via `docker ps`) and
-  `seatbelt:darwin-N` for the darwin backend. `sandbox_create`
+  `seatbelt:<25 base36 chars>` for the darwin backend — a **deterministic,
+  name-based UUIDv5** of the sandbox's identity (`[profile, session_id, cwd]`
+  joined with `/`) so the same identity always yields the same id and ids never
+  collide across processes. `sandbox_create`
   also takes a **required** `profile` name (from `SANDBOX_PROFILES_DIR`) and
   **required** `cwd`. The session `cwd` is mounted 1:1 read-only by default (see
   `SPEC.md` §7.2, §7.11).
@@ -808,7 +811,8 @@ and cannot be weakened by a caller (`SandboxSpec.Isolation` is immutable):
   opaque ids: the session manager calls the backend **first** and uses its
   returned id as the internal part — for the Docker backend that is the
   **container id** (a sandbox is directly traceable to its container via
-  `docker ps`), for darwin it is `darwin-N`. An opaque `crypto/rand` 64-hex id
+  `docker ps`), for darwin it is a deterministic, name-based **25-char derived
+  id** (a UUIDv5 of `[profile, session_id, cwd]`, base36-encoded). An opaque `crypto/rand` 64-hex id
   is only a **fallback** when a backend returns an empty id. Ownership is also
   labelled on the container (`dev.teran.sandbox.owner` / the OpenCode session
   label).

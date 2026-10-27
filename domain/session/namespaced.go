@@ -19,9 +19,10 @@ var ErrInvalidNamespacedID = errors.New("session: invalid namespaced id")
 var slugPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
 
 // NamespacedID is a session id split into its routing slug and its internal
-// backend id (SPEC §7.8): "docker:6b4464b592f9" or "seatbelt:darwin-3". The
-// slug selects the owning backend/driver; the internal id is the backend's own
-// sandbox handle (the docker container id, or the darwin session id).
+// backend id (SPEC §7.8): "docker:6b4464b592f9" or "seatbelt:<25 base36
+// chars>". The slug selects the owning backend/driver; the internal id is the
+// backend's own sandbox handle (the docker container id, or the darwin-derived
+// session id).
 type NamespacedID struct {
 	// Slug is the namespacing prefix identifying the owning backend.
 	Slug string

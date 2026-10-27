@@ -173,6 +173,9 @@ func assertIdentityAndPassthrough(t *testing.T, sp *spec.SandboxSpec) {
 	if sp.ClientSessionID != "opencode-sess-9" {
 		t.Fatalf("ClientSessionID = %q", sp.ClientSessionID)
 	}
+	if sp.Profile != "default" {
+		t.Fatalf("Profile = %q, want default (from driver.Context.Name)", sp.Profile)
+	}
 	// Docker emits a zero Sandbox block.
 	if sp.Sandbox.SBPL != "" || len(sp.Sandbox.MachLookups) != 0 || len(sp.Sandbox.Sysctls) != 0 {
 		t.Fatalf("Sandbox = %+v, want zero for docker", sp.Sandbox)

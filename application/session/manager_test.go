@@ -119,7 +119,7 @@ func validSpec() spec.SandboxSpec {
 
 // TestCreate_SessionIDIsBackendID pins the backend-owned-id design: the session
 // id MUST be the id returned by the lifecycle backend (the docker container id
-// / darwin "darwin-N"), not a manager-generated opaque id. fakeLife returns
+// / the darwin derived id), not a manager-generated opaque id. fakeLife returns
 // "ctr-a", "ctr-b", ... so the first and second creates must carry exactly
 // those ids.
 func TestCreate_SessionIDIsBackendID(t *testing.T) {

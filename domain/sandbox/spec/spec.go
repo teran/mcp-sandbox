@@ -218,6 +218,14 @@ type SandboxSpec struct {
 	// so internal callers and e2e specs that build a SandboxSpec directly can
 	// omit it.
 	ClientSessionID string
+
+	// Profile is the operator-authored profile name that created the sandbox
+	// (§7.11). It is populated by the driver builders from driver.Context.Name
+	// and is OPTIONAL at the domain layer — internal callers and e2e specs that
+	// build a SandboxSpec directly can omit it. The darwin/seatbelt backend
+	// uses it (with ClientSessionID and WorkingDir) as part of its
+	// deterministic, name-based session id (§7.8).
+	Profile string
 }
 
 // Validate checks that the sandbox spec is well-formed and that the immutable

@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/distribution/reference"
 	dockerconfig "github.com/docker/cli/cli/config"
@@ -547,7 +546,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	execCtx := ctx
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Second)
+		execCtx, cancel = context.WithTimeout(ctx, exec.TimeoutDuration(req.Timeout))
 		defer cancel()
 	}
 

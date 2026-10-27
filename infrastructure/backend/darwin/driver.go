@@ -106,6 +106,7 @@ func buildSeatbelt(ctx driver.Context) (spec.SandboxSpec, error) {
 		Isolation:       pol,
 		Sandbox:         spec.Sandbox{SBPL: o.SBPL, MachLookups: o.MachLookups, Sysctls: o.Sysctls},
 		ClientSessionID: ctx.Params.ClientSessionID,
+		Profile:         ctx.Name,
 	}, nil
 }
 
