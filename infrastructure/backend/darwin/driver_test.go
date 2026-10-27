@@ -119,6 +119,9 @@ func TestBuildSeatbelt_FullOptions(t *testing.T) {
 	if sp.WorkingDir != "/home/user/proj" {
 		t.Fatalf("WorkingDir = %q", sp.WorkingDir)
 	}
+	if sp.Profile != "mac" {
+		t.Fatalf("Profile = %q, want mac (from driver.Context.Name)", sp.Profile)
+	}
 
 	if err := sp.Validate(); err != nil {
 		t.Fatalf("built spec must validate: %v", err)

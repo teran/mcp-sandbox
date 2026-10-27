@@ -577,7 +577,8 @@ create → use (exec/read/write/copy/install) → destroy
   returned id as the **internal** part of the session id, namespacing it with the
   backend's slug (`role.Backend.Slug()`): for docker that is the **container id**
   (a sandbox is directly traceable to its container via `docker ps`), for darwin
-  it is the backend-generated **`darwin-N`** id. A backend that returns an
+  it is the backend-generated **derived id** (§7.8) — a deterministic, name-based
+  UUIDv5 + base64-url id. A backend that returns an
   **empty** id falls back to a generated opaque 64-hex (`crypto/rand`) id. The
   post-create duplicate check enforces uniqueness on the full namespaced id
   (X02; see §7.8).
@@ -591,7 +592,7 @@ create → use (exec/read/write/copy/install) → destroy
 - **darwin/`sandbox-exec` driver (§7.12):** `sandbox-exec` applies a
   sandbox scheme and **execs** the command into the **same process** — there is
   **no supervisor wrapper and no `AutoRemove` equivalent**. The session id is
-  the backend-generated **`darwin-N`** id (never the pid); the backend keeps an
+  the backend-generated **derived id** (never the pid); the backend keeps an
   in-memory record mapping that id to its Create child, whose **process-group
   pid** is the handle `Destroy` tears down (group-wide `SIGTERM` → grace →
   `SIGKILL`, R-6), **idempotently** (`ESRCH` → no-op). A server exit
@@ -1184,7 +1185,8 @@ itself can **never** be weakened (by profile or caller).
 ### 7.8 Session identifiers & ownership
 
 - **Namespaced session id (`slug:internalID`).** Every session id is a
-  `slug:internalID` pair (e.g. `docker:6b4464b592f9`, `seatbelt:darwin-3`). The
+  `slug:internalID` pair (e.g. `docker:6b4464b592f9`, `seatbelt:<25 base36
+  chars>`). The
   **slug** is the backend's namespacing prefix (`role.Backend.Slug()`; docker →
   `docker`, seatbelt → `seatbelt`) and selects the owning backend for routing;
   the **internal** part is the backend's own sandbox handle. The parser
@@ -1198,15 +1200,24 @@ itself can **never** be weakened (by profile or caller).
   calls the backend **first** and uses the backend's returned id as the
   **internal** part: for the **docker** backend that is the **container id**, so
   a sandbox is directly traceable to its container via `docker ps`; for the
-  **darwin** backend it is the backend-generated **`darwin-N`** id (never the
-  pid). A backend that returns an **empty** id falls back to a generated opaque
+  **darwin** backend it is a deterministic, name-based derived id (never the
+  pid): a **UUIDv5** (SHA-1 name-based) of the sandbox's **identity** — the
+  non-empty parts of `[profile, session_id, cwd]` joined with `/` — under a
+  **fixed namespace UUID** constant, encoded as **base36** (`0-9a-z`, no
+  special characters) → a **25-char** internal id. Determinism is intentional:
+  the same identity always yields the same id, so a repeat `sandbox_create` with
+  the same profile/session/cwd surfaces as a **duplicate** via search-before-
+  create (X02); different profile/session/cwd yield different, distinguishable
+  ids, and ids no longer collide across server processes. A backend that returns
+  an **empty** id falls back to a generated opaque
   64-hex `crypto/rand` id. The manager composes the full id as
   `slug:<internalID>` and keys the session by it; a manager is scoped to ONE
   backend/slug, so resolution is per-driver (`Manager.Resolve`).
 - **Backends strip the slug.** Because the session id is `slug:internalID`, the
   docker and darwin backends **strip the slug** (`ParseNamespacedID` → use
   `.Internal`) before calling their underlying API — the Docker API receives the
-  raw container id, and the darwin session map is keyed by the raw `darwin-N`.
+  raw container id, and the darwin session map is keyed by the raw 25-char
+  derived id.
   `Create` still returns the raw internal id to the manager.
 - **Service routing (`resolveSessionID`).** The MCP `Service` routes
   `Get`/`Exec`/`Info`/`Stats`/`Destroy` by **slug**: it parses the id, looks up
@@ -1216,8 +1227,8 @@ itself can **never** be weakened (by profile or caller).
   cross-driver prefix scan — routing is entirely slug-scoped per driver.
 - **Short id keeps the slug.** `ShortID` on a namespaced id **preserves the slug**
   and shortens only the internal id to 12 chars (docker-style): `docker:<64hex>`
-  → `docker:<12hex>`, `seatbelt:darwin-3` unchanged. A legacy bare id keeps the
-  old bare 12-char truncation.
+  → `docker:<12hex>`, `seatbelt:<25 base36>` → `seatbelt:<first 12 base36>`.
+  A legacy bare id keeps the old bare 12-char truncation.
 - **Owner label is retained; the session label is redundant.** The docker
   backend always applies the owner label (`dev.teran.sandbox.owner =
 mcp-sandbox`) so the server can identify, reap and destroy exactly its own
@@ -2321,7 +2332,7 @@ job installs/pins these exact versions, never `latest`):
 | `actions/setup-go`            | `@v5`                         |
 | Go (`GO_VERSION`)             | `1.27.3`                      |
 | `golangci-lint`               | `v2.15.0`                     |
-| `gosec`                       | `v2.29.0`                     |
+| `gosec`                       | `v2.30.0`                     |
 | `govulncheck`                 | `v1.9.0`                      |
 | `go-arch-lint`                | `v1.19.0`                     |
 | `gofumpt`                     | `v0.12.0`                     |

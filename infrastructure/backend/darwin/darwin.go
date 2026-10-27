@@ -18,14 +18,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/teran/mcp-sandbox/domain/progress"
 	"github.com/teran/mcp-sandbox/domain/sandbox/exec"
@@ -249,7 +251,7 @@ func (b *Backend) Driver() spec.Driver { return spec.DriverSeatbelt }
 
 // Slug returns the namespacing slug of the backend's session ids (§7.8): for
 // the darwin/seatbelt backend it is "seatbelt", so a session id reads
-// "seatbelt:darwin-N".
+// "seatbelt:<25 base36 chars>".
 func (b *Backend) Slug() string { return "seatbelt" }
 
 // Available reports whether the darwin backend is usable right now: GOOS must
@@ -268,13 +270,67 @@ var (
 	_ role.Introspectable = (*Backend)(nil)
 )
 
-// nextSessionID is a monotonic source of session ids. A darwin session is an
-// in-memory record keyed by this id; uniqueness within the process is enough
-// (X01) — the id is never exposed as a filesystem path or command argument.
-var nextSessionID atomic.Int64
+// seatbeltNamespace is the fixed UUIDv5 (SHA-1 name-based) namespace for
+// seatbelt session ids (§7.8). It MUST remain stable across releases: it is
+// part of the deterministic session-id derivation, and changing it would change
+// every existing seatbelt session id, breaking prefix resolution of in-flight
+// ids.
+var seatbeltNamespace = uuid.MustParse("6f6b2f9a-2c0e-4f0a-9b0a-1a2b3c4d5e6f")
 
-func newSessionID() string {
-	return fmt.Sprintf("darwin-%d", nextSessionID.Add(1))
+// base36IDLength is the fixed length of a seatbelt internal session id: a
+// 128-bit value rendered in base36 (0-9a-z) is always 25 chars (§7.8).
+const base36IDLength = 25
+
+// base36Radix is the radix for base36 encoding (alphabet 0-9a-z).
+const base36Radix = 36
+
+// identityParts enumerates the identity components of a seatbelt sandbox in
+// their canonical join order — [profile, session_id, cwd] (§7.8).
+func identityParts(s spec.SandboxSpec) []string {
+	return []string{s.Profile, s.ClientSessionID, s.WorkingDir}
+}
+
+// sessionIdentity joins the non-empty parts of a seatbelt sandbox's identity —
+// [profile, session_id, cwd] — with "/". It is deterministic: the same
+// profile/session/cwd always yields the same identity string.
+func sessionIdentity(s spec.SandboxSpec) string {
+	identity := identityParts(s)
+	parts := make([]string, 0, len(identity))
+	for _, p := range identity {
+		if p = strings.TrimSpace(p); p != "" {
+			parts = append(parts, p)
+		}
+	}
+
+	return strings.Join(parts, "/")
+}
+
+// sessionIDFromSpec derives a seatbelt session's internal id deterministically
+// from the sandbox's identity: a UUIDv5 (SHA-1 name-based) of
+// sessionIdentity(s) under the fixed seatbeltNamespace, encoded as base36
+// (0-9a-z, no special characters, left-padded to exactly 25 chars) (§7.8).
+// Determinism is intentional: the same identity → the same id, so a repeat
+// sandbox_create with the same identity surfaces as a duplicate via
+// search-before-create (X02); different profile/session/cwd → different,
+// distinguishable ids. base36 (rather than base64url) keeps the id free of
+// URL/shell special characters.
+func sessionIDFromSpec(s spec.SandboxSpec) string {
+	id := uuid.NewSHA1(seatbeltNamespace, []byte(sessionIdentity(s)))
+
+	return encodeBase36(id)
+}
+
+// encodeBase36 renders a 128-bit (16-byte) value as a lowercase base36 string
+// (alphabet 0-9a-z, no special characters), left-padded with '0' to a fixed 25
+// chars. 128 bits always need 25 base36 digits; the padding keeps the id length
+// stable for every identity.
+func encodeBase36(id uuid.UUID) string {
+	s := new(big.Int).SetBytes(id[:]).Text(base36Radix)
+	if len(s) < base36IDLength {
+		s = strings.Repeat("0", base36IDLength-len(s)) + s
+	}
+
+	return s
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +376,7 @@ func (b *Backend) Create(ctx context.Context, s spec.SandboxSpec) (string, error
 		return "", fmt.Errorf("darwin: create: %w", err)
 	}
 
-	id := newSessionID()
+	id := sessionIDFromSpec(s)
 	b.mu.Lock()
 	b.sessions[id] = &session{
 		proc:    proc,
@@ -374,7 +430,7 @@ func (b *Backend) Exec(ctx context.Context, id string, req exec.Request) (*exec.
 	execCtx := ctx
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Second)
+		execCtx, cancel = context.WithTimeout(ctx, exec.TimeoutDuration(req.Timeout))
 		defer cancel()
 	}
 
@@ -513,9 +569,10 @@ func toEnvSlice(env map[string]string) []string {
 
 // stripSlug extracts the raw backend id from a session id. Under the
 // namespaced-sandbox-id design (§7.8) the session id is `slug:internalID`
-// (e.g. "seatbelt:darwin-3"); the darwin backend keys its in-memory sessions
-// by the raw id ("darwin-N"), so the "seatbelt:" slug is stripped before the
-// lookup. A bare (non-namespaced) id is passed through unchanged.
+// (e.g. "seatbelt:<25 base36 chars>"); the darwin backend keys its in-memory
+// sessions by the raw id (the 25-char derived id), so the "seatbelt:" slug is
+// stripped before the lookup. A bare (non-namespaced) id is passed through
+// unchanged.
 func stripSlug(id string) string {
 	if n, err := domainsession.ParseNamespacedID(id); err == nil {
 		return n.Internal

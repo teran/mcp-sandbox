@@ -404,7 +404,7 @@ func TestCall_HoistsCommandAndSummaryAndDropsArgs(t *testing.T) {
 	al := &fakeAccessLogger{}
 	d := hoistTool()
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{
-		"id":      "seatbelt:darwin-2",
+		"id":      "seatbelt:A1b2C3d4E5f6G7h8I9j0K1",
 		"command": "git status ...",
 		"summary": "verify status",
 	})}}
@@ -438,7 +438,7 @@ func TestCall_HoistedToolMissesArgsKeysStillDropsArgs(t *testing.T) {
 	d := hoistTool()
 	// Omit "summary" from the arguments.
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: marshalArgs(t, map[string]any{
-		"id":      "seatbelt:darwin-2",
+		"id":      "seatbelt:A1b2C3d4E5f6G7h8I9j0K1",
 		"command": "git status ...",
 	})}}
 	if _, err := Call(context.Background(), newDeps(al, nil), d, req); err != nil {

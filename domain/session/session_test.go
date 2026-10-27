@@ -122,9 +122,11 @@ func TestShortID_Namespaced(t *testing.T) {
 	if got := ShortID("docker:" + hex64); got != "docker:"+strings.Repeat("b", 12) {
 		t.Fatalf("ShortID(docker:<64hex>) = %q, want docker:<12>", got)
 	}
-	// seatbelt:darwin-3 internal len 8 (<= 12) -> unchanged, slug kept.
-	if got := ShortID("seatbelt:darwin-3"); got != "seatbelt:darwin-3" {
-		t.Fatalf("ShortID(seatbelt:darwin-3) = %q, want unchanged", got)
+	// seatbelt:<25 base36 chars> internal len > 12 -> truncated to the
+	// first 12 chars, slug kept.
+	sb22 := strings.Repeat("A", 25)
+	if got := ShortID("seatbelt:" + sb22); got != "seatbelt:"+strings.Repeat("A", 12) {
+		t.Fatalf("ShortID(seatbelt:<25>) = %q, want seatbelt:<first 12>", got)
 	}
 	// Legacy bare id fallback is unchanged (still the first 12 chars).
 	if got := ShortID(hex64); got != strings.Repeat("b", 12) {

@@ -162,6 +162,7 @@ func buildDocker(ctx driver.Context) (spec.SandboxSpec, error) {
 		ReadOnlyRoot:    true,
 		Isolation:       iso,
 		ClientSessionID: ctx.Params.ClientSessionID,
+		Profile:         ctx.Name,
 	}, nil
 }
 

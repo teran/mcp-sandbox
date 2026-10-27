@@ -50,6 +50,10 @@ import (
 	"time"
 )
 
+// testSeatbeltID is a representative 25-char base36 seatbelt session id (§7.8)
+// used as a raw backend id in the deny-log binding fixtures below.
+const testSeatbeltID = "a1b2c3d4e5f6g7h8i9j0k1l2m"
+
 // ---------------------------------------------------------------------------
 // ClassifyDeny — deny classification of a single unified-log line
 // ---------------------------------------------------------------------------
@@ -237,9 +241,9 @@ func TestToSandboxDeny_MapsFields(t *testing.T) {
 		Pid:       789,
 		Message:   "deny file-read /etc/passwd",
 	}
-	got := ToSandboxDeny("darwin-7", ev)
-	if got.SessionID != "darwin-7" {
-		t.Fatalf("SessionID = %q, want darwin-7", got.SessionID)
+	got := ToSandboxDeny(testSeatbeltID, ev)
+	if got.SessionID != testSeatbeltID {
+		t.Fatalf("SessionID = %q, want %q", got.SessionID, testSeatbeltID)
 	}
 	if got.Pid != 789 {
 		t.Fatalf("Pid = %d, want 789", got.Pid)
@@ -262,7 +266,7 @@ func TestSandboxDeny_SecretNeverLeaks(t *testing.T) {
 	if !ok {
 		t.Fatal("ClassifyDeny = false, want true")
 	}
-	got := ToSandboxDeny("darwin-1", ev)
+	got := ToSandboxDeny(testSeatbeltID, ev)
 
 	for name, value := range map[string]string{
 		"SessionID": got.SessionID,
@@ -390,7 +394,7 @@ func TestConsumeDenials_EmitsOnlyForDenyLines(t *testing.T) {
 	}}
 
 	var got []SandboxDenyLog
-	if err := ConsumeDenials(context.Background(), tl, "darwin-1", func(l SandboxDenyLog) {
+	if err := ConsumeDenials(context.Background(), tl, testSeatbeltID, func(l SandboxDenyLog) {
 		got = append(got, l)
 	}); err != nil {
 		t.Fatalf("ConsumeDenials: %v", err)
@@ -400,8 +404,8 @@ func TestConsumeDenials_EmitsOnlyForDenyLines(t *testing.T) {
 		t.Fatalf("emitted %d records, want 2 (only the deny lines)", len(got))
 	}
 	for i, lg := range got {
-		if lg.SessionID != "darwin-1" {
-			t.Fatalf("record %d SessionID = %q, want darwin-1", i, lg.SessionID)
+		if lg.SessionID != testSeatbeltID {
+			t.Fatalf("record %d SessionID = %q, want %q", i, lg.SessionID, testSeatbeltID)
 		}
 	}
 	if got[0].Operation != "file-read" || got[0].Pid != 1 {
@@ -415,7 +419,7 @@ func TestConsumeDenials_EmitsOnlyForDenyLines(t *testing.T) {
 // TestConsumeDenials_TailerError propagates a Lines error.
 func TestConsumeDenials_TailerError(t *testing.T) {
 	tl := &fakeTailer{err: errors.New("log stream failed")}
-	err := ConsumeDenials(context.Background(), tl, "darwin-1", func(SandboxDenyLog) {})
+	err := ConsumeDenials(context.Background(), tl, testSeatbeltID, func(SandboxDenyLog) {})
 	if err == nil {
 		t.Fatal("ConsumeDenials should propagate the tailer error")
 	}
@@ -432,7 +436,7 @@ func TestConsumeDenials_StopsOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- ConsumeDenials(ctx, tl, "darwin-1", func(SandboxDenyLog) {})
+		done <- ConsumeDenials(ctx, tl, testSeatbeltID, func(SandboxDenyLog) {})
 	}()
 	cancel()
 

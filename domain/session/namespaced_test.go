@@ -8,9 +8,11 @@ import (
 
 // TestParseNamespacedID_Valid pins the happy path: a `slug:internal` id parses
 // into its two parts. docker:<64hex> (a real docker container id) and
-// seatbelt:darwin-3 (the darwin backend's own id) are the canonical forms.
+// seatbelt:<25 base36 chars> (the darwin backend's own derived id) are the
+// canonical forms.
 func TestParseNamespacedID_Valid(t *testing.T) {
 	hex64 := strings.Repeat("a", 64)
+	seatbeltInternal := strings.Repeat("A", 22)
 
 	cases := []struct {
 		in       string
@@ -18,7 +20,7 @@ func TestParseNamespacedID_Valid(t *testing.T) {
 		internal string
 	}{
 		{in: "docker:" + hex64, slug: "docker", internal: hex64},
-		{in: "seatbelt:darwin-3", slug: "seatbelt", internal: "darwin-3"},
+		{in: "seatbelt:" + seatbeltInternal, slug: "seatbelt", internal: seatbeltInternal},
 		// Slugs may contain internal separators.
 		{in: "foo_bar:abc", slug: "foo_bar", internal: "abc"},
 		{in: "foo.bar:abc", slug: "foo.bar", internal: "abc"},
@@ -101,13 +103,15 @@ func TestNamespacedID_Short(t *testing.T) {
 		t.Fatalf("Short() = %q, want docker:<12>", got)
 	}
 
-	// seatbelt:darwin-3 has internal len 8 (<= 12) -> unchanged, slug kept.
-	n2, err := ParseNamespacedID("seatbelt:darwin-3")
+	// seatbelt:<25 base36 chars> has internal len > 12 -> truncated to
+	// the first 12 chars, slug kept.
+	seatbeltInternal := strings.Repeat("A", 25)
+	n2, err := ParseNamespacedID("seatbelt:" + seatbeltInternal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := n2.Short(); got != "seatbelt:darwin-3" {
-		t.Fatalf("Short() = %q, want seatbelt:darwin-3 unchanged", got)
+	if got := n2.Short(); got != "seatbelt:"+strings.Repeat("A", 12) {
+		t.Fatalf("Short() = %q, want seatbelt:<first 12>", got)
 	}
 
 	// Boundary: internal exactly 12 chars -> unchanged.
