@@ -360,8 +360,8 @@ domain/                    pure domain model, no infra dependencies
                            §6.5/§7.11)
     exec/                  exec request/result types, result classification
     role/                  ISP role interfaces: Backend, Lifecycle, Executable,
-                           Introspectable (+ ErrCapabilityNotSupported)
-    capability/            capability set types
+                           Introspectable (+ ErrCapabilityNotSupported), and the
+                           CapabilitySet used for capability dispatch
   session/                 Session aggregate: id, spec, state, activity markers
                            (Touch/Expired), mutex
   progress/                pure-domain streaming: Event{Message, Progress, Total},

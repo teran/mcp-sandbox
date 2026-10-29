@@ -16,10 +16,20 @@ set -euo pipefail
 # Accepted, documented, no-upstream-fix dependency vulnerabilities.
 ACCEPTED_IDS="GO-2026-4887 GO-2026-4883"
 
-out="$(govulncheck ./... 2>&1 || true)"
+# Run govulncheck in structured JSON mode so ID extraction is robust to changes
+# in the human-readable text layout. jq is preinstalled on GitHub-hosted
+# runners; fall back to text-id extraction if jq is unavailable.
+out="$(govulncheck -json ./... 2>&1 || true)"
 
-# Extract every reported vulnerability ID.
-found="$(printf '%s' "$out" | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u)"
+if command -v jq >/dev/null 2>&1; then
+	# Collect every vulnerability ID from the JSON document (top-level "Vulns"
+	# entries and any nested OSV findings), then keep only GO- ids (the same
+	# namespace ACCEPTED_IDS uses). A malformed/empty JSON yields no ids.
+	found="$(printf '%s' "$out" | jq -r '.. | objects | .ID? // empty' 2>/dev/null \
+		| grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u || true)"
+else
+	found="$(printf '%s' "$out" | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u || true)"
+fi
 
 if [ -z "$found" ]; then
 	echo "govulncheck: no vulnerabilities."
