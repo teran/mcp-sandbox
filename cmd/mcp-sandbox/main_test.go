@@ -123,6 +123,75 @@ func TestRun_StdioServesAndBanner(t *testing.T) {
 	}
 }
 
+// TestRun_StdioLogsToolSurface pins L10/L11 at the composition root: when
+// logging is enabled, the startup wiring (local only, A02/N35) emits one
+// per-tool line for every statically-registered tool, each carrying
+// always_present=true (all tools in this server are static/always present).
+func TestRun_StdioLogsToolSurface(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "info")
+	t.Setenv("LOG_FORMAT", "text")
+	logFile := filepath.Join(t.TempDir(), "server.log")
+	t.Setenv("LOG_FILENAME", logFile)
+
+	orig := newStdioTransport
+	tr, closer := newBlockingStdioTransport()
+	newStdioTransport = func() mcp.Transport { return tr }
+	defer func() { newStdioTransport = orig; closer() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	if code := run(ctx, nil, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("ReadFile log: %v", err)
+	}
+	s := string(data)
+
+	// Every statically-registered tool must appear with the always_present=true
+	// marker. profile_list is always present because buildServer always wires a
+	// read-on-demand profile store.
+	for _, name := range []string{
+		"sandbox_list", "sandbox_info", "sandbox_stats",
+		"sandbox_create", "sandbox_exec", "sandbox_destroy", "sandbox_destroy_all",
+		"profile_list",
+	} {
+		if !strings.Contains(s, "tool="+name) {
+			t.Fatalf("missing tool-surface line for %s:\n%s", name, s)
+		}
+	}
+	if !strings.Contains(s, "always_present=true") {
+		t.Fatalf("expected always_present=true marker:\n%s", s)
+	}
+}
+
+// TestRun_StdioDisabledLoggingNoToolSurface pins L10/L11 at the composition
+// root: when LOG_LEVEL is unset (logging disabled), no tool-surface lines are
+// emitted — the log file is not even created.
+func TestRun_StdioDisabledLoggingNoToolSurface(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "")
+	logFile := filepath.Join(t.TempDir(), "server.log")
+	t.Setenv("LOG_FILENAME", logFile)
+
+	orig := newStdioTransport
+	tr, closer := newBlockingStdioTransport()
+	newStdioTransport = func() mcp.Transport { return tr }
+	defer func() { newStdioTransport = orig; closer() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	if code := run(ctx, nil, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if _, err := os.Stat(logFile); err == nil {
+		t.Fatal("log file should not be created when logging is disabled; no tool-surface lines allowed")
+	}
+}
+
 func TestRun_StdioDisabledLogging(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "")
 	logFile := filepath.Join(t.TempDir(), "server.log")
