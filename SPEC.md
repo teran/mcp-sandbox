@@ -2238,6 +2238,19 @@ true` is declared only where such a mechanism exists.
 - **`request_id` correlation (L09/L04GO):** generated per request, carried via
   context (`WithRequestID`/`RequestIDFromContext`), threaded on every log
   record.
+- **Startup tool-surface log (L10/L05GO):** when logging is enabled (L02), at
+  startup as part of **local wiring only** — after the banner, **no outbound
+  request** (A02/N35) — the server logs the **complete registered tool
+  surface**: the exact set returned by `tools/list`. Each tool emits **one
+  logrus line at `info`** carrying `tool=<name>`, `title=<title>`, and
+  `always_present=<bool>`.
+- **`always_present` is always `true` (L11):** every tool in this server is
+  **static** — present regardless of request/caller — so `always_present` is
+  always `true`. There are **no dynamic tools**, so N46 is not triggered.
+  Implementation: `Logger.LogToolSurface([]*def.ToolDef)` in
+  `infrastructure/logging`, wired at the composition root in
+  `cmd/mcp-sandbox/main.go` inside `buildServer` (computes `BuildTools(svc)`
+  once and reuses it); it is a **no-op** when logging is disabled.
 - **darwin driver log events (§7.12)** — same pipeline (L08/L09,
   `request_id`-correlated, `command`/paths redacted): `session_create {
 session_id, pid, profile }`, `session_destroy { session_id, pid, rc,
@@ -2388,8 +2401,8 @@ socket**, accessed through the **official `github.com/docker/docker` SDK**.
 ## 13. Conformance summary (MUST / MUST-NOT)
 
 **MUST satisfied:** M01–M07, C01, C02, C04, C05, T01, T02, C01GO–C09GO,
-S01–S12, **S14**, R02, R05, R06, R07, B01, B02, B05, L01–L09,
-L01GO–L04GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
+S01–S12, **S14**, R02, R05, R06, R07, B01, B02, B05, L01–L11,
+L01GO–L05GO, A01, A02, D01–D04, X01, X02, X03, X05, C03.
 
 **Explicitly not applicable (documented):**
 

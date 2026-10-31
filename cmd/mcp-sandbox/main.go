@@ -121,10 +121,16 @@ func buildServer(cfg *config.Config, logger *logging.Logger) *mcp.Server {
 	svc.SetProfileStore(applicationprofile.New(cfg.SandboxProfilesDir))
 	deps := mcpserver.HandlerDependencies(logger)
 
+	// Compute the statically-registered tool surface once and log it (L10/L11):
+	// every tool is static/always present. No-op when logging is disabled (L02).
+	// Local wiring only — no outbound request (A02/N35).
+	tools := mcpserver.BuildTools(svc)
+	logger.LogToolSurface(tools)
+
 	return mcpserver.NewServer(
 		&mcp.Implementation{Name: appName, Version: appVersion},
 		logger,
-		mcpserver.BuildTools(svc),
+		tools,
 		deps,
 	)
 }

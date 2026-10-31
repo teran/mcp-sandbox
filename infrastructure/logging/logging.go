@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
+	"github.com/teran/mcp-sandbox/application/tools/def"
 	"github.com/teran/mcp-sandbox/domain/requestid"
 )
 
@@ -125,6 +126,22 @@ func (l *Logger) Banner(appName, appVersion, commit, timestamp string) {
 		return
 	}
 	l.entry.Infof("Starting %s/%s (commit: %s; built at %s) ...", appName, appVersion, commit, timestamp)
+}
+
+// LogToolSurface emits one info line per registered tool (L10/L11). Every tool
+// in this server is static/always present, so always_present is always true
+// (L11). It is a no-op when logging is disabled (L02) or when the surface is
+// empty.
+func (l *Logger) LogToolSurface(tools []*def.ToolDef) {
+	if !l.enabled {
+		return
+	}
+	for _, tool := range tools {
+		l.entry.WithField("tool", tool.Name).
+			WithField("title", tool.Title).
+			WithField("always_present", true).
+			Info("tool surface")
+	}
 }
 
 // Entry returns the base logrus entry for direct use (e.g. access logs).
